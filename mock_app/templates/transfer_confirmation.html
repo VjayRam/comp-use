@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Confirmation</h1>
+<table>
+<tr><td>Transaction ID</td><td>{{ txn_id }}</td></tr>
+<tr><td>Amount</td><td>{{ "%.2f"|format(amount) }}</td></tr>
+</table>
+{% endblock %}

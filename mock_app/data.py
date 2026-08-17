@@ -26,3 +26,11 @@ def next_sub_account_id() -> str:
 def next_confirmation_number() -> str:
     _confirmation_counter["n"] += 1
     return f"CONF-{_confirmation_counter['n']:06d}"
+
+
+_txn_counter = {"n": 0}
+
+
+def next_txn_id() -> str:
+    _txn_counter["n"] += 1
+    return f"TXN-{_txn_counter['n']:06d}"

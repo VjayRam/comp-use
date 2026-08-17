@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Transfer Funds</h1>
+<form method="post" action="/member/{{ member_id }}/transfer">
+<table>
+<tr><td>From Account</td><td><input type="text" name="from_account"></td></tr>
+<tr><td>To Account</td><td><input type="text" name="to_account"></td></tr>
+<tr><td>Amount</td><td><input type="text" name="amount"></td></tr>
+<tr><td colspan="2"><input type="submit" value="Transfer"></td></tr>
+</table>
+</form>
+{% if error %}<p>{{ error }}</p>{% endif %}
+{% if insufficient_funds %}<p>Insufficient funds for this transfer.</p>{% endif %}
+{% endblock %}
