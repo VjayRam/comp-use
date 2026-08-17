@@ -13,3 +13,16 @@ MEMBERS: dict[str, dict] = {
         ],
     },
 }
+
+_sub_account_counter = {"n": 0}
+_confirmation_counter = {"n": 0}
+
+
+def next_sub_account_id() -> str:
+    _sub_account_counter["n"] += 1
+    return f"SUB-{_sub_account_counter['n']:04d}"
+
+
+def next_confirmation_number() -> str:
+    _confirmation_counter["n"] += 1
+    return f"CONF-{_confirmation_counter['n']:06d}"

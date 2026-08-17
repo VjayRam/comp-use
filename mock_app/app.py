@@ -1,6 +1,6 @@
 from flask import Flask, redirect, render_template, request, url_for
 
-from mock_app.data import MEMBERS
+from mock_app.data import MEMBERS, next_confirmation_number, next_sub_account_id
 
 
 def create_app() -> Flask:
@@ -19,5 +19,52 @@ def create_app() -> Flask:
     def member_detail(member_id: str):
         member = MEMBERS[member_id]
         return render_template("detail.html", member=member, member_id=member_id)
+
+    _confirmations: dict[str, dict] = {}
+
+    @app.get("/member/<member_id>/sub-account/new")
+    def new_sub_account_form(member_id: str):
+        return render_template("new_sub_account.html", member_id=member_id)
+
+    @app.post("/member/<member_id>/sub-account/new")
+    def new_sub_account_submit(member_id: str):
+        account_type = request.form.get("account_type", "Savings")
+        try:
+            deposit_amount = float(request.form.get("deposit_amount", "0"))
+        except ValueError:
+            deposit_amount = -1
+        if deposit_amount <= 0:
+            return render_template(
+                "new_sub_account.html",
+                member_id=member_id,
+                error="Deposit amount must be greater than zero.",
+            )
+        sub_account_id = next_sub_account_id()
+        member = MEMBERS[member_id]
+        member["accounts"].append(
+            {"id": sub_account_id, "type": account_type, "balance": deposit_amount}
+        )
+        confirmation_number = next_confirmation_number()
+        _confirmations[sub_account_id] = {
+            "confirmation_number": confirmation_number,
+            "deposit_amount": deposit_amount,
+        }
+        return redirect(
+            url_for(
+                "sub_account_confirmation",
+                member_id=member_id,
+                sub_account_id=sub_account_id,
+            )
+        )
+
+    @app.get("/member/<member_id>/sub-account/<sub_account_id>/confirm")
+    def sub_account_confirmation(member_id: str, sub_account_id: str):
+        info = _confirmations[sub_account_id]
+        return render_template(
+            "sub_account_confirmation.html",
+            sub_account_id=sub_account_id,
+            confirmation_number=info["confirmation_number"],
+            deposit_amount=info["deposit_amount"],
+        )
 
     return app
