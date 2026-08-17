@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Member Detail</h1>
+<table>
+<tr><td>Name</td><td>{{ member.name }}</td></tr>
+</table>
+<table border="1">
+<tr><th>Account</th><th>Type</th><th>Balance</th></tr>
+{% for acc in member.accounts %}
+<tr><td>{{ acc.id }}</td><td>{{ acc.type }}</td><td>{{ "%.2f"|format(acc.balance) }}</td></tr>
+{% endfor %}
+</table>
+<p><a href="/member/{{ member_id }}/sub-account/new">Open Sub-Account</a></p>
+<p><a href="/member/{{ member_id }}/transfer">Transfer Funds</a></p>
+{% endblock %}
