@@ -32,81 +32,31 @@ Built for the interface.ai take-home assignment
 ## System design
 
 ```mermaid
-flowchart TB
-    subgraph Caller["Caller (out of scope: agent-facing product)"]
-        Goal["Natural-language goal\n+ target entry point"]
-        Params["Structured typed params\n(capability_name, input args)"]
-    end
+flowchart LR
+    Goal["Goal\n(discovery)"] --> Agent["Discovery Agent\n(LLM-driven)"]
+    Params["Typed params\n(replay)"] --> Replay["Replay Engine\n(no LLM)"]
 
-    subgraph Core["Computer-Use Automation System (this repo)"]
-        direction TB
+    Agent --> Artifact[("Capability\nArtifact")]
+    Artifact --> Replay
 
-        subgraph Discovery["Discovery path"]
-            Agent["Agent Loop\n(observe -> decide -> act)"]
-            LLMClient["LLM Client\n(OpenRouter, swappable ->\nlocal model in prod)"]
-            Compiler["Artifact Compiler\n(tags value_source ->\ninput_schema)"]
-        end
+    Agent --> Surface["Surface\n(drives the app)"]
+    Replay --> Surface
+    Surface --> App["Mock legacy\nbank app"]
 
-        subgraph Replay["Replay path (production)"]
-            ReplayEngine["Replay Engine\n(no LLM call)"]
-            Validator["Pre-flight param\nvalidator"]
-            Outcome["Outcome classifier\nsuccess / business_outcome /\nrecoverable / hard_failure"]
-        end
+    Agent -.stuck.-> Human["Human operator\n(takes over live session)"]
+    Replay -.stuck.-> Human
 
-        Guardrail["Guardrail Layer\nallowlist + risk tiers + redaction"]
-        Surface["Surface abstraction\n(Playwright: accessibility tree\n+ screenshot, role/text locators)"]
-        Escalation["Escalation Controller\ncontrol: agent / human / none"]
-        ArtifactStore[("Artifact Store\n/artifacts/*.json")]
-        EvidenceStore[("Evidence Store\n/evidence/ logs + screenshots")]
-    end
-
-    subgraph Target["Target surface"]
-        MockApp["Mock legacy bank web app\n(member lookup, sub-account open,\nfunds transfer)"]
-    end
-
-    subgraph Human["Human operator"]
-        LocalTransport["LocalSharedBrowserTransport\n(built: shared headed browser)"]
-        ServerTransport["ServerStreamingTransport\n(designed only)"]
-    end
-
-    Goal --> Agent
-    Agent <--> LLMClient
-    Agent --> Guardrail
-    Agent --> Surface
-    Agent --> Compiler
-    Compiler --> ArtifactStore
-
-    Params --> Validator
-    Validator -->|valid| ReplayEngine
-    Validator -->|invalid| Outcome
-    ArtifactStore --> ReplayEngine
-    ReplayEngine --> Guardrail
-    ReplayEngine --> Surface
-    ReplayEngine --> Outcome
-    Outcome --> Params
-
-    Guardrail -->|redacted state| LLMClient
-    Guardrail -->|risky / stuck| Escalation
-    Surface <--> MockApp
-    Escalation -->|pause, hand over session| LocalTransport
-    Escalation -.->|designed| ServerTransport
-    LocalTransport -->|resume signal| Escalation
-
-    Agent --> EvidenceStore
-    ReplayEngine --> EvidenceStore
-    Escalation --> EvidenceStore
+    Agent --> Evidence[("Evidence & logs")]
+    Replay --> Evidence
 ```
 
-Read top to bottom: a **discovery** run (left path) takes a natural-language goal,
-drives the mock app through the Surface abstraction, calls out to the LLM (through the
-Guardrail's redaction pass) to decide each next action, and on success compiles the
-step trace into a versioned artifact. A **replay** run (right path) takes a saved
-artifact plus structured typed params, validates them up front, and executes the same
-steps deterministically — no LLM call — classifying the result into one of four
-outcome buckets. Both paths share the Guardrail layer (allowlist + risk tiers +
-redaction), the Surface abstraction, and the Escalation Controller, which pauses
-either loop and hands the *same* live browser to a human when something can't proceed
-safely.
+A **discovery** run takes a natural-language goal, uses an LLM to drive the mock app
+through the Surface, and on success saves a reusable **capability artifact**. A
+**replay** run takes that artifact plus typed params and re-runs it deterministically
+— no LLM involved — through the same Surface. Either path can hand control of the
+live session to a **human operator** if it gets stuck, and both leave an evidence
+trail behind. (Guardrails — allowlisting, risk tiers, redaction — apply throughout
+but are omitted here for readability; see the design spec for the full picture.)
 
 ## Setup
 
