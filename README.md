@@ -58,6 +58,55 @@ live session to a **human operator** if it gets stuck, and both leave an evidenc
 trail behind. (Guardrails — allowlisting, risk tiers, redaction — apply throughout
 but are omitted here for readability; see the design spec for the full picture.)
 
+## Production-scale design (not built — see [Cuts](docs/superpowers/specs/2026-08-17-computer-use-automation-design.md#11-cuts-explicit-for-reportmd-7))
+
+This repo implements a single-tenant, single-process version. At the scale described
+in the assignment (hundreds of tenants, ~20 apps each, many sharing the same vendor
+product), the same core components would be pulled out into services:
+
+```mermaid
+flowchart LR
+    AIAgent["AI agent product\n(caller, per tenant)"] --> API["Capability API\n(catalog + invoke)"]
+
+    API --> ReplayWorkers["Replay workers\n(pooled, per-tenant sessions)"]
+    ReplayWorkers --> TenantApps["Tenant app instances\n(same vendor product,\nmany tenants)"]
+
+    Discovery["Discovery runs\n(on new/changed capability)"] --> LocalLLM["On-prem / local LLM\n(no UI data leaves tenant env)"]
+    Discovery --> ArtifactDB[("Artifact store\nbase + per-tenant overrides")]
+    ReplayWorkers --> ArtifactDB
+
+    ReplayWorkers --> EvidenceStore["Evidence & log store\n(redacted, per-tenant isolated)"]
+
+    ReplayWorkers -.stuck.-> OperatorConsole["Operator console\n(streamed session handoff)"]
+
+    DriftCheck["Drift detector\n(sampled replays)"] --> ArtifactDB
+    DriftCheck -.flags stale variant.-> Discovery
+```
+
+Key differences from the built version:
+
+- **Discovery becomes rare, replay becomes the hot path.** Most traffic is capability
+  *invocation* (replay) triggered by the AI agent product through a capability API;
+  discovery only runs when a capability is first created or flagged as drifted.
+- **One base artifact per vendor app, with per-tenant overrides** — not one recording
+  per tenant. The artifact store holds a base artifact plus a sparse
+  `variant_overrides` diff per tenant (see spec §9), so onboarding a new tenant on an
+  already-known vendor product doesn't require re-recording from scratch.
+- **On-prem/local LLM for discovery** — since discovery is the only path that talks to
+  an LLM at all, and this is regulated financial data, discovery would run against a
+  locally-hosted model rather than a third-party API in production (see spec §8).
+- **A real operator console** replaces the local shared-browser handoff — a streamed
+  session (the `ServerStreamingTransport` designed in spec §7) so an operator can be
+  anywhere, not sitting at the machine running the browser.
+- **A drift detector** periodically samples replays per tenant/variant and flags an
+  artifact for re-discovery when its checkpoints stop resolving, rather than someone
+  finding out via a production failure.
+
+Per the assignment's own guidance, none of this is built — designing the abstractions
+so they *could* scale this way (the `Surface` interface, canonicalized locators,
+`ControlTransport`, the four-bucket outcome taxonomy) is the actual deliverable; the
+services/queues/pooling above are not.
+
 ## Setup
 
 _TBD once implementation begins._
