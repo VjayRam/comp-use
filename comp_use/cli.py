@@ -1,6 +1,9 @@
 import argparse
 import json
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from comp_use.config import load_settings
 from comp_use.discovery.agent import DiscoveryAgent
@@ -11,8 +14,21 @@ from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
 from comp_use.llm_client import OpenRouterClient
 from comp_use.replay.engine import ReplayEngine
-from comp_use.schemas import Artifact, Checkpoint, CheckpointType, Locator, LocatorStrategy
+from comp_use.schemas import (
+    ActionType,
+    Artifact,
+    Checkpoint,
+    CheckpointType,
+    OutcomeType,
+    ReplayResult,
+    RiskTier,
+    Step,
+)
 from comp_use.surface import PlaywrightSurface
+
+
+def _headless() -> bool:
+    return os.environ.get("COMP_USE_HEADLESS", "").lower() in ("1", "true", "yes")
 
 
 def save_artifact(artifact: Artifact, artifacts_dir: Path) -> Path:
@@ -45,7 +61,7 @@ def _run_discover(args) -> None:
     llm = OpenRouterClient(settings)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=_headless())
         page = browser.new_page()
         surface = PlaywrightSurface(page)
         agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps)
@@ -67,6 +83,11 @@ def _run_discover(args) -> None:
         success_checkpoint=success_checkpoint,
         output_schema=[],
     )
+    if not any(step.action == ActionType.NAVIGATE for step in artifact.steps):
+        artifact.steps.insert(
+            0,
+            Step(action=ActionType.NAVIGATE, target=args.start_url, risk_tier=RiskTier.SAFE),
+        )
     path = save_artifact(artifact, settings.artifacts_dir)
     print(f"Saved artifact to {path}")
 
@@ -85,8 +106,18 @@ def _run_replay(args) -> None:
     artifact = load_artifact(args.capability_name, settings.artifacts_dir)
     params = json.loads(args.params) if args.params else {}
 
+    missing = [
+        item.name for item in artifact.input_schema if item.required and item.name not in params
+    ]
+    if missing:
+        detail = f"missing required param '{missing[0]}'"
+        evidence.log_event("validation_error", {"detail": detail})
+        result = ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=detail)
+        print(result.model_dump_json(indent=2))
+        return
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=_headless())
         page = browser.new_page()
         surface = PlaywrightSurface(page)
         engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
@@ -97,6 +128,7 @@ def _run_replay(args) -> None:
 
 
 def main() -> None:
+    load_dotenv()
     parser = argparse.ArgumentParser(prog="comp-use")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

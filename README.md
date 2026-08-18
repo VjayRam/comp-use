@@ -7,11 +7,12 @@ inputs/outputs, safety guardrails, and human-in-the-loop escalation.
 
 Built for the interface.ai take-home assignment
 (`Assignment A — Computer-Use Automation System.pdf`). Full design rationale is in
-[REPORT.md](REPORT.md) (once written) and the design spec:
+[REPORT.md](REPORT.md) and the design spec:
 [docs/superpowers/specs/2026-08-17-computer-use-automation-design.md](docs/superpowers/specs/2026-08-17-computer-use-automation-design.md).
 
-> **Status: design complete, implementation not yet started.** This README will be
-> filled in with real setup/run instructions as the system is built.
+> **Status: implementation complete.** Setup and demo commands below. Design rationale
+> is in [REPORT.md](REPORT.md) and the spec:
+> [docs/superpowers/specs/2026-08-17-computer-use-automation-design.md](docs/superpowers/specs/2026-08-17-computer-use-automation-design.md).
 
 ## What this will do
 
@@ -109,21 +110,92 @@ services/queues/pooling above are not.
 
 ## Setup
 
-_TBD once implementation begins._
+Use **Python 3.11 or 3.12** (Playwright 1.47's `greenlet` pin fails on 3.13). From the
+repo root:
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\python -m pip install -r requirements.txt
+# Unix:    .venv/bin/python -m pip install -r requirements.txt
+pip install -r requirements.txt && playwright install chromium
+copy .env.example .env   # Windows; on Unix: cp .env.example .env
+```
+
+Edit `.env` and set `OPENROUTER_API_KEY` (required only for `discover`; replay never
+calls the LLM). The CLI loads `.env` via `python-dotenv`.
+
+Run tests:
+
+```bash
+python -m pytest -v
+```
+
+On Windows with the project venv: `.venv\Scripts\python -m pytest -v`
+
+Optional: `COMP_USE_HEADLESS=1` (or PowerShell `$env:COMP_USE_HEADLESS="1"`) launches
+Chromium headless instead of a visible window.
 
 ## Demo path
 
-_TBD once implementation begins — will be the exact command(s) to run the agent on a
-goal, then replay the resulting artifact._
+Leave the mock app running in one terminal, then discover / replay in another.
 
-## Project layout (planned)
+**Terminal 1 — mock bank app** (`http://localhost:5000`):
+
+```bash
+python run_mock_app.py
+```
+
+**Terminal 2 — discover** (needs `OPENROUTER_API_KEY`; opens a headed browser unless
+`COMP_USE_HEADLESS=1`):
+
+```bash
+python -m comp_use.cli discover \
+  --goal "Look up member 12345 and view their account balances" \
+  --start-url "http://localhost:5000/member/search" \
+  --capability-name lookup_member
+```
+
+Expected: `Saved artifact to artifacts/lookup_member/v1.json` and
+`evidence/discover_<timestamp>/log.jsonl`.
+
+A checked-in example already exists at `artifacts/lookup_member/v1.json` (captured
+against this mock app). You can skip discover and go straight to replay.
+
+**Replay a successful lookup** (no LLM):
+
+```bash
+python -m comp_use.cli replay --capability-name lookup_member --params "{\"member_id\": \"12345\"}"
+```
+
+PowerShell:
+
+```powershell
+.venv\Scripts\python -m comp_use.cli replay --capability-name lookup_member --params '{"member_id": "12345"}'
+```
+
+Expected: `ReplayResult` JSON with `"outcome": "success"` and
+`evidence/replay_<timestamp>/`.
+
+**Replay with a missing param** (validation error — no browser window):
+
+```bash
+python -m comp_use.cli replay --capability-name lookup_member --params "{}"
+```
+
+Expected: `"outcome": "validation_error"` and detail `missing required param 'member_id'`.
+
+Risky capabilities (transfer / sub-account) pause for human confirmation unless you
+pass `--confirm-risky`. Type `resume` in the CLI when you have finished in the shared
+browser window.
+
+## Project layout
 
 ```
-/mock_app/       legacy-styled Flask target application
-/agent/          discovery agent (observe -> decide -> act loop)
-/replay/         deterministic replay engine
-/artifacts/      saved capability artifacts (JSON)
-/evidence/       logs + screenshots from discovery and replay runs
-/docs/           design spec(s)
-REPORT.md        design write-up (architecture, schema, determinism, etc.)
+/mock_app/          legacy-styled Flask target application
+/comp_use/          discovery, replay, guardrails, CLI
+/artifacts/         saved capability artifacts (JSON)
+/evidence/          logs + screenshots from discovery and replay runs
+/docs/              design spec and implementation plan
+run_mock_app.py     start the mock bank app on :5000
+REPORT.md           design write-up (architecture, schema, determinism, etc.)
 ```
