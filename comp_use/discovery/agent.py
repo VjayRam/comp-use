@@ -7,7 +7,7 @@ from comp_use.guardrail import Guardrail
 from comp_use.llm_client import LLMClient
 from comp_use.schemas import ActionType, Locator, RiskTier, Step, ValueSource
 
-_RISKY_ACTIONS = {ActionType.TYPE_TEXT: False}
+_LOCATOR_ACTIONS = {ActionType.CLICK, ActionType.TYPE_TEXT, ActionType.SELECT_OPTION}
 _RISKY_TARGET_HINTS = ("transfer", "sub-account", "delete")
 
 
@@ -47,15 +47,33 @@ class DiscoveryAgent:
             )
             self.evidence_logger.log_event("decision", decision)
 
-            if decision.get("done"):
+            if decision.get("done") or decision.get("action") == "finish":
                 trace.succeeded = True
                 break
 
-            action = ActionType(decision["action"])
+            try:
+                action = ActionType(decision["action"])
+            except ValueError:
+                history.append({**decision, "error": f"unknown action '{decision.get('action')}'"})
+                continue
+
             locator = Locator.model_validate(decision["locator"]) if decision.get("locator") else None
             target = decision.get("target")
             text = decision.get("text")
             value_source = ValueSource.model_validate(decision["value_source"]) if decision.get("value_source") else None
+
+            if action in _LOCATOR_ACTIONS and locator is None:
+                history.append({
+                    **decision,
+                    "error": "locator is required for click/type_text/select_option. "
+                    'Example: {"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}}',
+                })
+                self.evidence_logger.log_event("skipped_decision", {"reason": "missing_locator", "decision": decision})
+                continue
+            if action == ActionType.NAVIGATE and not target:
+                history.append({**decision, "error": "target URL is required for navigate"})
+                self.evidence_logger.log_event("skipped_decision", {"reason": "missing_target", "decision": decision})
+                continue
 
             self.guardrail.check_allowlist(target or self.surface.current_url(), action.value)
             risk_tier = _classify_risk(action, target, locator)

@@ -73,3 +73,28 @@ def test_agent_stops_at_max_steps_without_finish():
         trace = agent.run(goal="do something", start_url="http://localhost:5000/member/search")
         assert trace.succeeded is False
         assert len(trace.steps) == 3
+
+
+def test_agent_skips_type_text_without_locator_then_continues(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "type_text", "text": "12345", "done": False},
+            {"action": "type_text", "locator": {"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}},
+             "target": None, "text": "12345", "value_source": {"type": "goal_parameter", "param_name": "member_id", "param_type": "string"}, "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_skip")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is True
+    assert len(trace.steps) == 1
+    assert trace.steps[0].action == ActionType.TYPE_TEXT
+    assert surface.actions[1][0] == ActionType.TYPE_TEXT
+    assert surface.actions[1][1] is not None

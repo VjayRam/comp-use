@@ -49,7 +49,22 @@ class OpenRouterClient(LLMClient):
 
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
         messages = [
-            {"role": "system", "content": "You control a web browser to accomplish a goal. Call decide_next_action with the next single action."},
+            {
+                "role": "system",
+                "content": (
+                    "You control a web browser to accomplish a goal. Call decide_next_action "
+                    "with exactly one next action.\n"
+                    "Rules:\n"
+                    "- click, type_text, and select_option REQUIRE a locator object, e.g. "
+                    '{"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}} '
+                    'or {"strategy": "text", "value": {"text": "Search"}}.\n'
+                    "- type_text also requires text and value_source "
+                    '{"type": "goal_parameter", "param_name": "...", "param_type": "string"}.\n'
+                    "- navigate requires target as a full URL on http://localhost:5000.\n"
+                    "- When the goal is complete, set done=true and action=finish.\n"
+                    "- Never omit locator for type_text or click."
+                ),
+            },
             {"role": "user", "content": f"Goal: {goal}\nCurrent page (accessibility tree): {observed_tree}\nHistory: {json.dumps(history)}"},
         ]
         response = requests.post(

@@ -14,6 +14,8 @@ class ObservedState:
 
 
 def _resolve(page: Page, locator: Locator):
+    if locator is None:
+        raise ValueError("locator is required for this action")
     if locator.strategy == LocatorStrategy.ROLE:
         role = locator.value["role"]
         name = locator.value.get("name")
