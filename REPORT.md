@@ -443,6 +443,131 @@ Hosted OpenRouter still means redacted UI text leaves the machine on **discover*
 Point `LLMClient` at a local model for production locality; `FakeLLMClient` is the
 test double.
 
+## Assumptions & the decisions that followed
+
+Per §9's ground rule ("you own everything you submit and must be able to explain
+and defend any part of it in detail"), every place the brief left something to our
+judgment, gathered in one place rather than scattered across sections. Each is
+phrased as *assumption → decision*, so the reasoning is checkable even where it
+isn't spelled out again elsewhere.
+
+**Scope & control flow**
+- *Assumption:* the upstream agent-facing product decides intent (discover vs.
+  replay, which capability) — this system executes reliably, it doesn't infer
+  (§1: "the agent-facing product decides what to do; this system is how it
+  reliably and safely does it"). *Decision:* the CLI takes an explicit
+  `--capability-name` for both `discover` and `replay`; no fuzzy-goal-to-capability
+  router was built (see Architecture's own callout on this).
+- *Assumption:* a CLI is "the interface" the assignment expects — no separate HTTP
+  API or web UI is implied by anything in the brief. *Decision:* no API/UI layer
+  built; `comp_use.cli` is the only entrypoint.
+- *Assumption:* §3.7's heterogeneity/multi-tenant story is genuinely design-only,
+  not "build a second runtime to prove the design." *Decision:* `variant_overrides`
+  and drift *sampling* remain pure design (see Heterogeneity & multi-tenant); the
+  drift-*repair* half was built later as an explicit stretch, not because the
+  design-only framing changed.
+
+**Perception**
+- *Assumption:* §3.1's "DOM/accessibility tree, screenshot, or both — your call"
+  permits an accessibility-tree-primary design with screenshot only as a targeted
+  fallback, not an always-on second input. *Decision:* `DiscoveryAgent` sends a
+  screenshot only after a `missing_locator` skip or an `action_failed` — never on
+  every step (cost/latency tradeoff, stated explicitly in Cuts).
+- *Assumption:* most free-tier OpenRouter text models don't reliably accept image
+  content, so vision calls need a distinct, deliberate model switch, not just an
+  extra field on the same request. *Decision:* separate
+  `Settings.openrouter_vision_model`, chosen only after a first candidate
+  (`qwen/qwen2.5-vl-32b-instruct:free`) 404'd and had to be replaced with one
+  confirmed live (`google/gemma-4-26b-a4b-it:free`).
+- *Assumption:* `TEXT_PRESENT` checking raw `page.content()` (not rendered/visible
+  text) is acceptable because the mock app has no client-side JS hiding content —
+  every conditional message is a server-rendered Jinja `{% if %}`. *Decision:* kept
+  the simpler implementation; documented the portability limit in Architecture
+  rather than building rendered-text checking for a case that doesn't exist here.
+- *Assumption:* exact-match locator resolution (`exact=True` on
+  `get_by_role(name=...)`) is the correct default once the hostile markup showed
+  Playwright's substring-match default causing real ambiguity (a decoy "Advanced
+  Search" button matching a locator meant for "Search"). *Decision:* `_resolve()`
+  always passes `exact=True`.
+
+**Outcome taxonomy**
+- *Assumption:* `recoverable` means a transient, dismiss-and-retry condition that
+  is neither a permanent business state (`business_outcome`) nor an automation bug
+  (`hard_failure`). *Decision:* classified a double-submitted/stale review token
+  (a real double-click or back-button scenario) as `recoverable`, after finding and
+  fixing the mock app's own crash on that exact case — not before.
+- *Assumption:* success checkpoints must generalize across *different* valid
+  inputs, not just replay the exact run they were recorded from. *Decision:*
+  `_derive_success_checkpoint` builds an `element_visible` checkpoint from the
+  final page's own heading, falling back to a literal URL match (with a loud
+  warning) only when no heading exists at all.
+- *Assumption:* teaching a real LLM to decide "this page is a business outcome" is
+  a materially harder problem than teaching it to extract a value it can literally
+  see — the first requires judgment about what's *expected* vs. *broken*, the
+  second doesn't. *Decision:* fixed the real LLM's ability to use `extract`/
+  `extract_as` (issue 13), but left `outcome_patterns` as a stated, deliberate
+  manual-authoring limitation rather than attempting the harder problem.
+
+**Risk & escalation**
+- *Assumption:* risk should attach to the control that actually commits an
+  irreversible action, not any step that merely navigates toward it.
+  *Decision:* `_RISKY_TARGET_HINTS = ("confirm", "delete")`, matched against the
+  step actually being clicked — an earlier version matched against the
+  navigation link instead and had it backwards.
+- *Assumption:* §3.6's three escalation triggers (stuck, risky step, replay can't
+  recover) apply symmetrically to discovery and replay — a risky step is risky
+  regardless of whether it's the first-ever run or a thousandth replay.
+  *Decision:* gave `DiscoveryAgent` its own `confirm_risky`/`--confirm-risky`,
+  mirroring `ReplayEngine`, rather than only gating replay.
+- *Assumption:* §3.6's "record what the human did" doesn't require a full
+  co-browsing click-by-click recorder — the brief's own carve-out allows that
+  ("a full real-time co-browsing operator console is out of scope") — but *some*
+  record is still mandatory. *Decision:* a one-line free-text note plus a
+  before/after accessibility-tree diff and paired screenshots; not a full action
+  replay.
+- *Assumption:* three consecutive skipped/invalid decisions is a reasonable
+  dead-end threshold — enough tries to not escalate on a single fluke, few enough
+  to not loop for a long time before bringing in a human. *Decision:*
+  `_DEAD_END_THRESHOLD = 3`, a fixed constant, not configurable or tuned against
+  real failure-rate data (none exists at this scale).
+
+**Safety**
+- *Assumption:* redacting the assignment's own example values (a bare `member_id`
+  like `"12345"`) would fight the brief's own usage and make goal text unreadable,
+  while structured identifiers (`ACC-`, `SUB-`, `TXN-`, `CONF-`) genuinely look
+  like real financial-system data. *Decision:* `member_id` stays unredacted by
+  design; the structured ID formats are.
+- *Assumption:* redaction has to cover every place real data reaches an output a
+  human might see, not just the persisted evidence log. *Decision:* found live
+  that console `print()` output leaked real values the JSONL log already
+  redacted; fixed by routing all `DiscoveryAgent` console output through
+  `Guardrail.redact()` too.
+- *Assumption:* a general-purpose PII detector is out of scope for a mock app with
+  known, narrow data shapes — the goal is protecting *this app's* identifiers, not
+  building a redaction product. *Decision:* hand-picked regex patterns only;
+  stated as a scope limit in Safety rather than implied to be more general.
+- *Assumption:* the mock app's own behavior needs to be trustworthy for "success"
+  to mean anything, even though the mock app isn't itself the system under test.
+  *Decision:* fixed the mock app's real bug (debiting an account without
+  validating the destination existed) rather than treating it as out of scope
+  because it lives in `mock_app/`, not `comp_use/`.
+
+**Self-healing (the added, non-required feature)**
+- *Assumption:* "deterministic replay, no further LLM calls" (§3.3) is a property
+  of the replay *decision loop*, not a ban on any LLM-assisted tooling adjacent to
+  a failed run. *Decision:* kept `ReplayEngine` fully LLM-free (verified: it still
+  imports nothing from `llm_client`) and put drift diagnosis in a separate module,
+  invoked only by the CLI, strictly after the deterministic result already exists.
+- *Assumption:* patching a step's own action locator only makes sense when *that
+  locator* is what failed to resolve — not when the step succeeded but a
+  downstream checkpoint didn't match (a different failure shape entirely).
+  *Decision:* `_is_action_locator_failure` gates diagnosis to genuine
+  action-locator failures only.
+- *Assumption:* consistent with every other risky/uncertain decision in this
+  system, a proposed self-healing patch must never take effect without a human
+  explicitly reviewing it. *Decision:* patches are always saved as a *new*
+  artifact version and always trigger an escalation; nothing auto-applies.
+
 ## Cuts
 
 Unchanged from spec §11:
