@@ -43,6 +43,16 @@ implemented, tested, and verified live — against the real mock app for the
 diff/screenshots, and against the real OpenRouter API for the vision fallback, not
 mocked in either case.
 
+**Update (2026-08-19, second audit pass):** the ~96/100 above should be read with
+one correction — issue 11 below (found in this second pass) is a real, live-
+reproduced bug in the actual `comp_use.cli discover` path that undermines the
+"Correctness of core loop" and "Communication" scores above; the committed
+artifacts look correct only because they bypass the buggy code via a scratchpad
+script. Treat the score above as accurate for the *hand-verified artifacts and
+engines in isolation*, not for what a cold `git clone` + README Demo path would
+produce today. See issues 11–19 below for the full second-pass findings before
+trusting either number.
+
 ---
 
 ## 1. REPORT.md doesn't cite the real LLM-driven discovery run it already has
@@ -509,10 +519,402 @@ itself says is design-only.
 ## Not on this list (already covered, verified this session)
 
 For context on what's *not* being re-flagged: business_outcome vs. hard_failure
-classification, non-reusable literal success_checkpoints, the removed
-`page.accessibility` API, ambiguous-locator strict-mode handling, and the
-backwards risk-classification heuristic were all found and fixed in commits
-`3e00230` and `1488f21`, verified with real replays against the live mock app
-(see `REPORT.md`'s Evidence walkthrough). The goal-parameter-value artifact leak
-was found and fixed in commit `5baa19f` (see issue 6's note above for the
-still-open half of that finding).
+classification, the removed `page.accessibility` API, ambiguous-locator
+strict-mode handling, and the backwards risk-classification heuristic were all
+found and fixed in commits `3e00230` and `1488f21`, verified with real replays
+against the live mock app (see `REPORT.md`'s Evidence walkthrough). The
+goal-parameter-value artifact leak was found and fixed in commit `5baa19f` (see
+issue 6's note above for the still-open half of that finding).
+
+**Correction (2026-08-19 second audit pass):** this section previously also
+claimed "non-reusable literal success_checkpoints ... were all found and fixed."
+That was only ever true for the hand-patched artifacts produced by a one-off
+scratchpad script — the actual `comp_use.cli discover` command still generates
+exactly this bug today. See issue 11 below; it's the most important finding of
+this second pass, and this earlier claim was wrong.
+
+---
+
+# Second audit pass (2026-08-19)
+
+Requested explicitly: audit for remaining logical, code, and doc issues beyond
+the original 10, verified against actual code and, where practical, live runs —
+not assumed. Several of these are genuine regressions/gaps that the first pass's
+"live verification" didn't catch, because that verification consistently used
+artifacts produced by an ad hoc scratchpad script rather than the actual shipped
+`comp_use.cli` entrypoints. That's the throughline across issues 11, 13, and 19
+below: the CLI path and the hand-authored/patched artifacts have quietly
+diverged, and nothing in the test suite would catch it.
+
+---
+
+## 11. `comp_use.cli discover` still bakes a literal, non-reusable success checkpoint
+
+**Priority:** critical — this is the exact bug the first pass believed it had
+fixed (see the correction above), reproduced live against the actual CLI code
+path, not a hand-patched artifact.
+
+**Assignment reference (§3.3, Deterministic replay):** "Replay must use stable
+element/control targeting, verify the checkpoint/success condition... Given the
+same artifact and same inputs, the replay should behave the same way every time"
+— and by direct implication, given *different* valid inputs, a genuinely
+successful run must still be recognized as successful.
+
+**Current state:** `comp_use/cli.py`, `_run_discover`:
+```python
+success_checkpoint = Checkpoint(
+    type=CheckpointType.URL_MATCHES,
+    url_pattern=trace.final_url.split("://", 1)[-1].split("/", 1)[-1],
+)
+```
+This takes the *literal* final URL path from this one discovery run — e.g.
+`member/12345` for `lookup_member`, or `sub-account/SUB-0001/confirm` for
+`open_sub_account` — and bakes it in as the success checkpoint. The three
+committed artifacts (`artifacts/*/v1.json`) all have clean, generic
+`element_visible` checkpoints instead (`heading "Member Detail"`, `heading
+"Confirmation"`) — but only because they were produced by
+`regenerate_artifacts_with_extract.py` in the scratchpad, which calls
+`compile_artifact()` directly and then hand-overrides `success_checkpoint`,
+**bypassing this exact code in `cli.py` entirely**. The actual `discover`
+command a user runs per the README's own Demo path still has this bug, unpatched.
+
+Reproduced live, not just read: ran a `FakeLLMClient`-scripted `lookup_member`
+discovery through the literal `_run_discover` checkpoint-construction logic
+against the running mock app — produced `url_pattern='member/12345'`. Then ran
+a `ReplayEngine` replay of an artifact carrying exactly that checkpoint with
+`member_id=67890` (a different, valid member) against the live app:
+```
+outcome=HARD_FAILURE step_index=2 detail=''
+expected="...url_pattern='member/12345'"
+observed='http://localhost:5000/member/67890'
+```
+A genuinely successful lookup for member 67890 is reported as a hard failure,
+purely because the checkpoint hardcodes member 12345's URL from whenever it was
+first discovered. This would misclassify **every** real-CLI-discovered
+capability whose success URL contains any per-run value (a member ID, a
+generated confirmation/sub-account/transaction ID) — which is `open_sub_account`
+and `transfer_funds` in addition to `lookup_member`.
+
+**To do:**
+- [ ] Fix `_run_discover` to build a generic checkpoint instead of a literal
+      URL pattern — e.g. default to an `element_visible` checkpoint on whatever
+      heading/landmark is present on the final page (would need the agent or a
+      post-discovery step to identify a stable element), or make the URL pattern
+      only the *static* path prefix, stripping trailing path segments that look
+      like generated IDs.
+- [ ] At minimum, stop silently shipping this: warn loudly (or refuse to save)
+      when the derived `url_pattern` contains what looks like a dynamic ID
+      segment, rather than saving a checkpoint quietly doomed to fail on the
+      next distinct input.
+- [ ] Add a test that actually exercises `_run_discover`'s checkpoint
+      construction (or extracts it into a testable helper) — today
+      `tests/test_cli.py` only tests `save_artifact`/`load_artifact`, never the
+      logic in `_run_discover`/`_run_replay` themselves. See issue 18.
+- [ ] Correct `REPORT.md`'s Evidence walkthrough and Architecture sections,
+      which currently imply the shipped discovery path produces the same
+      quality of artifact as what's committed — it doesn't, today.
+
+---
+
+## 12. Discovery never pauses on its own risky actions — only replay does
+
+**Priority:** high (explicit §3.6 trigger, currently only half-implemented)
+
+**Assignment reference (§3.6):** "Sometimes the system can't safely finish on
+its own — the agent is stuck during discovery, a replay hits a condition it
+can't recover from, **or a risky/irreversible step needs a person to decide**."
+Three distinct triggers are named. Issue 2 (first pass) covered "the agent is
+stuck during discovery." This is the third trigger, and it's still entirely
+missing on the discovery side.
+
+**Current state:** `DiscoveryAgent.run()` computes `risk_tier` for every step
+via `_classify_risk()` (`comp_use/discovery/agent.py:193`) and stores it on the
+`Step` — purely for `ReplayEngine` to use later. Nothing in `DiscoveryAgent.run()`
+ever reads that `risk_tier` back to pause before *executing* a risky action live,
+during discovery itself. Confirmed by reading the full method top to bottom:
+`self.escalation` is only ever invoked from `_escalate()`, which is only called
+for the `dead_end` and `stuck` triggers — never for a risky action about to be
+taken. Concretely: today, a live discovery run will click "Confirm Sub-Account"
+or "Confirm Transfer" — genuinely irreversible actions against a real backend —
+with **no human in the loop at all**, even though `ReplayEngine` would pause on
+the exact same step during replay.
+
+This also means `Guardrail.requires_confirmation(step, confirm_risky)` — the
+method `REPORT.md` cites as *the* risk-tier mechanism (see issue 14) — isn't
+even the right description for discovery: it's never called there either.
+
+**To do:**
+- [ ] Before calling `self.surface.act()` for a step whose `risk_tier` would be
+      `RiskTier.RISKY` (i.e. run `_classify_risk` on the decision before acting,
+      not just after), escalate the same way `ReplayEngine` does, and block for
+      human confirmation before proceeding — discovery has no `confirm_risky`
+      equivalent today, so this may need one (e.g. `--confirm-risky` on the
+      `discover` subcommand too, currently only on `replay`).
+  - [ ] Add a test asserting a risky decision during discovery calls
+      `escalation.escalate(...)` before `surface.act()` is invoked.
+- [ ] Update `REPORT.md`'s Escalation & handoff section, which currently
+      describes escalation triggers per-engine without calling out that the
+      "risky step" trigger is replay-only today.
+
+---
+
+## 13. A real LLM has almost no way to ever produce an `extract` step
+
+**Priority:** high (undermines issue 5's `output_schema`/`outputs` feature for
+any *real* discovery run, not the `FakeLLMClient`-scripted ones)
+
+**Assignment reference (§3.1):** the discovery loop's decision interface is
+supposed to let the model choose from the full action vocabulary the system
+supports.
+
+**Current state:** `comp_use/llm_client.py`:
+- `_TOOL_SCHEMA["function"]["parameters"]["properties"]` declares `action`,
+  `locator`, `target`, `text`, `value_source`, `done` — **no `extract_as`
+  field at all**, despite `DiscoveryAgent` reading `decision.get("extract_as")`
+  and `Step.extract_as` existing precisely to carry it.
+- `_SYSTEM_PROMPT` gives worked examples for `type_text`, `click`, and `finish`
+  only. It never explains what `extract` is for, never shows an example, and
+  never mentions `extract_as`. `navigate` and `select_option` are equally
+  undocumented in the prompt, though those are lower-stakes (the agent can
+  usually get by without them; it can't usefully use `extract` by guessing).
+
+The `confirmation_number`/`txn_id` outputs described in `REPORT.md`'s Artifact
+schema section and demonstrated live in this session's replay evidence were
+only ever produced because the scratchpad regeneration script's
+`FakeLLMClient` was hand-scripted to emit an `extract` action with a specific
+CSS locator and `extract_as` value. A real `OpenRouterClient`-driven discovery
+run today has no information telling it this action exists or how to use it —
+it would need to guess both the field name and its purpose from the bare enum
+value `"extract"` alone, with zero worked example to pattern-match against.
+
+**To do:**
+- [ ] Add `extract_as` to `_TOOL_SCHEMA`'s declared properties.
+- [ ] Add an `extract` example and a one-line explanation to `_SYSTEM_PROMPT`
+      (mirroring the existing `type_text`/`click`/`finish` examples), e.g.
+      instructing the model to emit `extract` with `extract_as` set to a
+      snake_case name when it reaches a confirmation/result page with a value
+      worth returning to the caller.
+- [ ] Re-run a real (non-`FakeLLMClient`) discovery for `open_sub_account` or
+      `transfer_funds` after the prompt fix and confirm the model actually
+      emits a usable `extract` step — the honest test of whether this fix
+      worked, not just that the schema now accepts the field.
+
+---
+
+## 14. `ReplayEngine`'s allowlist check isn't crash-proof, unlike everything else in the loop
+
+**Priority:** medium (contradicts an explicit, load-bearing claim in `REPORT.md`)
+
+**Assignment reference (§3.4):** guardrails must be enforced consistently; and
+implicitly, per this project's own established pattern (§3.3's error-handling
+requirement plus `REPORT.md`'s own text), no in-scope failure should crash the
+process instead of producing a structured `ReplayResult`.
+
+**Current state:** `comp_use/replay/engine.py`:
+```python
+target_url = step.target
+self.guardrail.check_allowlist(target_url or self.surface.current_url(), step.action.value)
+
+try:
+    extracted = self.surface.act(step.action, locator=step.locator, target=target_url, text=text)
+    ...
+except Exception as exc:
+    ...
+```
+`check_allowlist()` (which raises `AllowlistViolation`, a plain `Exception`
+subclass) is called **before** the `try` block, not inside it. If a step's
+`target`/current URL ever falls outside `allowed_url_prefixes`, or its action
+type isn't in `allowed_action_types`, replay crashes with a raw, unhandled
+`AllowlistViolation` traceback instead of returning a `hard_failure` (or a new,
+more accurate outcome). `DiscoveryAgent` gets this right — its own allowlist
+check is wrapped in `try: ... except AllowlistViolation as exc:` — so the two
+engines are inconsistent with each other, and `REPORT.md`'s Determinism &
+error handling section's claim ("No action in this system is ever allowed to
+crash the CLI with a raw traceback — everything resolves to one of the five
+`ReplayResult` outcomes") is currently false for this one path.
+
+**To do:**
+- [ ] Wrap `self.guardrail.check_allowlist(...)` in `ReplayEngine.run()` in a
+      try/except, converting `AllowlistViolation` into a `ReplayResult` (likely
+      `HARD_FAILURE`, since an artifact stepping outside its own allowlist is a
+      genuine automation/configuration problem, not a business outcome).
+- [ ] Add a test: an artifact step targeting a disallowed URL returns a
+      structured result, not a raised exception.
+- [ ] Re-verify (or soften) `REPORT.md`'s "never crash" claim once fixed.
+
+---
+
+## 15. `DiscoveryAgent.surface.act()` isn't wrapped either — a resolution failure crashes the whole run
+
+**Priority:** medium (same root cause as issue 14, opposite engine)
+
+**Assignment reference:** same as issue 14 — consistent, non-crashing error
+handling across both engines, not just replay.
+
+**Current state:** `comp_use/discovery/agent.py`, inside the main loop:
+```python
+self.surface.act(action, locator=locator, target=target, text=text)
+```
+Not wrapped in try/except, unlike `ReplayEngine.run()`'s equivalent call. A
+decision can pass the `locator is not None` check (issue 13's missing-locator
+skip only catches the *absence* of a locator, not its *validity*) and still fail
+to resolve at Playwright-action time — a real, plausible scenario against the
+deliberately hostile mock app (disabled elements, ambiguous names, elements a
+`role`/`name` combination looks right for but that don't actually exist as
+described). When that happens, `page.click()`/`page.fill()` raises a Playwright
+`TimeoutError`, which is not caught anywhere in `DiscoveryAgent.run()` and
+propagates all the way up, killing the whole discovery run (and the CLI process)
+with a raw traceback — no escalation, no structured "stuck" outcome, no
+`RunTrace` returned at all.
+
+**To do:**
+- [ ] Wrap the `self.surface.act(...)` call in `DiscoveryAgent.run()` in
+      try/except. On failure, treat it like any other skip (log
+      `skipped_decision` with reason `action_failed`, count toward
+      `consecutive_skips`/dead-end escalation, optionally trigger the vision
+      fallback immediately rather than waiting for the next `missing_locator`).
+- [ ] Add a test: a `FakeSurface.act()` that raises on a given call doesn't
+      crash `agent.run()`; the run continues or escalates instead.
+
+---
+
+## 16. `Guardrail.requires_confirmation()` is dead code that `REPORT.md` cites as the real mechanism
+
+**Priority:** low-medium (code-quality + doc-accuracy)
+
+**Current state:** grepped the whole repo for `requires_confirmation` —
+matches only in `comp_use/guardrail.py` (the definition), its own unit test
+(`tests/test_guardrail.py`), the design-plan doc, and `REPORT.md`'s Safety
+section, which states: *"Risk tiers — `requires_confirmation(step,
+confirm_risky)`; CLI `--confirm-risky` skips the pause."* Neither
+`ReplayEngine` nor `DiscoveryAgent` actually calls this method. `ReplayEngine`
+reimplements the equivalent condition inline instead:
+```python
+if (step.risk_tier == RiskTier.RISKY and not confirm_risky and self.escalation is not None):
+```
+which isn't even identical logic — it also requires `self.escalation is not
+None`, a condition `requires_confirmation()` doesn't express at all. The method
+exists, is tested in isolation, and does the right thing — it's just never
+wired into the actual decision path it's documented as being part of.
+
+**To do:**
+- [ ] Either call `self.guardrail.requires_confirmation(step, confirm_risky)`
+      from `ReplayEngine.run()` instead of reimplementing the condition inline
+      (and, once issue 12 is fixed, from `DiscoveryAgent` too), or delete the
+      unused method and fix `REPORT.md` to describe the logic that's actually
+      there. Prefer the former — it's the documented, tested mechanism; wiring
+      it in is a small, low-risk change and removes the duplication.
+- [ ] Re-verify `REPORT.md`'s Safety section describes the real code path
+      afterward.
+
+---
+
+## 17. Mock app: transferring to a nonexistent account silently destroys the money and still reports success
+
+**Priority:** medium (a real logic bug in the target app, not `comp_use` itself
+— but it undermines what a `success` outcome from `transfer_funds` actually
+means)
+
+**Current state:** `mock_app/app.py`, `transfer_submit`:
+```python
+from_account = _find_account(member_id, from_account_id)
+if amount <= 0 or from_account is None:
+    return render_template(..., error=...)
+```
+Only `from_account` is validated before proceeding to the review step —
+`to_account_id` is never checked. Then in `transfer_review_confirm`:
+```python
+from_account = _find_account(member_id, pending["from_account"])
+to_account = _find_account(member_id, pending["to_account"])
+from_account["balance"] -= pending["amount"]
+if to_account is not None:
+    to_account["balance"] += pending["amount"]
+```
+If `to_account_id` doesn't resolve to a real account (typo, wrong member,
+account that was never opened), the code still debits `from_account`
+unconditionally, silently skips crediting anything, generates a `txn_id`, and
+renders a normal confirmation page — a `transfer_funds` replay with a bad
+`to_account` param reports `outcome: success` while the money has actually
+vanished. This is a data-integrity bug in the mock app that a real bank backend
+would never allow, and it means "the outcome was `success`" is currently a
+weaker guarantee than it should be for this specific capability.
+
+**To do:**
+- [ ] Validate `to_account_id` the same way `from_account_id` already is,
+      before the review step — render the existing `error` path (or an
+      analogous `to_account_not_found` business-outcome path) instead of
+      silently proceeding.
+- [ ] Add a mock-app test: transferring to a nonexistent `to_account` doesn't
+      debit the source account / doesn't reach the confirmation page.
+- [ ] Once fixed, consider whether `transfer_funds`'s artifact should declare
+      a matching `outcome_patterns` entry (`business_outcome`,
+      `to_account_not_found`), the same way `insufficient_funds` already is.
+
+---
+
+## 18. `comp_use.cli`'s `_run_discover`/`_run_replay` have zero automated test coverage
+
+**Priority:** medium (root cause behind issue 11 going unnoticed for an entire
+session of "live verification")
+
+**Current state:** `tests/test_cli.py` only tests the two small helper
+functions `save_artifact`/`load_artifact` — nothing exercises `_run_discover`
+or `_run_replay` themselves, including their checkpoint construction,
+escalation wiring, or failure-screenshot wiring. Every "verified live" claim in
+`REPORT.md` and the first-pass `ISSUES.md` entries used either a bespoke
+scratchpad script calling the underlying classes directly, or a real terminal
+invocation of the CLI checked by hand — never an automated test asserting on
+`_run_discover`'s/`_run_replay`'s actual behavior. This is *why* issue 11
+existed undetected through the entire previous session: nothing would have
+failed red if it had been wrong.
+
+**To do:**
+- [ ] Add integration-style tests for `_run_discover`/`_run_replay` against
+      the real mock app + `FakeLLMClient` (mirroring the scratchpad script's
+      approach, but as a committed, CI-running test) — at minimum, asserting
+      the produced `success_checkpoint` is *not* a literal `url_matches` on a
+      per-run-unique path, and that a second replay with different valid
+      params against the same freshly-discovered artifact succeeds.
+- [ ] This test would have caught issue 11 immediately; treat it as the
+      regression test for that fix, not a separate nice-to-have.
+
+---
+
+## 19. Minor doc/config gaps found alongside the above
+
+**Priority:** low (bundled — each is small)
+
+- **`.env.example` and `README.md` don't mention `OPENROUTER_VISION_MODEL`** —
+  added this session (issue 10) with a working default, but nothing user-facing
+  documents that it exists or how to override it.
+- **`tests/test_config.py`'s `test_env_override` doesn't cover
+  `OPENROUTER_VISION_MODEL`** — only `OPENROUTER_MODEL` is asserted against an
+  env override; the new setting has no equivalent test.
+- **`_run_discover` never populates `outcome_patterns` or a non-empty
+  `output_schema`** — both are hardcoded to `[]`/passed as `[]` today; every
+  business-outcome and extract capability in the committed artifacts required
+  hand-authoring after the fact. This is arguably fine as a known limitation of
+  an MVP discovery loop (the model has no way to *decide* "this is a business
+  outcome" vs. just narrating what it sees), but it isn't currently stated
+  anywhere as a limitation — `REPORT.md` describes the mechanism as if it's
+  discovery's normal output.
+- **`PlaywrightSurface.check_checkpoint`'s `TEXT_PRESENT` type checks
+  `page.content()`** (raw HTML source) rather than rendered/visible text. Works
+  correctly today only because the mock app has no client-side JS hiding
+  content (Jinja conditionals render server-side) — would silently produce
+  false positives against any app that hides matching text via CSS/JS instead.
+  Worth a one-line caveat in `REPORT.md`'s Determinism section if not fixed.
+- **Mock app ID counters (`next_sub_account_id`, `next_confirmation_number`,
+  `next_txn_id`) are module-level globals**, shared across every `create_app()`
+  call within a process rather than being scoped per app instance. Not
+  currently causing test flakiness (no test hardcodes exact counter values),
+  but it's a latent footgun if a future test creates two app instances and
+  expects independent ID sequences.
+
+**To do (all four, low priority, can be batched):**
+- [ ] Document `OPENROUTER_VISION_MODEL` in `.env.example` and README.
+- [ ] Add `OPENROUTER_VISION_MODEL` to `test_config.py`'s env-override test.
+- [ ] Add a sentence to `REPORT.md` noting `outcome_patterns`/non-empty
+      `output_schema` require manual authoring today, not automatic discovery.
+- [ ] Either switch `TEXT_PRESENT` to check rendered text, or note the
+      HTML-source caveat in `REPORT.md`.
