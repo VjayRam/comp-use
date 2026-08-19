@@ -7,7 +7,7 @@ from comp_use.escalation.controller import EscalationController
 from comp_use.escalation.transport import ControlTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
-from comp_use.replay.engine import ReplayEngine
+from comp_use.replay.engine import ReplayEngine, validate_required_params
 from comp_use.schemas import (
     ActionType, Artifact, Checkpoint, CheckpointType, InputParam, Locator,
     LocatorStrategy, OutcomePattern, OutcomeType, RiskTier, Step, ValueSource,
@@ -94,6 +94,15 @@ def _make_artifact():
         ),
         created_from_run_id="run_x",
     )
+
+
+def test_validate_required_params_is_shared_between_cli_and_engine():
+    # cli.py's _run_replay and ReplayEngine.run() both call this exact function -
+    # this test exists so a future change to validation logic can't accidentally
+    # land in only one of the two call sites.
+    artifact = _make_artifact()
+    assert validate_required_params(artifact, {}) == "missing required param 'member_id'"
+    assert validate_required_params(artifact, {"member_id": "12345"}) is None
 
 
 def _make_engine(surface, tmp_path):

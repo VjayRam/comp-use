@@ -13,7 +13,7 @@ from comp_use.escalation.transport import LocalSharedBrowserTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
 from comp_use.llm_client import OpenRouterClient
-from comp_use.replay.engine import ReplayEngine
+from comp_use.replay.engine import ReplayEngine, validate_required_params
 from comp_use.schemas import (
     ActionType,
     Artifact,
@@ -151,13 +151,10 @@ def _run_replay(args) -> None:
     artifact = load_artifact(args.capability_name, settings.artifacts_dir)
     params = json.loads(args.params) if args.params else {}
 
-    missing = [
-        item.name for item in artifact.input_schema if item.required and item.name not in params
-    ]
-    if missing:
-        detail = f"missing required param '{missing[0]}'"
-        evidence.log_event("validation_error", {"detail": detail})
-        result = ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=detail)
+    validation_error = validate_required_params(artifact, params)
+    if validation_error:
+        evidence.log_event("validation_error", {"detail": validation_error})
+        result = ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=validation_error)
         print(result.model_dump_json(indent=2))
         return
 

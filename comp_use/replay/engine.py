@@ -4,18 +4,23 @@ from comp_use.guardrail import Guardrail
 from comp_use.schemas import Artifact, InterventionRequest, OutcomeType, ReplayResult
 
 
+def validate_required_params(artifact: Artifact, params: dict) -> str | None:
+    """Single source of truth for "does this params dict satisfy this artifact's
+    required input_schema" - used both by ReplayEngine.run() and by cli.py's
+    _run_replay (which needs a pre-browser answer, before ReplayEngine even
+    exists, to honor "skip launching Chromium on validation_error")."""
+    for input_param in artifact.input_schema:
+        if input_param.required and input_param.name not in params:
+            return f"missing required param '{input_param.name}'"
+    return None
+
+
 class ReplayEngine:
     def __init__(self, surface, guardrail: Guardrail, evidence_logger: EvidenceLogger, escalation: EscalationController | None = None):
         self.surface = surface
         self.guardrail = guardrail
         self.evidence_logger = evidence_logger
         self.escalation = escalation
-
-    def _validate_params(self, artifact: Artifact, params: dict) -> str | None:
-        for input_param in artifact.input_schema:
-            if input_param.required and input_param.name not in params:
-                return f"missing required param '{input_param.name}'"
-        return None
 
     def _match_outcome_pattern(self, artifact: Artifact) -> ReplayResult | None:
         for pattern in artifact.outcome_patterns:
@@ -24,7 +29,7 @@ class ReplayEngine:
         return None
 
     def run(self, artifact: Artifact, params: dict, confirm_risky: bool = False) -> ReplayResult:
-        validation_error = self._validate_params(artifact, params)
+        validation_error = validate_required_params(artifact, params)
         if validation_error:
             self.evidence_logger.log_event("validation_error", {"detail": validation_error})
             return ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=validation_error)

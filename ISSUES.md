@@ -1130,27 +1130,24 @@ silently drifts: if type-aware validation is ever added (see the `InputParam.typ
 note below), it would be easy to add it to only one of the two copies.
 
 **To do:**
-- [ ] Delete the duplicate check in `cli.py`'s `_run_replay` and let
-      `ReplayEngine.run()` be the single source of truth for parameter
-      validation — `cli.py` already handles the `VALIDATION_ERROR` result from
-      `engine.run()` correctly elsewhere in the codebase (it's one of the
-      `ReplayResult` outcomes printed as JSON), so this doesn't need special
-      casing to preserve the "skip launching Chromium" behavior... except it
-      currently *does* need that, since `ReplayEngine.run()` only validates
-      after a browser is already open. Fixing this cleanly means either (a)
-      keeping a *thin* pre-browser check in `cli.py` but having it call
-      `ReplayEngine._validate_params` (or a shared free function) instead of
-      reimplementing the loop, or (b) making `_validate_params` a standalone
-      function both call. Prefer (a) or (b) over leaving two copies of the loop.
-
-*(Separately: `InputParam.type` is `Literal["string", "number", "boolean"]`,*
-*but neither validation path checks that a caller's `params` value actually*
-*matches the declared type — a "number" param passed as a non-numeric string*
-*is accepted at validation time and only fails later, if at all, when*
-*`str(params[...])` gets typed into a form field. Minor, and arguably an*
-*acceptable MVP gap since every param in this build is `type="string"` in*
-*practice, but worth a one-line note in `REPORT.md`'s Artifact schema section*
-*if not fixed.)*
+- [x] Made `_validate_params` a standalone module-level function,
+      `validate_required_params(artifact, params) -> str | None`, in
+      `comp_use/replay/engine.py`. `ReplayEngine.run()` calls it;
+      `cli.py`'s `_run_replay` now imports and calls the exact same function
+      for its pre-browser check instead of reimplementing the loop — the
+      "skip launching Chromium on `validation_error`" behavior is preserved
+      (that's still `cli.py`'s job, calling it before the browser exists), but
+      there's now exactly one copy of the validation logic, not two.
+- [x] Added `test_validate_required_params_is_shared_between_cli_and_engine`
+      in `tests/test_replay_engine.py` — exists specifically so a future
+      change to validation logic can't land in only one of the two call
+      sites without a test noticing.
+- [x] Verified live: `replay --capability-name lookup_member --params "{}"` still
+      returns `validation_error` with the same detail message as before, before
+      any browser opens.
+- [x] Added the `InputParam.type`-not-validated gap as a documented "Known gap"
+      sentence in `REPORT.md`'s Artifact schema section, rather than leaving it
+      unstated.
 
 ---
 
@@ -1176,10 +1173,11 @@ the Determinism section's "every non-SUCCESS" wording implies. The Evidence
 walkthrough section already has this right; the Determinism section doesn't.
 
 **To do:**
-- [ ] Reword the Determinism & error handling section's claim to something like
-      "every non-`SUCCESS` outcome that reaches the browser" or "every outcome
-      except `validation_error`" — matching what the Evidence walkthrough
-      section (correctly) already says elsewhere in the same file.
+- [x] Reworded the Determinism & error handling section's claim to "every
+      outcome that actually reaches the browser," and added an explicit
+      sentence naming `validation_error` as the one outcome this can never
+      apply to and why — matching what the Evidence walkthrough section
+      (correctly) already said elsewhere in the same file.
 
 ---
 

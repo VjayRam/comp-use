@@ -58,6 +58,17 @@ Typed Pydantic models in `comp_use/schemas.py`. A capability is versioned JSON a
 - `input_schema` is **derived**, not inferred after the fact: each `type_text` /
   `select_option` during discovery carries a `value_source` of `goal_parameter` or
   `fixed`. `compile_artifact()` collects `goal_parameter` names into `input_schema`.
+  `validate_required_params()` (`comp_use/replay/engine.py`) is the single source
+  of truth for "does this `params` dict satisfy this artifact" — both
+  `ReplayEngine.run()` and `cli.py`'s `_run_replay` call the same function rather
+  than each checking `required`/`name in params` separately, so `cli.py`'s
+  pre-browser check (needed to skip launching Chromium on `validation_error`) and
+  the engine's own check can't drift apart. **Known gap:** `InputParam.type`
+  (`Literal["string", "number", "boolean"]`) is declared but never checked — a
+  `"number"` param passed as a non-numeric string is accepted at validation time
+  and only fails later, if at all, when it gets typed into a form field as a
+  string. Every param in this build is `type="string"` in practice, so this
+  hasn't bitten anything yet; flagged here rather than silently left unstated.
 - `output_schema` is derived the same way, from the other end: an `extract` step
   carries `extract_as`, and `compile_artifact()` collects those names into
   `output_schema`. `open_sub_account`/`transfer_funds` both end with an `extract`
@@ -98,12 +109,18 @@ attempt the same actions in the same order. Outcomes (`OutcomeType` in
    timeout), with no matching outcome pattern; result includes `step_index`,
    `expected`/`detail`, `observed`.
 
-Every non-`SUCCESS` outcome on both the replay and discovery CLI paths also gets a
-richer signal than the JSONL log alone: `comp_use/cli.py`'s `_run_replay` and
-`_run_discover` call `evidence.save_screenshot(surface.screenshot(), "final")`
+Every outcome that actually reaches the browser also gets a richer signal than
+the JSONL log alone, when it isn't `SUCCESS`: `comp_use/cli.py`'s `_run_replay`
+and `_run_discover` call `evidence.save_screenshot(surface.screenshot(), "final")`
 before closing the browser whenever the outcome isn't clean success, landing a
 `final.png` next to `log.jsonl` in the run's evidence directory (per §3.5's "at
-least one richer signal on failure"). A successful run doesn't get one — the
+least one richer signal on failure"). `validation_error` is the one outcome this
+can never apply to — `_run_replay`'s required-param check
+(`validate_required_params`, see Artifact schema above) runs and returns *before*
+`sync_playwright()` is ever entered, by design (see the Evidence walkthrough's
+`validation_error` entry — "the CLI skips launching Chromium entirely on this
+path"), so there is no `Surface` yet to screenshot. A successful run doesn't get
+one either — the
 signal is for debugging a failure, not documenting every run.
 
 Outcome patterns are checked **before every step is attempted**, not only after a
