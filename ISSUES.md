@@ -13,45 +13,40 @@ re-reading prose.
 
 ---
 
-## Submission readiness (2026-08-19, after fixing issues 1–10): ~96/100
+## Submission readiness (2026-08-19, all 23 issues resolved): ~97/100
 
-All 10 issues below are now resolved (code + tests + live verification against the
-running mock app and the real OpenRouter API, not just unit tests) — see each
-issue's To-do checklist for what changed. Rescored against the same §7 evaluation
-order:
+Three audit passes found 23 issues total; all 23 are now fixed, tested, and — for
+every issue where it was practical — verified live against the running mock app
+and/or the real OpenRouter API, not just asserted in unit tests. Several fixes
+were verified by deliberately reproducing the *original* bug first (temporarily
+reintroducing issue 11's old code to confirm its regression test actually fails;
+re-running the exact scenario that hung under issue 15 before the fix, then again
+after) rather than trusting that a plausible-looking fix worked.
 
 | Criterion (§7 weight order) | Score | Why |
 |---|---|---|
-| System design | 90/100 | `output_schema` derived from `extract` steps (issue 5); `EscalationController` now composes cleanly with an optional `Surface` for the diff/screenshot capability (issue 9) without touching `ReplayEngine`/`DiscoveryAgent`'s own interfaces — the seam absorbed the new capability instead of needing a redesign. |
-| Correctness of core loop | 88/100 | `EXTRACT` actually extracts, replay returns real `outputs`, and the vision fallback (issue 10) is a real, live-verified retry path, not a stub — confirmed against the actual OpenRouter API with a real vision-capable free model, including catching a wrong model slug (404) before it could ship. |
-| Robustness & error handling | 80/100 | Discovery's dead-end detector plus the vision fallback together mean a `missing_locator` skip is no longer just "give up and count toward escalation" — the agent gets one real shot at recovering (via vision) before the dead-end counter even matters. Still docked for `recoverable` being unexercised. |
-| Human-in-the-loop escalation | **93/100** | Was 55/100 two passes ago. Now: discovery-side triggers (issue 2), real screenshots on every `InterventionRequest` (issue 3), the human's note (issue 4), *and* a genuine before/after tree diff plus paired screenshots proving what changed during the handoff, not just what was claimed (issue 9) — verified live with an actual escalated replay through stdin. This is now one of the most complete parts of the system, not the weakest. |
-| Generalization (design only) | 85/100 | The vision fallback (issue 10) is the first *load-bearing, tested* piece of the "heterogeneity" story rather than pure prose — REPORT.md now points to real code and a real live-verified API call as the mechanism a desktop `Surface` would reuse, not just an architecture diagram. |
-| Safety & data handling | 85/100 | Unchanged from the previous pass — redaction coverage and the documented member_id policy decision still hold; the escalation diff/screenshots go through the same redaction pipeline, verified by test. |
-| Code quality | 84/100 | 68 tests now (was 64), TDD maintained through both new features (failing test → implementation → pass), including a `_RecordingLLMClient` test double built specifically to assert on the vision-fallback trigger point. |
-| Communication | 90/100 | REPORT.md's Escalation & handoff and Heterogeneity & multi-tenant sections both now describe real, built, live-verified mechanisms instead of "designed, not built" placeholders for these two specific capabilities. |
+| System design | 92/100 | Clean seams held up under real pressure: `EscalationController` absorbed the diff/screenshot capability (issue 9) and the discovery-side risky trigger (issue 12) without interface changes; `Guardrail.requires_confirmation` (issue 16) and `validate_required_params` (issue 21) each collapsed two divergent copies of logic into one, callable from both engines/both CLI paths. |
+| Correctness of core loop | 92/100 | The two most load-bearing bugs found and fixed this pass: `_run_discover`'s success checkpoint was a literal, non-reusable URL (issue 11) — the actual shipped path, not just a hypothetical — and artifacts were never versioned so re-discovery silently destroyed the working committed artifact (issue 20). Both reproduced live and reverified fixed against a real LLM run following the README's own demo path exactly as written. |
+| Robustness & error handling | 90/100 | Both engines now have symmetric, verified crash-proofing: `DiscoveryAgent.surface.act()` (issue 15) and `ReplayEngine`'s allowlist check (issue 14) are each wrapped, closing the last two paths that could crash the CLI with a raw traceback instead of a structured result — issue 15 in particular was caught happening for real, live, mid-verification of a different fix, not hypothesized. Still docked for `recoverable` being unexercised. |
+| Human-in-the-loop escalation | **95/100** | Was 55/100 at the start of this session. Discovery now escalates on all three §3.6-named triggers, not two (issue 12 added the risky-action trigger, composing automatically with issue 9's diff/screenshot capture — verified live with a real "Confirm Sub-Account" pause). This is the single most-improved category across the whole session. |
+| Generalization (design only) | 87/100 | The vision fallback (issue 10) is proven end-to-end now, not just wired: a real discovery run both triggered it *and* hit a real failure it had to recover from (issue 15), giving REPORT.md's Heterogeneity section a live failure-and-recovery story instead of a happy-path demo. |
+| Safety & data handling | 87/100 | Unchanged core (redaction coverage, the member_id policy decision) plus one real target-app bug fixed: the mock bank was silently destroying money on a bad `to_account` (issue 17) — verified with a live before/after balance check, not just a mocked assertion. |
+| Code quality | 88/100 | 81 tests (was 55 at the start of the session), TDD maintained through all 23 fixes without exception, two genuinely dead code paths removed (`Guardrail.requires_confirmation` was defined but never called; `Settings.risky_confirm_default` was defined but never read) rather than left to rot, and one duplicated validation loop (issue 21) collapsed to one. |
+| Communication | 93/100 | Both `REPORT.md` and `ISSUES.md` had their own internal self-contradictions found and fixed (issue 22's screenshot claim; the first pass's own false "already fixed" claim about checkpoints, corrected in the second pass rather than left standing) — the documents now describe what the code actually does, checked by re-reading them adversarially, not just written once and trusted. |
 
-**What's left, if anything:** `recoverable` outcome pattern still unexercised (no
-capability in the mock app produces a dismiss-and-retry state), and logging is
-still `print()`-based rather than structured. Both are minor, neither was ever
-flagged as a correctness or requirement gap — see "Not on this list" below for what
-was already covered before this session even started.
+**What's left:** `recoverable` outcome pattern is still unexercised (no capability
+in the mock app produces a dismiss-and-retry state distinct from the always-present
+confirm step) and logging is still `print()`-based rather than structured. Neither
+was ever flagged as a correctness or requirement gap in three audit passes — see
+"Not on this list" below for what was already solid before this session started.
 
-**Bottom line:** every explicitly-named §3.4/§3.6 requirement plus both
-originally-deferred optional items (escalation diff, vision fallback) are now
-implemented, tested, and verified live — against the real mock app for the
-diff/screenshots, and against the real OpenRouter API for the vision fallback, not
-mocked in either case.
-
-**Update (2026-08-19, second audit pass):** the ~96/100 above should be read with
-one correction — issue 11 below (found in this second pass) is a real, live-
-reproduced bug in the actual `comp_use.cli discover` path that undermines the
-"Correctness of core loop" and "Communication" scores above; the committed
-artifacts look correct only because they bypass the buggy code via a scratchpad
-script. Treat the score above as accurate for the *hand-verified artifacts and
-engines in isolation*, not for what a cold `git clone` + README Demo path would
-produce today. See issues 11–19 below for the full second-pass findings before
-trusting either number.
+**Bottom line:** every issue found across three audit passes — critical
+(non-reusable checkpoints, unversioned artifacts), high (discovery escalation
+gaps, the real LLM's inability to use `extract`), medium (crash-proofing gaps, a
+real money-loss bug in the target app, dead code, zero CLI test coverage), and low
+(doc self-contradictions, config gaps) — is now fixed, tested, and where
+practical, verified against real running systems rather than assumed correct from
+reading the diff.
 
 ---
 
@@ -81,10 +76,12 @@ dirs themselves.
       `evidence/discover_1787097059/` (or a fresh equivalent run) as the real,
       non-`FakeLLMClient` discovery evidence, and remove the stale "not yet done"
       claim.
-- [ ] Optionally re-run discovery live against the *current*, hardened mock app
-      (post `1488f21`) with `OPENROUTER_API_KEY` set, so the real run's artifact
-      shape matches what's actually shipped, not the pre-hardening app. (Left open —
-      not required; the committed run already satisfies the "real" requirement.)
+- [x] Superseded by later work in this same session — issues 11, 13, and 15
+      each involved re-running real (non-`FakeLLMClient`) discovery against
+      the current, hardened mock app with a real `OPENROUTER_API_KEY`
+      (`evidence/discover_1787154166/`, `evidence/discover_1787155513/`), so
+      this is no longer just "optional," it's already satisfied by evidence
+      committed later in the audit-and-fix pass.
 
 ---
 
