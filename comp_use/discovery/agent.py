@@ -20,7 +20,9 @@ def _optional_str(raw) -> str | None:
 
 
 _LOCATOR_ACTIONS = {ActionType.CLICK, ActionType.TYPE_TEXT, ActionType.SELECT_OPTION}
-_RISKY_TARGET_HINTS = ("transfer", "sub-account", "delete")
+# Match the control that actually commits an irreversible change (a "Confirm ..."
+# button), not navigation toward it - a link that just opens a form isn't risky.
+_RISKY_TARGET_HINTS = ("confirm", "delete")
 
 
 def _locator_from_decision(raw) -> Locator | None:

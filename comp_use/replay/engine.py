@@ -30,6 +30,14 @@ class ReplayEngine:
             return ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=validation_error)
 
         for index, step in enumerate(artifact.steps):
+            # The app may have already diverged onto a business/recoverable outcome
+            # page after a previous step (e.g. "insufficient funds" instead of the
+            # review screen a later recorded step expects). Detect that *before*
+            # blindly attempting a step whose target element may not exist.
+            outcome_result = self._match_outcome_pattern(artifact)
+            if outcome_result is not None:
+                return outcome_result
+
             if (
                 step.risk_tier == RiskTier.RISKY
                 and not confirm_risky
@@ -52,7 +60,19 @@ class ReplayEngine:
             target_url = step.target
             self.guardrail.check_allowlist(target_url or self.surface.current_url(), step.action.value)
 
-            self.surface.act(step.action, locator=step.locator, target=target_url, text=text)
+            try:
+                self.surface.act(step.action, locator=step.locator, target=target_url, text=text)
+            except Exception as exc:
+                outcome_result = self._match_outcome_pattern(artifact)
+                if outcome_result is not None:
+                    return outcome_result
+                return ReplayResult(
+                    outcome=OutcomeType.HARD_FAILURE,
+                    step_index=index,
+                    detail=str(exc),
+                    expected=f"{step.action.value} to succeed",
+                    observed=self.surface.current_url(),
+                )
             self.evidence_logger.log_event("replay_step", {"index": index, "action": step.action.value})
 
             if step.checkpoint is not None and not self.surface.check_checkpoint(step.checkpoint):

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Review Sub-Account</h1>
+<table>
+<tr><td>Account Type</td><td>{{ account_type }}</td></tr>
+<tr><td>Deposit Amount</td><td>{{ "%.2f"|format(deposit_amount) }}</td></tr>
+</table>
+<form method="post" action="/member/{{ member_id }}/sub-account/review/{{ token }}/confirm" style="display:inline">
+<input type="submit" value="Confirm Sub-Account">
+</form>
+<a href="/member/{{ member_id }}/sub-account/new">Cancel</a>
+{% endblock %}

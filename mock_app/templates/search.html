@@ -2,9 +2,16 @@
 {% block content %}
 <form method="get" action="/member/search">
 <table>
-<tr><td>Member ID</td><td><input type="text" name="member_id" aria-label="Member ID"></td></tr>
+<tr><td><label for="member_id">Member ID</label></td><td><input type="text" id="member_id" name="member_id"></td></tr>
 <tr><td colspan="2"><input type="submit" value="Search"></td></tr>
 </table>
 </form>
 {% if not_found %}<p>No member found with that ID.</p>{% endif %}
+<fieldset disabled>
+<legend>Advanced Search (disabled)</legend>
+<table>
+<tr><td><label for="ssn_last4">SSN Last 4</label></td><td><input type="text" id="ssn_last4" name="ssn_last4"></td></tr>
+<tr><td colspan="2"><input type="submit" value="Advanced Search"></td></tr>
+</table>
+</fieldset>
 {% endblock %}

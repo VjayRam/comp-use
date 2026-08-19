@@ -18,9 +18,26 @@ talks to an LLM.
 | Escalation | `control` state + operator handoff | `comp_use/escalation/controller.py`, `comp_use/escalation/transport.py` |
 
 Perception and action go through `Surface` (`comp_use/surface.py`): accessibility-tree
-`observe()`, role/text/CSS `act()`, checkpoint checks, screenshot. `PlaywrightSurface`
-is the built implementation. CLI wiring is `comp_use/cli.py`; settings in
-`comp_use/config.py`.
+`observe()` (via Playwright's `aria_snapshot()`), role/text/CSS `act()`, checkpoint
+checks, screenshot. `PlaywrightSurface` is the built implementation. CLI wiring is
+`comp_use/cli.py`; settings in `comp_use/config.py`.
+
+**The mock app is deliberately hostile, per §4's "intentionally hostile surface"
+option.** `mock_app/templates/` has no test IDs anywhere; every page nests a layout
+table inside a content table plus an unrelated decoy "Recent Activity" table and a
+literal `<iframe>` widget (both inert noise `Surface` never needs to enter, since
+Playwright's page-level locators only see the top frame — a live demonstration that
+role/text locators are naturally frame-scoped, not that we built frame-aware
+resolution); form fields use plain `<label for>` association instead of `aria-label`;
+the search page carries a disabled "Advanced Search" panel with its own,
+similarly-named "Advanced Search" button so a naive substring-matched locator for
+"Search" resolves ambiguously. That last one caught a real bug: Playwright's
+`get_by_role(name=...)` substring-matches by default, so `_resolve()` in
+`comp_use/surface.py` now passes `exact=True` — otherwise "Search" matches "Advanced
+Search" too and replay throws a strict-mode violation instead of clicking the right
+control. Both risky flows (open a sub-account, transfer funds) also require an extra
+"Are you sure?" review/confirm step before committing, which is what
+`OutcomePattern`/mid-sequence detection below exists to handle cleanly.
 
 **Assumption: the caller picks discover vs. replay, by name.** This system does not
 infer intent from a natural-language goal and decide for itself whether to discover
@@ -64,8 +81,20 @@ attempt the same actions in the same order. Outcomes (`OutcomeType` in
 4. **`recoverable`** — same `outcome_patterns` mechanism, reserved for
    dismiss-and-retry conditions; no capability in this build declares one (nothing in
    the mock app produces a dismissable interstitial), so it's wired but unexercised.
-5. **`hard_failure`** — checkpoint miss with no matching outcome pattern; result
-   includes `step_index`, `expected`, `observed`.
+5. **`hard_failure`** — checkpoint miss, or an action that raised (missing element,
+   timeout), with no matching outcome pattern; result includes `step_index`,
+   `expected`/`detail`, `observed`.
+
+Outcome patterns are checked **before every step is attempted**, not only after a
+checkpoint miss — the app can diverge onto a business-outcome page mid-sequence
+(e.g. "insufficient funds" appears after step 7 of `transfer_funds`, but step 8 is
+still "click Confirm Transfer," a control that page never renders). Blindly attempting
+step 8 timed out with a raw Playwright exception the first time this was tested for
+real; `ReplayEngine.run` now re-checks `outcome_patterns` at the top of every loop
+iteration and also wraps `surface.act` in try/except, re-checking outcome patterns
+before falling back to `hard_failure` with the exception text as `detail`. No action
+in this system is ever allowed to crash the CLI with a raw traceback — everything
+resolves to one of the five `ReplayResult` outcomes.
 
 ## Heterogeneity & multi-tenant
 
@@ -99,7 +128,13 @@ Cuts.
   `http://localhost:5000`; `allowed_action_types` is the five UI actions. Enforced in
   `Guardrail.check_allowlist` on discovery and replay.
 - **Risk tiers** — `requires_confirmation(step, confirm_risky)`; CLI
-  `--confirm-risky` skips the pause.
+  `--confirm-risky` skips the pause. `DiscoveryAgent._classify_risk` flags a click
+  risky when its control name contains "confirm" or "delete" — i.e. the control that
+  actually commits an irreversible change, not the link/button that merely navigates
+  toward it. (An earlier version matched "transfer"/"sub-account" against the
+  navigation link instead of the commit button — backwards, since the link is fully
+  reversible and the commit isn't. Adding the confirm-interstitial step surfaced
+  this and it's now fixed.)
 - **Redaction** — one function, `Guardrail.redact`, used before LLM-bound text would
   be logged and before JSONL persistence (`comp_use/evidence.py` walks strings in the
   event payload). Patterns: 9–12 digit IDs and `$1,234.56`-style amounts.
@@ -120,67 +155,73 @@ Unchanged from spec §11:
 - Agent-facing NL-to-params product in front of replay — out of scope; replay takes
   JSON params.
 
-## Evidence walkthrough (captured 2026-08-17, updated 2026-08-18)
+## Evidence walkthrough (captured 2026-08-18, against the hardened mock app)
 
-These runs used the live mock app at `http://localhost:5000` and Playwright
-Chromium. Replay used `ReplayEngine` with **no LLM** in every case below.
+All runs below are against the live mock app at `http://localhost:5000` (hostile
+markup: nested/decoy tables, an iframe widget, no `aria-label`, a disabled
+"Advanced Search" decoy, confirm-interstitial steps on both risky flows — see
+Architecture) and real Playwright Chromium. Discovery evidence used
+`FakeLLMClient` (deterministic script, same tool-call shape as `OpenRouterClient`);
+every replay below used `ReplayEngine` with **no LLM**.
 
-### 1. Discovery — `lookup_member`
+### Discovery (all three capabilities)
 
-- Goal: *Look up member 12345 and view their account balances*
-- Evidence: `evidence/discover_1787012923/log.jsonl` + `final.png`
-- Outcome: `succeeded=True`, landed on `http://localhost:5000/member/12345`
-- Artifact: `artifacts/lookup_member/v1.json` — `input_schema: [member_id]`, steps
-  navigate → type_text (goal_parameter `member_id`) → click Search, success
-  checkpoint `url_matches` `member/12345`
+- `evidence/discover_1787105308_lookup_member/log.jsonl` →
+  `artifacts/lookup_member/v1.json`
+- `evidence/discover_1787105310_open_sub_account/log.jsonl` →
+  `artifacts/open_sub_account/v1.json` (includes the "Confirm Sub-Account" review
+  step)
+- `evidence/discover_1787105313_transfer_funds/log.jsonl` →
+  `artifacts/transfer_funds/v1.json` (includes the "Confirm Transfer" review step)
 
-### 2. Replay — success
+All three succeeded (`trace.succeeded=True`) end to end through the label-based
+locators, the decoy panel, and the review/confirm interstitial.
 
-- Command equivalent: `python -m comp_use.cli replay --capability-name lookup_member --params "{\"member_id\": \"12345\"}"`
-- Evidence: `evidence/replay_1787012925/log.jsonl` + `final.png`
-- Result: `{"outcome": "success"}` after navigate, type_text, click
+### Replay — success
 
-### 3. Replay — validation_error (no browser)
+- `lookup_member`, `member_id=67890` (a different member than any discovery used —
+  confirms the artifact generalizes): `evidence/replay_1787105466/log.jsonl` →
+  `{"outcome": "success"}`
+- `open_sub_account`, `deposit_amount=250`:
+  `evidence/replay_1787105470/log.jsonl` → `{"outcome": "success"}`
+- `transfer_funds`, `amount=50`: `evidence/replay_1787105473/log.jsonl` →
+  `{"outcome": "success"}`
 
-- Command: `python -m comp_use.cli replay --capability-name lookup_member --params "{}"`
-- Evidence: `evidence/replay_1787012926_validation/log.jsonl`
-- Result: `{"outcome": "validation_error", "detail": "missing required param 'member_id'"}`
-- The engine returns before any `surface.act`; the CLI also skips launching Chromium
-  on this path.
+### Replay — `business_outcome`
 
-### 4. Replay — `business_outcome` (insufficient funds)
+- `lookup_member`, `member_id=00000` (no such member):
+  `evidence/replay_1787105468/log.jsonl` →
+  `{"outcome": "business_outcome", "detail": "no_such_member"}`
+- `transfer_funds`, `amount=999999` (exceeds balance):
+  `evidence/replay_1787105611/log.jsonl` →
+  `{"outcome": "business_outcome", "detail": "insufficient_funds"}` — this is the
+  mid-sequence case: the app diverges onto the "Insufficient funds" page after step
+  7 of 9, so the recorded step 8 ("click Confirm Transfer") is never attempted; see
+  Determinism & error handling.
 
-- Command: `python -m comp_use.cli replay --capability-name transfer_funds --confirm-risky --params "{\"member_id\":\"12345\",\"from_account\":\"ACC-001\",\"to_account\":\"ACC-002\",\"amount\":\"999999\"}"`
-- Evidence: `evidence/replay_1787104111/log.jsonl`
-- Result: `{"outcome": "business_outcome", "detail": "insufficient_funds"}`
-- The mock app renders "Insufficient funds for this transfer." on the transfer form
-  instead of redirecting to the confirmation page, so the final `success_checkpoint`
-  (element_visible, heading "Confirmation") doesn't match. Before falling back to
-  `hard_failure`, the engine checks `artifact.outcome_patterns` — `transfer_funds`
-  declares one (`text_present`, "Insufficient funds for this transfer." →
-  `business_outcome`) — and it matches. This is the concrete demonstration of the
-  business-outcome-vs-failure distinction the taxonomy exists for.
+### Replay — `hard_failure`
 
-### 5. Replay — `success` (transfer_funds, same artifact, valid amount)
+- `open_sub_account`, `member_id=00000` (nonexistent member, no declared outcome
+  pattern for this capability): `evidence/replay_1787105625/log.jsonl` →
+  `{"outcome": "hard_failure", "step_index": 3, "detail": "Locator.click: Timeout
+  30000ms exceeded...", "observed": "http://localhost:5000/member/search?member_id=00000"}`
+  — a genuine automation failure reported with enough detail to debug, distinct from
+  the business outcomes above.
 
-- Command: same as above with `"amount": "50"`
-- Evidence: `evidence/replay_1787104113/log.jsonl`
-- Result: `{"outcome": "success"}`
-- Confirms `success_checkpoint` (element_visible, heading "Confirmation") is
-  reachable on the happy path too — `transfer_funds`'s checkpoint originally embedded
-  the literal transaction ID from the discovery run (`TXN-000001`) and could never
-  match again on a second replay; it was changed to the generic confirmation-heading
-  checkpoint shared by both write flows so the artifact is actually reusable across
-  runs, not just replayable once.
+### Replay — `validation_error` (no browser)
 
-### 6. Replay — `success` (open_sub_account, same checkpoint fix)
+- `python -m comp_use.cli replay --capability-name lookup_member --params "{}"` →
+  `{"outcome": "validation_error", "detail": "missing required param 'member_id'"}`,
+  returned before any `surface.act` — the CLI skips launching Chromium entirely on
+  this path.
 
-- Command: `python -m comp_use.cli replay --capability-name open_sub_account --confirm-risky --params "{\"member_id\":\"12345\",\"account_type\":\"Savings\",\"deposit_amount\":\"250\"}"`
-- Evidence: `evidence/replay_1787104127/log.jsonl`
-- Result: `{"outcome": "success"}` — same literal-checkpoint issue, same fix.
+All five `OutcomeType` values reachable by replay are demonstrated above except
+`recoverable` (see Determinism & error handling — no capability declares one, since
+nothing in the mock app produces a dismissable interstitial distinct from the
+always-present confirm step).
 
-To re-run **live** OpenRouter discovery, set `OPENROUTER_API_KEY` and follow README
-Demo path. (Real OpenRouter-driven discovery runs against a free-tier model also
-exist locally under `evidence/discover_*` from development — not yet committed;
-committing a real discovery run's evidence, rather than only the `FakeLLMClient` demo
-in entries 1–3 above, is a known open item, not yet done.)
+To re-run **live** OpenRouter discovery instead of `FakeLLMClient`, set
+`OPENROUTER_API_KEY` and follow README Demo path. Real OpenRouter-driven discovery
+runs against a free-tier model also exist locally under `evidence/discover_*` from
+earlier development (not committed) — committing one as the canonical "real LLM"
+evidence, rather than the `FakeLLMClient` runs above, is a known open item.

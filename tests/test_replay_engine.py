@@ -11,14 +11,25 @@ from comp_use.schemas import (
 
 
 class FakeSurface:
-    def __init__(self, checkpoint_result=True, fail_on_step=None, matching_checkpoint_text=None):
+    def __init__(
+        self,
+        checkpoint_result=True,
+        fail_on_step=None,
+        matching_checkpoint_text=None,
+        outcome_visible_after_step=None,
+        raise_on_step=None,
+    ):
         self.acted = []
         self.checkpoint_result = checkpoint_result
         self.fail_on_step = fail_on_step
         self.matching_checkpoint_text = matching_checkpoint_text
+        self.outcome_visible_after_step = outcome_visible_after_step
+        self.raise_on_step = raise_on_step
         self.url = "http://localhost:5000/member/search"
 
     def act(self, action, locator, target, text):
+        if self.raise_on_step is not None and len(self.acted) == self.raise_on_step:
+            raise TimeoutError(f"element not found for step {len(self.acted)}")
         self.acted.append((action, target, text))
         if action == ActionType.NAVIGATE:
             self.url = target
@@ -29,6 +40,8 @@ class FakeSurface:
 
     def check_checkpoint(self, checkpoint):
         if checkpoint.type == CheckpointType.TEXT_PRESENT and self.matching_checkpoint_text is not None:
+            if self.outcome_visible_after_step is not None and len(self.acted) <= self.outcome_visible_after_step:
+                return False
             return checkpoint.text == self.matching_checkpoint_text
         if self.fail_on_step is not None and len(self.acted) - 1 == self.fail_on_step:
             return False
@@ -144,6 +157,50 @@ def test_hard_failure_still_returned_when_no_outcome_pattern_matches(tmp_path):
     result = engine.run(artifact, params={"member_id": "12345"})
 
     assert result.outcome == OutcomeType.HARD_FAILURE
+
+
+def test_business_outcome_detected_mid_sequence_before_next_step_is_attempted(tmp_path):
+    # Simulates: the app diverges onto a business-outcome page after step 3, and the
+    # artifact's recorded step 4+ (e.g. a "Confirm" button on a page that was never
+    # reached) must not be blindly attempted.
+    artifact = _make_artifact()
+    artifact.steps.append(
+        Step(
+            action=ActionType.CLICK,
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Confirm"}),
+            risk_tier=RiskTier.SAFE,
+        )
+    )
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Insufficient funds for this transfer."),
+            detail="insufficient_funds",
+        )
+    ]
+    surface = FakeSurface(
+        matching_checkpoint_text="Insufficient funds for this transfer.",
+        outcome_visible_after_step=1,  # becomes visible only after the 2nd acted step
+    )
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.BUSINESS_OUTCOME
+    assert result.detail == "insufficient_funds"
+    # the extra "Confirm" step must never have been attempted
+    assert len(surface.acted) == 2
+
+
+def test_action_exception_returns_hard_failure_instead_of_crashing(tmp_path):
+    surface = FakeSurface(raise_on_step=1)
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(_make_artifact(), params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
+    assert result.step_index == 1
+    assert "element not found" in (result.detail or "")
 
 
 def test_goal_parameter_step_still_prefers_caller_param_over_recorded_value(tmp_path):

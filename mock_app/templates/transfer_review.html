@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Review Transfer</h1>
+<table>
+<tr><td>From Account</td><td>{{ from_account }}</td></tr>
+<tr><td>To Account</td><td>{{ to_account }}</td></tr>
+<tr><td>Amount</td><td>{{ "%.2f"|format(amount) }}</td></tr>
+</table>
+<form method="post" action="/member/{{ member_id }}/transfer/review/{{ token }}/confirm" style="display:inline">
+<input type="submit" value="Confirm Transfer">
+</form>
+<a href="/member/{{ member_id }}/transfer">Cancel</a>
+{% endblock %}

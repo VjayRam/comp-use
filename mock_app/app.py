@@ -2,6 +2,7 @@ from flask import Flask, redirect, render_template, request, url_for
 
 from mock_app.data import (
     MEMBERS,
+    new_review_token,
     next_confirmation_number,
     next_sub_account_id,
     next_txn_id,
@@ -10,6 +11,10 @@ from mock_app.data import (
 
 def create_app() -> Flask:
     app = Flask(__name__)
+
+    @app.get("/widgets/ticker")
+    def widgets_ticker():
+        return "<html><body><p>Savings APY: 0.10% | 12mo CD: 1.25%</p></body></html>"
 
     @app.get("/member/search")
     def member_search():
@@ -26,6 +31,7 @@ def create_app() -> Flask:
         return render_template("detail.html", member=member, member_id=member_id)
 
     _confirmations: dict[str, dict] = {}
+    _pending_sub_accounts: dict[str, dict] = {}
 
     @app.get("/member/<member_id>/sub-account/new")
     def new_sub_account_form(member_id: str):
@@ -44,15 +50,42 @@ def create_app() -> Flask:
                 member_id=member_id,
                 error="Deposit amount must be greater than zero.",
             )
+        token = new_review_token()
+        _pending_sub_accounts[token] = {
+            "account_type": account_type,
+            "deposit_amount": deposit_amount,
+        }
+        return redirect(
+            url_for("sub_account_review", member_id=member_id, token=token)
+        )
+
+    @app.get("/member/<member_id>/sub-account/review/<token>")
+    def sub_account_review(member_id: str, token: str):
+        pending = _pending_sub_accounts[token]
+        return render_template(
+            "sub_account_review.html",
+            member_id=member_id,
+            token=token,
+            account_type=pending["account_type"],
+            deposit_amount=pending["deposit_amount"],
+        )
+
+    @app.post("/member/<member_id>/sub-account/review/<token>/confirm")
+    def sub_account_review_confirm(member_id: str, token: str):
+        pending = _pending_sub_accounts.pop(token)
         sub_account_id = next_sub_account_id()
         member = MEMBERS[member_id]
         member["accounts"].append(
-            {"id": sub_account_id, "type": account_type, "balance": deposit_amount}
+            {
+                "id": sub_account_id,
+                "type": pending["account_type"],
+                "balance": pending["deposit_amount"],
+            }
         )
         confirmation_number = next_confirmation_number()
         _confirmations[sub_account_id] = {
             "confirmation_number": confirmation_number,
-            "deposit_amount": deposit_amount,
+            "deposit_amount": pending["deposit_amount"],
         }
         return redirect(
             url_for(
@@ -73,6 +106,7 @@ def create_app() -> Flask:
         )
 
     _transfers: dict[str, dict] = {}
+    _pending_transfers: dict[str, dict] = {}
 
     def _find_account(member_id: str, account_id: str) -> dict | None:
         for acc in MEMBERS[member_id]["accounts"]:
@@ -105,13 +139,37 @@ def create_app() -> Flask:
                 "transfer.html", member_id=member_id, insufficient_funds=True
             )
 
-        from_account["balance"] -= amount
-        to_account = _find_account(member_id, to_account_id)
+        token = new_review_token()
+        _pending_transfers[token] = {
+            "from_account": from_account_id,
+            "to_account": to_account_id,
+            "amount": amount,
+        }
+        return redirect(url_for("transfer_review", member_id=member_id, token=token))
+
+    @app.get("/member/<member_id>/transfer/review/<token>")
+    def transfer_review(member_id: str, token: str):
+        pending = _pending_transfers[token]
+        return render_template(
+            "transfer_review.html",
+            member_id=member_id,
+            token=token,
+            from_account=pending["from_account"],
+            to_account=pending["to_account"],
+            amount=pending["amount"],
+        )
+
+    @app.post("/member/<member_id>/transfer/review/<token>/confirm")
+    def transfer_review_confirm(member_id: str, token: str):
+        pending = _pending_transfers.pop(token)
+        from_account = _find_account(member_id, pending["from_account"])
+        to_account = _find_account(member_id, pending["to_account"])
+        from_account["balance"] -= pending["amount"]
         if to_account is not None:
-            to_account["balance"] += amount
+            to_account["balance"] += pending["amount"]
 
         txn_id = next_txn_id()
-        _transfers[txn_id] = {"amount": amount}
+        _transfers[txn_id] = {"amount": pending["amount"]}
         return redirect(
             url_for("transfer_confirmation", member_id=member_id, txn_id=txn_id)
         )

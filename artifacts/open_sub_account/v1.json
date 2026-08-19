@@ -5,7 +5,7 @@
     "app": "mock_bank",
     "base_url": "http://localhost:5000"
   },
-  "description": "For member 12345 open a new Savings sub-account with deposit amount 500",
+  "description": "Open a new sub-account for this member and reach the confirmation screen",
   "input_schema": [
     {
       "name": "member_id",
@@ -51,7 +51,7 @@
         "param_type": "string",
         "reason": null
       },
-      "value": null,
+      "value": "12345",
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -87,7 +87,7 @@
       "value_source": null,
       "value": null,
       "extract_as": null,
-      "risk_tier": "risky",
+      "risk_tier": "safe",
       "checkpoint": null
     },
     {
@@ -107,7 +107,7 @@
         "param_type": "string",
         "reason": null
       },
-      "value": null,
+      "value": "500",
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -128,6 +128,23 @@
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "button",
+          "name": "Confirm Sub-Account"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "risky",
+      "checkpoint": null
     }
   ],
   "success_checkpoint": {
@@ -144,5 +161,5 @@
     "url_pattern": null
   },
   "outcome_patterns": [],
-  "created_from_run_id": "discover_1787097189"
+  "created_from_run_id": "discover_1787105310_open_sub_account"
 }

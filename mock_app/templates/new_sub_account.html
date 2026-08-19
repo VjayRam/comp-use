@@ -3,13 +3,13 @@
 <h1>Open Sub-Account</h1>
 <form method="post" action="/member/{{ member_id }}/sub-account/new">
 <table>
-<tr><td>Account Type</td><td>
-  <select name="account_type" aria-label="Account Type">
+<tr><td><label for="account_type">Account Type</label></td><td>
+  <select id="account_type" name="account_type">
     <option value="Savings">Savings</option>
     <option value="Checking">Checking</option>
   </select>
 </td></tr>
-<tr><td>Deposit Amount</td><td><input type="text" name="deposit_amount" aria-label="Deposit Amount"></td></tr>
+<tr><td><label for="deposit_amount">Deposit Amount</label></td><td><input type="text" id="deposit_amount" name="deposit_amount"></td></tr>
 <tr><td colspan="2"><input type="submit" value="Open Account"></td></tr>
 </table>
 </form>

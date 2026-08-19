@@ -1,3 +1,10 @@
+import uuid
+
+
+def new_review_token() -> str:
+    return uuid.uuid4().hex[:8]
+
+
 MEMBERS: dict[str, dict] = {
     "12345": {
         "name": "Jane Doe",

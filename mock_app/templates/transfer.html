@@ -3,9 +3,9 @@
 <h1>Transfer Funds</h1>
 <form method="post" action="/member/{{ member_id }}/transfer">
 <table>
-<tr><td>From Account</td><td><input type="text" name="from_account" aria-label="From Account"></td></tr>
-<tr><td>To Account</td><td><input type="text" name="to_account" aria-label="To Account"></td></tr>
-<tr><td>Amount</td><td><input type="text" name="amount" aria-label="Amount"></td></tr>
+<tr><td><label for="from_account">From Account</label></td><td><input type="text" id="from_account" name="from_account"></td></tr>
+<tr><td><label for="to_account">To Account</label></td><td><input type="text" id="to_account" name="to_account"></td></tr>
+<tr><td><label for="amount">Amount</label></td><td><input type="text" id="amount" name="amount"></td></tr>
 <tr><td colspan="2"><input type="submit" value="Transfer"></td></tr>
 </table>
 </form>

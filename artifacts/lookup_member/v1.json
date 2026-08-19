@@ -22,6 +22,7 @@
       "target": "http://localhost:5000/member/search",
       "locator": null,
       "value_source": null,
+      "value": null,
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -43,6 +44,7 @@
         "param_type": "string",
         "reason": null
       },
+      "value": "12345",
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -59,16 +61,36 @@
         "fallback": null
       },
       "value_source": null,
+      "value": null,
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
     }
   ],
   "success_checkpoint": {
-    "type": "url_matches",
-    "locator": null,
+    "type": "element_visible",
+    "locator": {
+      "strategy": "role",
+      "value": {
+        "role": "heading",
+        "name": "Member Detail"
+      },
+      "fallback": null
+    },
     "text": null,
-    "url_pattern": "member/12345"
+    "url_pattern": null
   },
-  "created_from_run_id": "discover_1787097059"
+  "outcome_patterns": [
+    {
+      "outcome": "business_outcome",
+      "checkpoint": {
+        "type": "text_present",
+        "locator": null,
+        "text": "No member found with that ID.",
+        "url_pattern": null
+      },
+      "detail": "no_such_member"
+    }
+  ],
+  "created_from_run_id": "discover_1787105308_lookup_member"
 }

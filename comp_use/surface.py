@@ -20,7 +20,7 @@ def _resolve(page: Page, locator: Locator):
         role = locator.value["role"]
         name = locator.value.get("name")
         if name:
-            return page.get_by_role(role, name=name)
+            return page.get_by_role(role, name=name, exact=True)
         return page.get_by_role(role)
     if locator.strategy == LocatorStrategy.TEXT:
         return page.get_by_text(locator.value["text"])
@@ -51,8 +51,8 @@ class PlaywrightSurface(Surface):
         self.page = page
 
     def observe(self) -> ObservedState:
-        snapshot = self.page.accessibility.snapshot()
-        return ObservedState(accessibility_tree=str(snapshot), url=self.page.url)
+        snapshot = self.page.locator("body").aria_snapshot()
+        return ObservedState(accessibility_tree=snapshot, url=self.page.url)
 
     def act(self, action: ActionType, locator: Locator | None, target: str | None, text: str | None) -> None:
         if action == ActionType.NAVIGATE:
