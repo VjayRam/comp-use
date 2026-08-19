@@ -198,7 +198,24 @@ class DiscoveryAgent:
             if risk_tier == RiskTier.RISKY and not self.confirm_risky and self.escalation is not None:
                 self._escalate(goal, step_index, f"step {step_index} is risk_tier=risky and confirm_risky is False")
 
-            self.surface.act(action, locator=locator, target=target, text=text)
+            try:
+                self.surface.act(action, locator=locator, target=target, text=text)
+            except Exception as exc:
+                print(f"[discover] action failed: {action.value} raised {exc}", flush=True)
+                history.append({**decision, "error": f"action failed: {exc}"})
+                self.evidence_logger.log_event(
+                    "skipped_decision", {"reason": "action_failed", "decision": decision, "error": str(exc)}
+                )
+                # A locator that looked valid but didn't actually resolve is the same
+                # underlying problem the vision fallback exists for - give the model a
+                # screenshot on the very next attempt, same as a missing_locator skip.
+                needs_vision_fallback = True
+                consecutive_skips += 1
+                if consecutive_skips >= _DEAD_END_THRESHOLD:
+                    self._escalate(goal, step_index, f"dead_end: {consecutive_skips} consecutive skipped/invalid decisions")
+                    consecutive_skips = 0
+                continue
+
             # Only persist the literal text for steps that AREN'T a goal_parameter -
             # a goal_parameter's discovery-time example (a real member ID, account
             # number, amount, ...) has no business being baked into the artifact;

@@ -1,7 +1,7 @@
 from unittest.mock import patch, MagicMock
 
 from comp_use.config import load_settings
-from comp_use.llm_client import FakeLLMClient, OpenRouterClient
+from comp_use.llm_client import _SYSTEM_PROMPT, _TOOL_SCHEMA, FakeLLMClient, OpenRouterClient
 
 
 def test_fake_llm_client_returns_scripted_actions_in_order():
@@ -76,6 +76,19 @@ def test_openrouter_client_parses_json_content_without_tool_calls(mock_post):
     )
     assert result["action"] == "type_text"
     assert result["locator"]["strategy"] == "role"
+
+
+def test_tool_schema_declares_extract_as():
+    properties = _TOOL_SCHEMA["function"]["parameters"]["properties"]
+    assert "extract_as" in properties
+    assert "extract" in properties["action"]["enum"]
+
+
+def test_system_prompt_explains_and_demonstrates_extract():
+    assert "extract" in _SYSTEM_PROMPT
+    assert "extract_as" in _SYSTEM_PROMPT
+    # a worked example, not just a mention in prose - mirrors how type_text/click/finish are taught
+    assert '"action":"extract"' in _SYSTEM_PROMPT
 
 
 @patch("comp_use.llm_client.requests.post")

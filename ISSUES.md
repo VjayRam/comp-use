@@ -727,16 +727,31 @@ it would need to guess both the field name and its purpose from the bare enum
 value `"extract"` alone, with zero worked example to pattern-match against.
 
 **To do:**
-- [ ] Add `extract_as` to `_TOOL_SCHEMA`'s declared properties.
-- [ ] Add an `extract` example and a one-line explanation to `_SYSTEM_PROMPT`
-      (mirroring the existing `type_text`/`click`/`finish` examples), e.g.
-      instructing the model to emit `extract` with `extract_as` set to a
-      snake_case name when it reaches a confirmation/result page with a value
-      worth returning to the caller.
-- [ ] Re-run a real (non-`FakeLLMClient`) discovery for `open_sub_account` or
-      `transfer_funds` after the prompt fix and confirm the model actually
-      emits a usable `extract` step — the honest test of whether this fix
-      worked, not just that the schema now accepts the field.
+- [x] Add `extract_as` to `_TOOL_SCHEMA`'s declared properties, with a
+      description explaining when to set it.
+- [x] Add an `extract` example and rule to `_SYSTEM_PROMPT` (mirroring the
+      existing `type_text`/`click`/`finish` examples): a worked example using a
+      CSS `td:text-is('...') + td` locator (chosen deliberately — the example
+      has to point at the *value* cell, not its label, or the model would just
+      learn to extract the label text back), plus a rule that `extract`
+      requires `extract_as`.
+- [x] Add tests confirming the schema/prompt actually declare this, not just
+      that nothing crashes: `test_tool_schema_declares_extract_as`,
+      `test_system_prompt_explains_and_demonstrates_extract` in
+      `tests/test_llm_client.py`.
+- [x] Re-ran a real (non-`FakeLLMClient`) discovery for `open_sub_account`
+      after the prompt fix — the honest test, not just that the schema now
+      accepts the field. **It worked**: the model's 7th decision was
+      `{"action": "extract", "locator": {"strategy": "role", "value": {"role":
+      "text", "name": "<confirmation number>"}}, "extract_as": "<redacted>",
+      "done": false}` — spontaneously, unprompted by any scripted fake, right
+      after clicking "Confirm Sub-Account." The model chose an invalid ARIA
+      role (`"text"` isn't a real role Playwright's `get_by_role` recognizes),
+      which caused the run to hang rather than fail cleanly — **this is a live,
+      unstaged reproduction of issue 15** (`surface.act()` isn't wrapped in
+      try/except in `DiscoveryAgent`, so a bad locator at action-time has
+      nowhere to go but hang/crash instead of a structured skip). Fixed
+      together with issue 15, see that entry.
 
 ---
 
@@ -807,13 +822,34 @@ with a raw traceback — no escalation, no structured "stuck" outcome, no
 `RunTrace` returned at all.
 
 **To do:**
-- [ ] Wrap the `self.surface.act(...)` call in `DiscoveryAgent.run()` in
-      try/except. On failure, treat it like any other skip (log
-      `skipped_decision` with reason `action_failed`, count toward
-      `consecutive_skips`/dead-end escalation, optionally trigger the vision
-      fallback immediately rather than waiting for the next `missing_locator`).
-- [ ] Add a test: a `FakeSurface.act()` that raises on a given call doesn't
-      crash `agent.run()`; the run continues or escalates instead.
+- [x] Wrap the `self.surface.act(...)` call in `DiscoveryAgent.run()` in
+      try/except. On failure, log `skipped_decision` with reason
+      `action_failed` (and the exception text), count toward
+      `consecutive_skips`/dead-end escalation, and trigger the vision fallback
+      immediately (`needs_vision_fallback = True`) rather than waiting for a
+      separate `missing_locator` skip — a locator that resolved to nothing at
+      action-time is the same underlying problem the vision fallback exists for.
+- [x] Add a test: `test_agent_action_failure_does_not_crash_and_is_recorded` in
+      `tests/test_discovery_agent.py` — a `FakeSurface.act()` that raises on a
+      given call doesn't crash `agent.run()`; the run continues to `finish`
+      instead, and the failed step is never recorded in `trace.steps`.
+- [x] **Found and fixed from a live, unstaged failure, not a hypothetical one.**
+      While verifying issue 13's fix, a real discovery run for `open_sub_account`
+      had the model emit `{"action": "extract", "locator": {"role": "text",
+      "name": "CONF-000002"}, ...}` — `"text"` isn't a real ARIA role, so
+      `get_by_role("text", ...)` never resolves. Before this fix, that hung the
+      whole process for the full Playwright default timeout with no way out
+      (reproduced: the run had to be killed after 2 minutes). After this fix,
+      re-running the identical scenario: the action still fails after
+      Playwright's 30s timeout (expected — a genuinely bad locator still takes
+      time to time out), but is now caught, logged
+      (`"[discover] action failed: extract raised Locator.text_content: Timeout
+      30000ms exceeded..."`), and — because `needs_vision_fallback` is set —
+      the *next* call automatically routed to the vision model
+      (`google/gemma-4-26b-a4b-it:free`, confirmed in the log), which then
+      chose to `finish`. No crash, no hang past the one timeout, no manual
+      intervention needed. This run also incidentally re-confirms issue 10's
+      vision fallback triggering from a real failure, not just a mocked one.
 
 ---
 

@@ -17,6 +17,11 @@ _TOOL_SCHEMA = {
                 "target": {"type": ["string", "null"]},
                 "text": {"type": ["string", "null"]},
                 "value_source": {"type": ["object", "null"]},
+                "extract_as": {
+                    "type": ["string", "null"],
+                    "description": "Only for action=extract: a short snake_case name for the value being "
+                    "read off the page (e.g. 'confirmation_number', 'txn_id'), so the caller can retrieve it later.",
+                },
                 "done": {"type": "boolean"},
             },
             "required": ["action", "done"],
@@ -32,13 +37,20 @@ type_text example:
 click example:
 {"action":"click","locator":{"strategy":"role","value":{"role":"button","name":"Search"}},"target":null,"text":null,"value_source":null,"done":false}
 
+extract example (use this when a confirmation/result page shows a value the caller
+should get back, like a confirmation number or transaction ID - the locator must
+point at the VALUE itself, not its label; a CSS locator like this one, matching the
+cell right after a label cell, is often the most reliable way to do that):
+{"action":"extract","locator":{"strategy":"css","value":{"css":"td:text-is('Confirmation Number') + td"}},"target":null,"text":null,"value_source":null,"extract_as":"confirmation_number","done":false}
+
 finish example:
 {"action":"finish","locator":null,"target":null,"text":null,"value_source":null,"done":true}
 
 Rules:
 - locator MUST include strategy and value. Never send locator as {}.
-- click/type_text/select_option require a complete locator.
+- click/type_text/select_option/extract require a complete locator.
 - type_text requires text and value_source.
+- extract requires extract_as (a short snake_case name for the value being read).
 - When the goal is done, action=finish and done=true.
 """
 

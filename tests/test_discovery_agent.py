@@ -22,11 +22,16 @@ class FakeTransport(ControlTransport):
 
 
 class FakeSurface:
-    def __init__(self):
+    def __init__(self, raise_on_action_call=None):
         self.actions = []
         self.url = "http://localhost:5000/member/search"
+        self.raise_on_action_call = raise_on_action_call
+        self._act_calls = 0
 
     def act(self, action, locator, target, text):
+        self._act_calls += 1
+        if self.raise_on_action_call == self._act_calls:
+            raise TimeoutError(f"locator not found for {action}")
         self.actions.append((action, locator, target, text))
         if action == ActionType.NAVIGATE:
             self.url = target
@@ -390,6 +395,29 @@ def test_agent_skips_risky_escalation_when_confirm_risky_is_true(tmp_path):
     agent.run(goal="Transfer funds", start_url="http://localhost:5000/member/search")
 
     assert len(transport.notified) == 0
+
+
+def test_agent_action_failure_does_not_crash_and_is_recorded(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    # act call #1 is the initial NAVIGATE in agent.run(); call #2 is the first
+    # decision's click, which will raise, simulating a locator that looked
+    # valid but didn't actually resolve at Playwright-action time.
+    surface = FakeSurface(raise_on_action_call=2)
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}}, "done": False},
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_action_failure")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is True
+    assert len(trace.steps) == 0  # the failed click was never recorded as a step
 
 
 def test_agent_treats_string_none_target_as_missing(tmp_path):

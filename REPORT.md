@@ -113,9 +113,22 @@ still "click Confirm Transfer," a control that page never renders). Blindly atte
 step 8 timed out with a raw Playwright exception the first time this was tested for
 real; `ReplayEngine.run` now re-checks `outcome_patterns` at the top of every loop
 iteration and also wraps `surface.act` in try/except, re-checking outcome patterns
-before falling back to `hard_failure` with the exception text as `detail`. No action
-in this system is ever allowed to crash the CLI with a raw traceback — everything
-resolves to one of the five `ReplayResult` outcomes.
+before falling back to `hard_failure` with the exception text as `detail`.
+
+`DiscoveryAgent.run()`'s own `surface.act()` call is wrapped the same way — a
+locator that passed the "is a locator present" check but doesn't actually resolve
+at Playwright-action time (a real ARIA role that doesn't match anything, an
+element that's disabled, ...) is caught, logged as a `skipped_decision` with
+reason `action_failed`, and counted toward the dead-end/vision-fallback machinery,
+instead of crashing the whole run. Found this wasn't the case, and fixed it, from
+a real failure: a live discovery run had the model choose an invalid ARIA role
+(`"text"`, not a real role) for an `extract` locator, which hung the process for
+the full Playwright timeout with no recovery path before this fix. After the fix,
+the identical scenario still takes the one timeout to fail (expected — a bad
+locator genuinely takes time to time out) but is caught, logged, and
+automatically retried with the vision fallback on the next call, which resolved
+cleanly. See `Guardrail.check_allowlist` below for the one remaining gap in this
+pattern — `ReplayEngine`'s allowlist check is not yet inside its own try/except.
 
 ## Heterogeneity & multi-tenant
 
