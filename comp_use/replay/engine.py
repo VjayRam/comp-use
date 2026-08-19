@@ -39,7 +39,7 @@ class ReplayEngine:
                     )
                 )
 
-            text = None
+            text = step.value
             if step.value_source is not None and step.value_source.type == "goal_parameter":
                 text = str(params[step.value_source.param_name])
 

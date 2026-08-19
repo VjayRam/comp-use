@@ -136,8 +136,16 @@ class DiscoveryAgent:
             risk_tier = _classify_risk(action, target, locator)
 
             self.surface.act(action, locator=locator, target=target, text=text)
+            recorded_value = text if action in (ActionType.TYPE_TEXT, ActionType.SELECT_OPTION) else None
             trace.steps.append(
-                Step(action=action, target=target, locator=locator, value_source=value_source, risk_tier=risk_tier)
+                Step(
+                    action=action,
+                    target=target,
+                    locator=locator,
+                    value_source=value_source,
+                    value=recorded_value,
+                    risk_tier=risk_tier,
+                )
             )
             history.append(decision)
 

@@ -87,3 +87,33 @@ def test_checkpoint_failure_returns_hard_failure_with_step_detail(tmp_path):
     result = engine.run(_make_artifact(), params={"member_id": "12345"})
     assert result.outcome == OutcomeType.HARD_FAILURE
     assert result.step_index == 1
+
+
+def test_fixed_step_replays_recorded_literal_value_regardless_of_params(tmp_path):
+    artifact = _make_artifact()
+    artifact.steps.append(
+        Step(
+            action=ActionType.TYPE_TEXT,
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "textbox", "name": "Note"}),
+            value_source=ValueSource(type="fixed", reason="boilerplate note"),
+            value="Opened at teller request",
+            risk_tier=RiskTier.SAFE,
+        )
+    )
+    surface = FakeSurface()
+    engine = _make_engine(surface, tmp_path)
+    engine.run(artifact, params={"member_id": "12345"})
+
+    fixed_step_call = surface.acted[-1]
+    assert fixed_step_call[2] == "Opened at teller request"
+
+
+def test_goal_parameter_step_still_prefers_caller_param_over_recorded_value(tmp_path):
+    artifact = _make_artifact()
+    artifact.steps[1].value = "12345"  # value recorded at discovery time
+    surface = FakeSurface()
+    engine = _make_engine(surface, tmp_path)
+    engine.run(artifact, params={"member_id": "67890"})
+
+    type_text_call = surface.acted[1]
+    assert type_text_call[2] == "67890"

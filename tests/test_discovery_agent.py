@@ -100,6 +100,43 @@ def test_agent_skips_type_text_without_locator_then_continues(tmp_path):
     assert surface.actions[1][1] is not None
 
 
+def test_agent_records_literal_value_on_step_for_fixed_and_goal_parameter_text(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {
+                "action": "type_text",
+                "locator": {"strategy": "role", "value": {"role": "textbox", "name": "Note"}},
+                "target": None,
+                "text": "Opened at teller request",
+                "value_source": {"type": "fixed", "reason": "boilerplate note"},
+                "done": False,
+            },
+            {
+                "action": "type_text",
+                "locator": {"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}},
+                "target": None,
+                "text": "12345",
+                "value_source": {"type": "goal_parameter", "param_name": "member_id", "param_type": "string"},
+                "done": False,
+            },
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_values")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Open sub-account", start_url="http://localhost:5000/member/search")
+
+    assert trace.steps[0].value_source.type == "fixed"
+    assert trace.steps[0].value == "Opened at teller request"
+    assert trace.steps[1].value_source.type == "goal_parameter"
+    assert trace.steps[1].value == "12345"
+
+
 def test_agent_skips_empty_locator_object(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"

@@ -56,6 +56,7 @@ class Step(BaseModel):
     target: str | None = None
     locator: Locator | None = None
     value_source: ValueSource | None = None
+    value: str | None = None
     extract_as: str | None = None
     risk_tier: RiskTier = RiskTier.SAFE
     checkpoint: Checkpoint | None = None
