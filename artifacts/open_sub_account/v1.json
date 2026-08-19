@@ -29,6 +29,7 @@
       "target": "http://localhost:5000/member/search",
       "locator": null,
       "value_source": null,
+      "value": null,
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -50,6 +51,7 @@
         "param_type": "string",
         "reason": null
       },
+      "value": null,
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -66,6 +68,7 @@
         "fallback": null
       },
       "value_source": null,
+      "value": null,
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -82,6 +85,7 @@
         "fallback": null
       },
       "value_source": null,
+      "value": null,
       "extract_as": null,
       "risk_tier": "risky",
       "checkpoint": null
@@ -103,6 +107,7 @@
         "param_type": "string",
         "reason": null
       },
+      "value": null,
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -119,16 +124,25 @@
         "fallback": null
       },
       "value_source": null,
+      "value": null,
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
     }
   ],
   "success_checkpoint": {
-    "type": "url_matches",
-    "locator": null,
+    "type": "element_visible",
+    "locator": {
+      "strategy": "role",
+      "value": {
+        "role": "heading",
+        "name": "Confirmation"
+      },
+      "fallback": null
+    },
     "text": null,
-    "url_pattern": "member/12345/sub-account/SUB-0001/confirm"
+    "url_pattern": null
   },
+  "outcome_patterns": [],
   "created_from_run_id": "discover_1787097189"
 }

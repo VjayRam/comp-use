@@ -17,6 +17,12 @@ class ReplayEngine:
                 return f"missing required param '{input_param.name}'"
         return None
 
+    def _match_outcome_pattern(self, artifact: Artifact) -> ReplayResult | None:
+        for pattern in artifact.outcome_patterns:
+            if self.surface.check_checkpoint(pattern.checkpoint):
+                return ReplayResult(outcome=pattern.outcome, detail=pattern.detail)
+        return None
+
     def run(self, artifact: Artifact, params: dict, confirm_risky: bool = False) -> ReplayResult:
         validation_error = self._validate_params(artifact, params)
         if validation_error:
@@ -50,6 +56,9 @@ class ReplayEngine:
             self.evidence_logger.log_event("replay_step", {"index": index, "action": step.action.value})
 
             if step.checkpoint is not None and not self.surface.check_checkpoint(step.checkpoint):
+                outcome_result = self._match_outcome_pattern(artifact)
+                if outcome_result is not None:
+                    return outcome_result
                 return ReplayResult(
                     outcome=OutcomeType.HARD_FAILURE,
                     step_index=index,
@@ -58,6 +67,9 @@ class ReplayEngine:
                 )
 
         if not self.surface.check_checkpoint(artifact.success_checkpoint):
+            outcome_result = self._match_outcome_pattern(artifact)
+            if outcome_result is not None:
+                return outcome_result
             return ReplayResult(
                 outcome=OutcomeType.HARD_FAILURE,
                 step_index=len(artifact.steps) - 1,

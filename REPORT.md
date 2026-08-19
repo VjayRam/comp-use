@@ -22,6 +22,16 @@ Perception and action go through `Surface` (`comp_use/surface.py`): accessibilit
 is the built implementation. CLI wiring is `comp_use/cli.py`; settings in
 `comp_use/config.py`.
 
+**Assumption: the caller picks discover vs. replay, by name.** This system does not
+infer intent from a natural-language goal and decide for itself whether to discover
+or replay — the CLI takes an explicit `--capability-name` either way. We assume that
+decision belongs to the upstream agent-facing product, per the brief's own framing:
+*"the agent-facing product decides what to do; this system is how it reliably and
+safely does it"* (assignment §1). A router that maps a fuzzy goal to an existing
+artifact is one read of the optional "agent-facing capability interface" stretch goal
+(§8) — and even that stretch goal is phrased as invoke-by-name, not
+infer-and-auto-select — so we treated it as out of scope rather than a gap.
+
 ## Artifact schema
 
 Typed Pydantic models in `comp_use/schemas.py`. A capability is versioned JSON at
@@ -43,12 +53,19 @@ attempt the same actions in the same order. Outcomes (`OutcomeType` in
 
 1. **`validation_error`** — required params missing/malformed; no browser interaction.
 2. **`success`** — all steps ran; `success_checkpoint` held.
-3. **`business_outcome`** — reserved for UI-reported non-success (e.g. insufficient
-   funds on the mock transfer form). Not yet classified automatically in replay; the
-   mock app still renders that state for discovery/demo.
-4. **`recoverable`** — reserved for dismiss-and-retry; not wired in this build.
-5. **`hard_failure`** — checkpoint miss; result includes `step_index`, `expected`,
-   `observed`.
+3. **`business_outcome`** — a legitimate, expected non-success UI result (e.g.
+   "insufficient funds" on the mock transfer form). An `Artifact` carries
+   `outcome_patterns: list[OutcomePattern]` — each pairs a `Checkpoint` with the
+   outcome it means. Whenever a per-step or the final `success_checkpoint` fails to
+   match, `ReplayEngine._match_outcome_pattern` checks these *before* falling back to
+   `hard_failure`; if one matches, its outcome/detail is returned instead. This is the
+   mechanism that keeps "no such member"/"insufficient funds" from being reported as a
+   crash — see the evidence walkthrough below for a real run that hits it.
+4. **`recoverable`** — same `outcome_patterns` mechanism, reserved for
+   dismiss-and-retry conditions; no capability in this build declares one (nothing in
+   the mock app produces a dismissable interstitial), so it's wired but unexercised.
+5. **`hard_failure`** — checkpoint miss with no matching outcome pattern; result
+   includes `step_index`, `expected`, `observed`.
 
 ## Heterogeneity & multi-tenant
 
@@ -103,11 +120,10 @@ Unchanged from spec §11:
 - Agent-facing NL-to-params product in front of replay — out of scope; replay takes
   JSON params.
 
-## Evidence walkthrough (captured 2026-08-17)
+## Evidence walkthrough (captured 2026-08-17, updated 2026-08-18)
 
 These runs used the live mock app at `http://localhost:5000` and Playwright
-Chromium. Discovery used `FakeLLMClient` with the same tool-call shape as OpenRouter
-(no API key in this environment). Replay used `ReplayEngine` with **no LLM**.
+Chromium. Replay used `ReplayEngine` with **no LLM** in every case below.
 
 ### 1. Discovery — `lookup_member`
 
@@ -132,5 +148,39 @@ Chromium. Discovery used `FakeLLMClient` with the same tool-call shape as OpenRo
 - The engine returns before any `surface.act`; the CLI also skips launching Chromium
   on this path.
 
+### 4. Replay — `business_outcome` (insufficient funds)
+
+- Command: `python -m comp_use.cli replay --capability-name transfer_funds --confirm-risky --params "{\"member_id\":\"12345\",\"from_account\":\"ACC-001\",\"to_account\":\"ACC-002\",\"amount\":\"999999\"}"`
+- Evidence: `evidence/replay_1787104111/log.jsonl`
+- Result: `{"outcome": "business_outcome", "detail": "insufficient_funds"}`
+- The mock app renders "Insufficient funds for this transfer." on the transfer form
+  instead of redirecting to the confirmation page, so the final `success_checkpoint`
+  (element_visible, heading "Confirmation") doesn't match. Before falling back to
+  `hard_failure`, the engine checks `artifact.outcome_patterns` — `transfer_funds`
+  declares one (`text_present`, "Insufficient funds for this transfer." →
+  `business_outcome`) — and it matches. This is the concrete demonstration of the
+  business-outcome-vs-failure distinction the taxonomy exists for.
+
+### 5. Replay — `success` (transfer_funds, same artifact, valid amount)
+
+- Command: same as above with `"amount": "50"`
+- Evidence: `evidence/replay_1787104113/log.jsonl`
+- Result: `{"outcome": "success"}`
+- Confirms `success_checkpoint` (element_visible, heading "Confirmation") is
+  reachable on the happy path too — `transfer_funds`'s checkpoint originally embedded
+  the literal transaction ID from the discovery run (`TXN-000001`) and could never
+  match again on a second replay; it was changed to the generic confirmation-heading
+  checkpoint shared by both write flows so the artifact is actually reusable across
+  runs, not just replayable once.
+
+### 6. Replay — `success` (open_sub_account, same checkpoint fix)
+
+- Command: `python -m comp_use.cli replay --capability-name open_sub_account --confirm-risky --params "{\"member_id\":\"12345\",\"account_type\":\"Savings\",\"deposit_amount\":\"250\"}"`
+- Evidence: `evidence/replay_1787104127/log.jsonl`
+- Result: `{"outcome": "success"}` — same literal-checkpoint issue, same fix.
+
 To re-run **live** OpenRouter discovery, set `OPENROUTER_API_KEY` and follow README
-Demo path.
+Demo path. (Real OpenRouter-driven discovery runs against a free-tier model also
+exist locally under `evidence/discover_*` from development — not yet committed;
+committing a real discovery run's evidence, rather than only the `FakeLLMClient` demo
+in entries 1–3 above, is a known open item, not yet done.)

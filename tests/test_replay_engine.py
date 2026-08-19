@@ -6,15 +6,16 @@ from comp_use.guardrail import Guardrail
 from comp_use.replay.engine import ReplayEngine
 from comp_use.schemas import (
     ActionType, Artifact, Checkpoint, CheckpointType, InputParam, Locator,
-    LocatorStrategy, OutcomeType, RiskTier, Step, ValueSource,
+    LocatorStrategy, OutcomePattern, OutcomeType, RiskTier, Step, ValueSource,
 )
 
 
 class FakeSurface:
-    def __init__(self, checkpoint_result=True, fail_on_step=None):
+    def __init__(self, checkpoint_result=True, fail_on_step=None, matching_checkpoint_text=None):
         self.acted = []
         self.checkpoint_result = checkpoint_result
         self.fail_on_step = fail_on_step
+        self.matching_checkpoint_text = matching_checkpoint_text
         self.url = "http://localhost:5000/member/search"
 
     def act(self, action, locator, target, text):
@@ -27,6 +28,8 @@ class FakeSurface:
         return ObservedState(accessibility_tree="tree", url=self.url)
 
     def check_checkpoint(self, checkpoint):
+        if checkpoint.type == CheckpointType.TEXT_PRESENT and self.matching_checkpoint_text is not None:
+            return checkpoint.text == self.matching_checkpoint_text
         if self.fail_on_step is not None and len(self.acted) - 1 == self.fail_on_step:
             return False
         return self.checkpoint_result
@@ -106,6 +109,41 @@ def test_fixed_step_replays_recorded_literal_value_regardless_of_params(tmp_path
 
     fixed_step_call = surface.acted[-1]
     assert fixed_step_call[2] == "Opened at teller request"
+
+
+def test_business_outcome_returned_when_outcome_pattern_matches_instead_of_hard_failure(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Insufficient funds for this transfer."),
+            detail="insufficient funds",
+        )
+    ]
+    surface = FakeSurface(checkpoint_result=False, matching_checkpoint_text="Insufficient funds for this transfer.")
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.BUSINESS_OUTCOME
+    assert result.detail == "insufficient funds"
+
+
+def test_hard_failure_still_returned_when_no_outcome_pattern_matches(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Insufficient funds for this transfer."),
+            detail="insufficient funds",
+        )
+    ]
+    surface = FakeSurface(checkpoint_result=False, matching_checkpoint_text="some other unrelated text")
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
 
 
 def test_goal_parameter_step_still_prefers_caller_param_over_recorded_value(tmp_path):

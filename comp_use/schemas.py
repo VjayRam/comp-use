@@ -76,6 +76,24 @@ class OutputParam(BaseModel):
     description: str = ""
 
 
+class OutcomeType(str, Enum):
+    VALIDATION_ERROR = "validation_error"
+    SUCCESS = "success"
+    BUSINESS_OUTCOME = "business_outcome"
+    RECOVERABLE = "recoverable"
+    HARD_FAILURE = "hard_failure"
+
+
+class OutcomePattern(BaseModel):
+    """A UI state the target app can legitimately reach that isn't the success
+    checkpoint but also isn't a failure of the automation itself (e.g. "insufficient
+    funds", "no such member"). Checked before falling back to hard_failure."""
+
+    outcome: Literal[OutcomeType.BUSINESS_OUTCOME, OutcomeType.RECOVERABLE]
+    checkpoint: Checkpoint
+    detail: str = ""
+
+
 class Artifact(BaseModel):
     capability_name: str
     version: int = 1
@@ -85,15 +103,8 @@ class Artifact(BaseModel):
     output_schema: list[OutputParam] = Field(default_factory=list)
     steps: list[Step]
     success_checkpoint: Checkpoint
+    outcome_patterns: list[OutcomePattern] = Field(default_factory=list)
     created_from_run_id: str
-
-
-class OutcomeType(str, Enum):
-    VALIDATION_ERROR = "validation_error"
-    SUCCESS = "success"
-    BUSINESS_OUTCOME = "business_outcome"
-    RECOVERABLE = "recoverable"
-    HARD_FAILURE = "hard_failure"
 
 
 class ReplayResult(BaseModel):
