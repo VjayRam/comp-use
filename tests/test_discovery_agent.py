@@ -98,3 +98,46 @@ def test_agent_skips_type_text_without_locator_then_continues(tmp_path):
     assert trace.steps[0].action == ActionType.TYPE_TEXT
     assert surface.actions[1][0] == ActionType.TYPE_TEXT
     assert surface.actions[1][1] is not None
+
+
+def test_agent_skips_empty_locator_object(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "type_text", "locator": {}, "text": "12345", "done": False},
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_empty_loc")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=5)
+    trace = agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+    assert trace.succeeded is True
+    assert len(trace.steps) == 0
+
+
+def test_agent_treats_string_none_target_as_missing(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {
+                "action": "click",
+                "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}},
+                "target": "None",
+                "text": None,
+                "done": False,
+            },
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_none_target")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=5)
+    trace = agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+    assert trace.succeeded is True
+    assert len(trace.steps) == 1
+    assert trace.steps[0].action == ActionType.CLICK

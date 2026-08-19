@@ -49,3 +49,30 @@ def test_openrouter_client_parses_tool_call_response(mock_post):
     )
     assert result["action"] == "click"
     assert mock_post.called
+
+
+@patch("comp_use.llm_client.requests.post")
+def test_openrouter_client_parses_json_content_without_tool_calls(mock_post):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{
+            "message": {
+                "content": (
+                    '{"action": "type_text", "locator": {"strategy": "role", '
+                    '"value": {"role": "textbox", "name": "Member ID"}}, '
+                    '"text": "12345", "done": false}'
+                )
+            }
+        }]
+    }
+    mock_response.raise_for_status.return_value = None
+    mock_post.return_value = mock_response
+
+    settings = load_settings()
+    settings.openrouter_api_key = "test-key"
+    client = OpenRouterClient(settings)
+    result = client.decide_next_action(
+        goal="find member", observed_tree="tree", screenshot_b64=None, history=[]
+    )
+    assert result["action"] == "type_text"
+    assert result["locator"]["strategy"] == "role"

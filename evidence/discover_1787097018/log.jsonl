@@ -1,0 +1,1 @@
+{"event_type": "decision", "data": {"locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"Member ID\"}}", "action": "type_text", "text": "12345", "target": "None", "value_source": "{\"type\": \"goal_parameter\", \"param_name\": \"member_id\", \"param_type\": \"string\"}", "done": false}}

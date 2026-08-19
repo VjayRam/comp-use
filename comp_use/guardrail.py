@@ -15,7 +15,7 @@ class Guardrail:
     def check_allowlist(self, url: str, action_type: str) -> None:
         if action_type not in self.settings.allowed_action_types:
             raise AllowlistViolation(f"action type '{action_type}' not in allowlist")
-        if not any(
+        if not url or not any(
             url.startswith(prefix) for prefix in self.settings.allowed_url_prefixes
         ):
             raise AllowlistViolation(f"url '{url}' not in allowlist")

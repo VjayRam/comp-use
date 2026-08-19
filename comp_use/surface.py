@@ -81,4 +81,4 @@ class PlaywrightSurface(Surface):
         return self.page.screenshot()
 
     def current_url(self) -> str:
-        return self.page.url
+        return self.page.url or ""

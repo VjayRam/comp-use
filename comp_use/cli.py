@@ -59,6 +59,7 @@ def _run_discover(args) -> None:
     run_id = f"discover_{int(time.time())}"
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
     llm = OpenRouterClient(settings)
+    print(f"Discovering with {settings.openrouter_model} (max {settings.max_discovery_steps} steps)", flush=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=_headless())

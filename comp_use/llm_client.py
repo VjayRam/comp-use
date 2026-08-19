@@ -24,6 +24,41 @@ _TOOL_SCHEMA = {
     },
 }
 
+_SYSTEM_PROMPT = """You control a web browser. Reply with ONE JSON object (no markdown).
+
+type_text example:
+{"action":"type_text","locator":{"strategy":"role","value":{"role":"textbox","name":"Member ID"}},"target":null,"text":"12345","value_source":{"type":"goal_parameter","param_name":"member_id","param_type":"string"},"done":false}
+
+click example:
+{"action":"click","locator":{"strategy":"role","value":{"role":"button","name":"Search"}},"target":null,"text":null,"value_source":null,"done":false}
+
+finish example:
+{"action":"finish","locator":null,"target":null,"text":null,"value_source":null,"done":true}
+
+Rules:
+- locator MUST include strategy and value. Never send locator as {}.
+- click/type_text/select_option require a complete locator.
+- type_text requires text and value_source.
+- When the goal is done, action=finish and done=true.
+"""
+
+
+def parse_decision(data: dict) -> dict:
+    message = data["choices"][0]["message"]
+    if message.get("tool_calls"):
+        raw = message["tool_calls"][0]["function"]["arguments"]
+        if isinstance(raw, dict):
+            return raw
+        return json.loads(raw)
+    content = (message.get("content") or "").strip()
+    if content.startswith("```"):
+        lines = content.splitlines()
+        inner = lines[1:]
+        if inner and inner[-1].strip().startswith("```"):
+            inner = inner[:-1]
+        content = "\n".join(inner)
+    return json.loads(content)
+
 
 class LLMClient:
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
@@ -49,36 +84,31 @@ class OpenRouterClient(LLMClient):
 
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
         messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
             {
-                "role": "system",
+                "role": "user",
                 "content": (
-                    "You control a web browser to accomplish a goal. Call decide_next_action "
-                    "with exactly one next action.\n"
-                    "Rules:\n"
-                    "- click, type_text, and select_option REQUIRE a locator object, e.g. "
-                    '{"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}} '
-                    'or {"strategy": "text", "value": {"text": "Search"}}.\n'
-                    "- type_text also requires text and value_source "
-                    '{"type": "goal_parameter", "param_name": "...", "param_type": "string"}.\n'
-                    "- navigate requires target as a full URL on http://localhost:5000.\n"
-                    "- When the goal is complete, set done=true and action=finish.\n"
-                    "- Never omit locator for type_text or click."
+                    f"Goal: {goal}\n"
+                    f"Current page (accessibility tree): {observed_tree}\n"
+                    f"History: {json.dumps(history)}\n"
+                    "Return the next JSON action now."
                 ),
             },
-            {"role": "user", "content": f"Goal: {goal}\nCurrent page (accessibility tree): {observed_tree}\nHistory: {json.dumps(history)}"},
         ]
+        print(f"[discover] asking {self.settings.openrouter_model} ...", flush=True)
         response = requests.post(
             self.ENDPOINT,
-            headers={"Authorization": f"Bearer {self.settings.openrouter_api_key}"},
+            headers={
+                "Authorization": f"Bearer {self.settings.openrouter_api_key}",
+                "HTTP-Referer": "http://localhost:5000",
+                "X-Title": "comp-use",
+            },
             json={
                 "model": self.settings.openrouter_model,
                 "messages": messages,
                 "tools": [_TOOL_SCHEMA],
-                "tool_choice": {"type": "function", "function": {"name": "decide_next_action"}},
             },
             timeout=60,
         )
         response.raise_for_status()
-        data = response.json()
-        call = data["choices"][0]["message"]["tool_calls"][0]
-        return json.loads(call["function"]["arguments"])
+        return parse_decision(response.json())

@@ -1,0 +1,3 @@
+{"event_type": "decision", "data": {"text": "12345", "action": "type_text", "done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"Member ID\"}}", "target": "None", "value_source": "{\"type\": \"goal_parameter\", \"param_name\": \"member_id\", \"param_type\": \"string\"}"}}
+{"event_type": "decision", "data": {"locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Search\"}}", "done": false, "action": "click"}}
+{"event_type": "decision", "data": {"action": "finish", "locator": null, "target": null, "text": null, "value_source": null, "done": true}}

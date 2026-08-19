@@ -1,14 +1,56 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from comp_use.evidence import EvidenceLogger
-from comp_use.guardrail import Guardrail
+from comp_use.guardrail import AllowlistViolation, Guardrail
 from comp_use.llm_client import LLMClient
 from comp_use.schemas import ActionType, Locator, RiskTier, Step, ValueSource
 
+def _optional_str(raw) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raw = str(raw)
+    stripped = raw.strip()
+    if stripped.lower() in ("", "none", "null"):
+        return None
+    return stripped
+
+
 _LOCATOR_ACTIONS = {ActionType.CLICK, ActionType.TYPE_TEXT, ActionType.SELECT_OPTION}
 _RISKY_TARGET_HINTS = ("transfer", "sub-account", "delete")
+
+
+def _locator_from_decision(raw) -> Locator | None:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(raw, dict) or not raw.get("strategy") or not raw.get("value"):
+        return None
+    try:
+        return Locator.model_validate(raw)
+    except Exception:
+        return None
+
+
+def _value_source_from_decision(raw) -> ValueSource | None:
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return ValueSource.model_validate(raw)
+    except Exception:
+        return None
 
 
 @dataclass
@@ -48,6 +90,7 @@ class DiscoveryAgent:
             self.evidence_logger.log_event("decision", decision)
 
             if decision.get("done") or decision.get("action") == "finish":
+                print("[discover] finish", flush=True)
                 trace.succeeded = True
                 break
 
@@ -57,12 +100,18 @@ class DiscoveryAgent:
                 history.append({**decision, "error": f"unknown action '{decision.get('action')}'"})
                 continue
 
-            locator = Locator.model_validate(decision["locator"]) if decision.get("locator") else None
-            target = decision.get("target")
-            text = decision.get("text")
-            value_source = ValueSource.model_validate(decision["value_source"]) if decision.get("value_source") else None
+            locator = _locator_from_decision(decision.get("locator"))
+            target = _optional_str(decision.get("target"))
+            text = _optional_str(decision.get("text"))
+            value_source = _value_source_from_decision(decision.get("value_source"))
 
             if action in _LOCATOR_ACTIONS and locator is None:
+                print(
+                    f"[discover] skipped {action.value}: locator must look like "
+                    '{"strategy":"role","value":{"role":"textbox","name":"Member ID"}} '
+                    f"(model sent {decision.get('locator')!r})",
+                    flush=True,
+                )
                 history.append({
                     **decision,
                     "error": "locator is required for click/type_text/select_option. "
@@ -75,7 +124,15 @@ class DiscoveryAgent:
                 self.evidence_logger.log_event("skipped_decision", {"reason": "missing_target", "decision": decision})
                 continue
 
-            self.guardrail.check_allowlist(target or self.surface.current_url(), action.value)
+            print(f"[discover] {action.value} locator={locator} target={target} text={text}", flush=True)
+            url = target or self.surface.current_url() or start_url
+            try:
+                self.guardrail.check_allowlist(url, action.value)
+            except AllowlistViolation as exc:
+                print(f"[discover] skipped {action.value}: {exc}", flush=True)
+                history.append({**decision, "error": str(exc)})
+                self.evidence_logger.log_event("skipped_decision", {"reason": "allowlist", "decision": decision})
+                continue
             risk_tier = _classify_risk(action, target, locator)
 
             self.surface.act(action, locator=locator, target=target, text=text)
