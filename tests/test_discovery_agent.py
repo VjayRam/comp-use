@@ -134,7 +134,10 @@ def test_agent_records_literal_value_on_step_for_fixed_and_goal_parameter_text(t
     assert trace.steps[0].value_source.type == "fixed"
     assert trace.steps[0].value == "Opened at teller request"
     assert trace.steps[1].value_source.type == "goal_parameter"
-    assert trace.steps[1].value == "12345"
+    # goal_parameter steps must NOT persist their discovery-time literal (a real
+    # member ID here) into the artifact - replay always substitutes the caller's
+    # own params, and the recorded example has no business being saved/committed.
+    assert trace.steps[1].value is None
 
 
 def test_agent_skips_empty_locator_object(tmp_path):

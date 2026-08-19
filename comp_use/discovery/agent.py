@@ -138,7 +138,16 @@ class DiscoveryAgent:
             risk_tier = _classify_risk(action, target, locator)
 
             self.surface.act(action, locator=locator, target=target, text=text)
-            recorded_value = text if action in (ActionType.TYPE_TEXT, ActionType.SELECT_OPTION) else None
+            # Only persist the literal text for steps that AREN'T a goal_parameter -
+            # a goal_parameter's discovery-time example (a real member ID, account
+            # number, amount, ...) has no business being baked into the artifact;
+            # replay always substitutes the caller's own params for those anyway.
+            is_goal_parameter = value_source is not None and value_source.type == "goal_parameter"
+            recorded_value = (
+                text
+                if action in (ActionType.TYPE_TEXT, ActionType.SELECT_OPTION) and not is_goal_parameter
+                else None
+            )
             trace.steps.append(
                 Step(
                     action=action,

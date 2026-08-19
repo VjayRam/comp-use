@@ -51,7 +51,7 @@
         "param_type": "string",
         "reason": null
       },
-      "value": "12345",
+      "value": null,
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -107,7 +107,7 @@
         "param_type": "string",
         "reason": null
       },
-      "value": "500",
+      "value": null,
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -161,5 +161,5 @@
     "url_pattern": null
   },
   "outcome_patterns": [],
-  "created_from_run_id": "discover_1787105310_open_sub_account"
+  "created_from_run_id": "discover_1787114276_open_sub_account"
 }
