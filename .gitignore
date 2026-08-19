@@ -6,6 +6,4 @@ venv/
 *.egg-info/
 .pytest_cache/
 node_modules/
-/evidence/*.png
-/evidence/*.jpg
 .DS_Store

@@ -15,6 +15,8 @@ def test_defaults(monkeypatch):
 def test_env_override(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("OPENROUTER_MODEL", "some/model:free")
+    monkeypatch.setenv("OPENROUTER_VISION_MODEL", "some/vision-model:free")
     settings = load_settings()
     assert settings.openrouter_api_key == "test-key"
     assert settings.openrouter_model == "some/model:free"
+    assert settings.openrouter_vision_model == "some/vision-model:free"

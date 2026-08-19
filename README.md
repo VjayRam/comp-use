@@ -123,7 +123,10 @@ copy .env.example .env   # Windows; on Unix: cp .env.example .env
 ```
 
 Edit `.env` and set `OPENROUTER_API_KEY` (required only for `discover`; replay never
-calls the LLM). The CLI loads `.env` via `python-dotenv`.
+calls the LLM). The CLI loads `.env` via `python-dotenv`. `OPENROUTER_VISION_MODEL`
+has a working default and rarely needs changing — it's only used as a fallback when
+the accessibility tree alone isn't enough for the model to locate an element (see
+REPORT.md's Heterogeneity & multi-tenant section).
 
 Run tests:
 

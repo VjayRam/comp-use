@@ -1015,13 +1015,15 @@ failed red if it had been wrong.
 - **`tests/test_config.py`'s `test_env_override` doesn't cover
   `OPENROUTER_VISION_MODEL`** — only `OPENROUTER_MODEL` is asserted against an
   env override; the new setting has no equivalent test.
-- **`_run_discover` never populates `outcome_patterns` or a non-empty
-  `output_schema`** — both are hardcoded to `[]`/passed as `[]` today; every
-  business-outcome and extract capability in the committed artifacts required
-  hand-authoring after the fact. This is arguably fine as a known limitation of
-  an MVP discovery loop (the model has no way to *decide* "this is a business
-  outcome" vs. just narrating what it sees), but it isn't currently stated
-  anywhere as a limitation — `REPORT.md` describes the mechanism as if it's
+- **`_run_discover` never populates `outcome_patterns`** — hardcoded empty;
+  every business-outcome capability in the committed artifacts required
+  hand-authoring after the fact. (`output_schema` is *not* in this bucket
+  anymore — issue 13's fix means the real LLM now does populate it, verified
+  live. `outcome_patterns` is a different, harder problem: the model has no
+  way to *decide* "this page is a business outcome" vs. just narrating what
+  it sees, which `extract` doesn't require deciding.) This is arguably fine as
+  a known limitation of an MVP discovery loop, but it isn't currently stated
+  anywhere as a limitation — `REPORT.md` described the mechanism as if it's
   discovery's normal output.
 - **`PlaywrightSurface.check_checkpoint`'s `TEXT_PRESENT` type checks
   `page.content()`** (raw HTML source) rather than rendered/visible text. Works
@@ -1037,12 +1039,21 @@ failed red if it had been wrong.
   expects independent ID sequences.
 
 **To do (all four, low priority, can be batched):**
-- [ ] Document `OPENROUTER_VISION_MODEL` in `.env.example` and README.
-- [ ] Add `OPENROUTER_VISION_MODEL` to `test_config.py`'s env-override test.
-- [ ] Add a sentence to `REPORT.md` noting `outcome_patterns`/non-empty
-      `output_schema` require manual authoring today, not automatic discovery.
-- [ ] Either switch `TEXT_PRESENT` to check rendered text, or note the
-      HTML-source caveat in `REPORT.md`.
+- [x] Document `OPENROUTER_VISION_MODEL` in `.env.example` and README.
+- [x] Add `OPENROUTER_VISION_MODEL` to `test_config.py`'s env-override test.
+- [x] Add a sentence to `REPORT.md` noting `outcome_patterns` requires manual
+      authoring today, not automatic discovery — added to the Determinism &
+      error handling section's `business_outcome` bullet, and noted that
+      `output_schema` no longer belongs in this bucket (issue 13 fixed that
+      half; `outcome_patterns` is what's left).
+- [x] Noted the `TEXT_PRESENT`/`page.content()` HTML-source caveat in
+      `REPORT.md`'s Architecture section rather than changing the
+      implementation — the mock app has no client-side JS hiding content, so
+      there's no live bug to fix today; the caveat documents the constraint
+      for whenever that stops being true.
+- (The 5th bullet above — mock app ID counters being module-level globals —
+  was never in this checklist to begin with; noted as a latent footgun, not
+  an active problem, and left as-is.)
 
 ---
 
@@ -1214,10 +1225,14 @@ walkthrough section already has this right; the Determinism section doesn't.
 - [x] Update the README's escalation paragraph to mention the note prompt (and,
       while there, that `discover` now has its own `--confirm-risky` flag too —
       see issue 12).
-- [ ] Fix or remove the `/evidence/*.png`/`/evidence/*.jpg` `.gitignore` rules
-      to match actual intent (either genuinely exclude nested screenshots with
-      `evidence/**/*.png`, or delete the now-contradicted rule since screenshots
-      are being committed on purpose).
+- [x] Deleted the `/evidence/*.png`/`/evidence/*.jpg` `.gitignore` rules
+      rather than fixing their pattern — they never matched anything real
+      (anchored one directory too shallow), and actual practice throughout
+      this project has been to deliberately commit real screenshots as
+      evidence (escalation before/after pairs, failure `final.png`s, ...) in
+      many separate commits. Deleting the dead rule matches intent; making it
+      actually work would have started silently excluding evidence we want
+      tracked.
 - [x] Delete `Settings.risky_confirm_default` — done alongside issue 16's fix,
       same root cause (`comp_use/config.py`).
 

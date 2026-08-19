@@ -20,7 +20,14 @@ talks to an LLM.
 Perception and action go through `Surface` (`comp_use/surface.py`): accessibility-tree
 `observe()` (via Playwright's `aria_snapshot()`), role/text/CSS `act()`, checkpoint
 checks, screenshot. `PlaywrightSurface` is the built implementation. CLI wiring is
-`comp_use/cli.py`; settings in `comp_use/config.py`.
+`comp_use/cli.py`; settings in `comp_use/config.py`. **Caveat:** `check_checkpoint`'s
+`TEXT_PRESENT` type checks `page.content()` — the raw server-rendered HTML source,
+not rendered/visible text. That's correct against this mock app, since every
+conditional message (`insufficient_funds`, `not_found`) is a Jinja `{% if %}` that
+either renders or doesn't server-side, with no client-side JS involved. It would
+silently produce false positives against a different app that hides matching text
+via CSS/JS instead of omitting it from the response entirely — a real constraint on
+how portable `TEXT_PRESENT` checkpoints are, worth stating rather than assuming away.
 
 **The mock app is deliberately hostile, per §4's "intentionally hostile surface"
 option.** `mock_app/templates/` has no test IDs anywhere; every page nests a layout
@@ -102,6 +109,14 @@ attempt the same actions in the same order. Outcomes (`OutcomeType` in
    `hard_failure`; if one matches, its outcome/detail is returned instead. This is the
    mechanism that keeps "no such member"/"insufficient funds" from being reported as a
    crash — see the evidence walkthrough below for a real run that hits it.
+   **Known limitation:** unlike `input_schema`/`output_schema` (both derived
+   automatically from what the discovery loop actually did),
+   `outcome_patterns` is never populated by `_run_discover` — the LLM has no
+   way to *decide* "this page is a business outcome, not a hard failure" from
+   inside the discovery loop as built, so every `outcome_patterns` entry in
+   the committed artifacts (`no_such_member`, `insufficient_funds`) was
+   hand-authored after discovery, not discovered automatically. Stated here
+   rather than left implicit.
 4. **`recoverable`** — same `outcome_patterns` mechanism, reserved for
    dismiss-and-retry conditions; no capability in this build declares one (nothing in
    the mock app produces a dismissable interstitial), so it's wired but unexercised.
