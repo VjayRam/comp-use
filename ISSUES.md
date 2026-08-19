@@ -13,31 +13,34 @@ re-reading prose.
 
 ---
 
-## Submission readiness (2026-08-18): ~75/100
+## Submission readiness (2026-08-19, after fixing issues 1–8): ~92/100
 
-Real, verified, working core — but several *explicitly named* requirements below
-are still open, not just polish. Scored against the brief's own evaluation order
-(§7):
+All 8 issues below are now resolved (code + tests + live verification against the
+running mock app, not just unit tests) — see each issue's To-do checklist for what
+changed and which commit. Rescored against the same §7 evaluation order:
 
 | Criterion (§7 weight order) | Score | Why |
 |---|---|---|
-| System design | 85/100 | Clean component boundaries, deliberate artifact schema (`value_source` tagging, `outcome_patterns`), decisions documented and defensible. `output_schema` exists in the schema but is dead weight since nothing populates it (issue 5). |
-| Correctness of core loop | 85/100 | Verified, not assumed: real OpenRouter discovery run committed, all 3 capabilities replay deterministically with *different* params than recorded, checkpoints actually hold on a second run. |
-| Robustness & error handling | 75/100 | `business_outcome` vs `hard_failure` now genuinely separated, verified with real replays including a mid-sequence divergence that used to crash (fixed in `3e00230`/`1488f21`). Docked for: `recoverable` unexercised, no discovery timeout/dead-end detection. |
-| Human-in-the-loop escalation | **55/100** | The mechanism itself is real (same live browser, blocks, resumes — not a TODO). But two things §3.6 names explicitly are missing: discovery-side "stuck" escalation isn't wired at all (issue 2), and nothing records what the human did (issue 4). Single biggest drag on the score — an explicit requirement, not a nice-to-have. |
-| Generalization (design only) | 80/100 | REPORT.md covers Surface/multi-tenant/drift reasonably; not expected to be built (assignment explicitly doesn't require it). |
-| Safety & data handling | **60/100** | Allowlist and risk tiers work correctly (backwards risk classification fixed in `1488f21`). But redaction patterns don't match our own PII shapes — member IDs and account IDs sit unredacted in already-committed evidence logs right now (issue 6). A worse version of this (leaking into artifacts themselves) was found and fixed in `5baa19f`; the log-level half is still open. |
-| Code quality | 80/100 | 55 tests, TDD throughout, typed via Pydantic. Some `print()`-based logging instead of structured. |
-| Communication | 70/100 | REPORT.md has the correct 7 headings and an honest Cuts section, but currently still claims the real-LLM-evidence requirement is "not yet done" when it's actually satisfied (issue 1) — a one-line fix that's currently costing real credibility. |
+| System design | 88/100 | Same clean component boundaries as before, plus `output_schema` is no longer dead weight — it's derived from `extract` steps the same way `input_schema` is derived from `goal_parameter` steps (issue 5). |
+| Correctness of core loop | 87/100 | Same verified-not-assumed baseline, plus `EXTRACT` now actually extracts and replay returns real `outputs` (verified live: `confirmation_number`/`txn_id` come back on `open_sub_account`/`transfer_funds`). |
+| Robustness & error handling | 78/100 | Unchanged core (`business_outcome`/`hard_failure` separation, mid-sequence divergence handling). Discovery now has a genuine dead-end detector (3 consecutive skipped/invalid decisions escalates mid-run), which is new robustness, not just escalation plumbing. Still docked for `recoverable` being unexercised. |
+| Human-in-the-loop escalation | **88/100** | Was the single biggest drag at 55/100. Now: discovery escalates on both `max_steps` exhaustion and repeated dead-ends (issue 2), every `InterventionRequest` carries a real `screenshot_path` on both replay and discovery (issue 3), and the human's one-line note is logged as a dedicated `escalation_human_action` event (issue 4). Not 100 because a full DOM diff of what changed during the handoff was explicitly left undone (cheap, lower-value on top of the note). |
+| Generalization (design only) | 80/100 | Unchanged — not expected to be built, and nothing this pass touched Surface/multi-tenant design. |
+| Safety & data handling | **85/100** | Was 60/100. Redaction now covers the mock bank's actual identifier formats (`ACC-`, `SUB-`, `TXN-`, `CONF-`), with a documented, deliberate policy decision on why bare `member_id` stays unredacted (matches the brief's own example usage) rather than over-redacting. The 3 already-committed evidence logs that had unredacted IDs under the old patterns were retroactively re-redacted, not just fixed going forward. |
+| Code quality | 82/100 | 64 tests now (was 55), TDD maintained throughout this pass (failing test → implementation → pass, every issue), still some `print()`-based logging instead of structured. |
+| Communication | 88/100 | REPORT.md's stale "not yet done" claim on real LLM evidence is fixed (issue 1); the README's screenshot-perception overclaim is fixed and REPORT.md's Cuts section now names it explicitly as a scope decision, not silently (issue 8) — the two documents agree with each other and with the code. |
 
-**What moves the needle most:** issues 1–4 are all cheap and land directly on the
-two lowest-scoring, most heavily-weighted categories (escalation and safety).
-Doing those alone would likely put this around **85–88**. Issues 5–8 are real but
-lower-leverage — worth doing, but not what's holding the score down right now.
+**What's left, if anything:** the two intentionally-skipped items — a full DOM diff
+of the human's escalation actions (issue 4's optional bullet) and real
+vision/screenshot input to the LLM (issue 8's optional bullet) — are both
+documented as deliberate scope calls with a one-sentence rationale each, not
+silent gaps. Nothing on the original 8-item list is still open.
 
-**Bottom line:** this would pass as a genuine, working system today, but a careful
-reviewer checking the brief line-by-line would dock it specifically on escalation
-completeness and the redaction gap — which is exactly what issues 1–6 below fix.
+**Bottom line:** every explicitly-named §3.6 (escalation) and §3.4 (safety/redaction)
+requirement that was previously missing or wrong is now implemented, tested, and
+verified against the live mock app — the two categories that were dragging the
+score down the most (escalation completeness, redaction coverage) are no longer
+the weak points.
 
 ---
 
@@ -368,13 +371,15 @@ The design spec correctly describes this as "screenshot as supplementary/vision
 fallback, not built" in its Cuts-adjacent language; the README does not.
 
 **To do:**
-- [ ] Fix the README wording to say accessibility-tree-only perception (matching
-      reality), or
-- [ ] Actually wire `screenshot_b64` through to `OpenRouterClient` (base64-encode
-      `surface.screenshot()`, add an image content block to the chat message) if
-      real hybrid perception is wanted — bigger lift, not required by the brief
-      (§3.1 explicitly allows "accessibility tree" alone as a valid mechanism
-      choice).
+- [x] Fix the README wording to say accessibility-tree-only perception (matching
+      reality). Chose this over wiring real vision input — §3.1 explicitly allows
+      "accessibility tree" alone as a valid mechanism choice, so it's a documented
+      scope decision, not a missing feature. Added a matching bullet to `REPORT.md`'s
+      Cuts section so the two documents agree.
+- [ ] (Not done, not required.) Actually wire `screenshot_b64` through to
+      `OpenRouterClient` (base64-encode `surface.screenshot()`, add an image content
+      block to the chat message) if real hybrid perception is wanted later — bigger
+      lift, out of scope for this pass.
 
 ---
 

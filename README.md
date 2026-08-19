@@ -18,8 +18,9 @@ Built for the interface.ai take-home assignment
 
 1. Take a natural-language goal + target app.
 2. Run an LLM-driven discovery agent that drives a real (mock, legacy-styled) bank
-   back-office web app via Playwright, using an accessibility-tree + screenshot view
-   of the page.
+   back-office web app via Playwright, using an accessibility-tree view of the page
+   (screenshots are captured as evidence, not fed to the LLM's decision loop — see
+   REPORT.md's Cuts).
 3. Record a successful run as a versioned JSON capability artifact (typed inputs,
    typed outputs, per-step locators and checkpoints).
 4. Replay that artifact deterministically against new inputs, with no LLM call,

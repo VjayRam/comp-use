@@ -201,6 +201,12 @@ Unchanged from spec §11:
 - On-prem LLM — documented, not built; OpenRouter is the live discover path.
 - Agent-facing NL-to-params product in front of replay — out of scope; replay takes
   JSON params.
+- Screenshot as an LLM vision input during discovery — not built. `Surface.observe()`
+  gives the LLM the accessibility tree only; screenshots are captured as evidence
+  (`EvidenceLogger.save_screenshot`) but never sent to `OpenRouterClient` as an image.
+  §3.1 explicitly allows accessibility tree alone as a valid perception mechanism, so
+  this is a scope choice, not a gap — but it means the earlier draft of this README
+  overclaimed "screenshot view of the page" for the decision loop specifically; fixed.
 
 ## Evidence walkthrough (captured 2026-08-18, against the hardened mock app)
 
