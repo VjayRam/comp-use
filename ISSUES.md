@@ -328,13 +328,17 @@ real `hard_failure` replay evidence dir produced this session
 (`evidence/replay_1787105625/`) has JSONL only.
 
 **To do:**
-- [ ] In `comp_use/cli.py`'s `_run_replay`, on any non-`SUCCESS` outcome, call
+- [x] In `comp_use/cli.py`'s `_run_replay`, on any non-`SUCCESS` outcome, call
       `evidence.save_screenshot(surface.screenshot(), "final")` before closing the
       browser.
-- [ ] Same for `_run_discover` when `trace.succeeded` is `False`.
-- [ ] This overlaps with #3 (escalation screenshots) — same
+- [x] Same for `_run_discover` when `trace.succeeded` is `False`.
+- [x] This overlaps with #3 (escalation screenshots) — same
       `EvidenceLogger.save_screenshot` call, different trigger points; worth doing
-      together.
+      together. Verified live: a `hard_failure` replay (`open_sub_account`,
+      `member_id=00000`) produced `evidence/replay_<ts>/final.png` alongside
+      `log.jsonl`; a `success` replay produced no `final.png` (only saved on
+      non-success, per the assignment's "at least one richer signal **on
+      failure**" wording, not every run).
 
 ---
 

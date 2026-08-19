@@ -69,6 +69,8 @@ def _run_discover(args) -> None:
         surface = PlaywrightSurface(page)
         agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps, escalation=escalation)
         trace = agent.run(goal=args.goal, start_url=args.start_url)
+        if not trace.succeeded:
+            evidence.save_screenshot(surface.screenshot(), "final")
         browser.close()
 
     if not trace.succeeded:
@@ -125,6 +127,8 @@ def _run_replay(args) -> None:
         surface = PlaywrightSurface(page)
         engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
         result = engine.run(artifact, params, confirm_risky=args.confirm_risky)
+        if result.outcome != OutcomeType.SUCCESS:
+            evidence.save_screenshot(surface.screenshot(), "final")
         browser.close()
 
     print(result.model_dump_json(indent=2))

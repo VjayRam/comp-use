@@ -91,6 +91,14 @@ attempt the same actions in the same order. Outcomes (`OutcomeType` in
    timeout), with no matching outcome pattern; result includes `step_index`,
    `expected`/`detail`, `observed`.
 
+Every non-`SUCCESS` outcome on both the replay and discovery CLI paths also gets a
+richer signal than the JSONL log alone: `comp_use/cli.py`'s `_run_replay` and
+`_run_discover` call `evidence.save_screenshot(surface.screenshot(), "final")`
+before closing the browser whenever the outcome isn't clean success, landing a
+`final.png` next to `log.jsonl` in the run's evidence directory (per §3.5's "at
+least one richer signal on failure"). A successful run doesn't get one — the
+signal is for debugging a failure, not documenting every run.
+
 Outcome patterns are checked **before every step is attempted**, not only after a
 checkpoint miss — the app can diverge onto a business-outcome page mid-sequence
 (e.g. "insufficient funds" appears after step 7 of `transfer_funds`, but step 8 is
@@ -259,7 +267,9 @@ bug rather than a contrived one.
   `{"outcome": "hard_failure", "step_index": 3, "detail": "Locator.click: Timeout
   30000ms exceeded...", "observed": "http://localhost:5000/member/search?member_id=00000"}`
   — a genuine automation failure reported with enough detail to debug, distinct from
-  the business outcomes above.
+  the business outcomes above. This run predates the `final.png`-on-failure wiring
+  below; a fresh `hard_failure` replay of the same capability/params
+  (`evidence/replay_1787150562/`) now produces both `log.jsonl` and `final.png`.
 
 ### Replay — `validation_error` (no browser)
 
