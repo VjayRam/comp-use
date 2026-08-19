@@ -8,10 +8,10 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 import comp_use.cli as cli
-from comp_use.cli import _derive_success_checkpoint, load_artifact, next_artifact_version, save_artifact
+from comp_use.cli import _build_llm_client, _derive_success_checkpoint, load_artifact, next_artifact_version, save_artifact
 from comp_use.config import Settings
 from comp_use.escalation.transport import ControlTransport
-from comp_use.llm_client import FakeLLMClient
+from comp_use.llm_client import FakeLLMClient, FallbackLLMClient, NvidiaNimClient, OpenRouterClient
 from comp_use.schemas import (
     ActionType, Artifact, Checkpoint, CheckpointType, InputParam, Locator,
     LocatorStrategy, OutcomeType, RiskTier, Step, ValueSource,
@@ -299,3 +299,17 @@ def test_run_replay_with_diagnose_drift_proposes_a_patched_version_not_active(tm
     assert len(transport.notified) == 1
     assert "drift" in transport.notified[0].reason.lower()
     assert "v2" in transport.notified[0].reason
+
+
+def test_build_llm_client_is_openrouter_only_without_an_nvidia_key():
+    settings = Settings(nvidia_api_key="")
+    client = _build_llm_client(settings)
+    assert isinstance(client, OpenRouterClient)
+
+
+def test_build_llm_client_wraps_openrouter_with_nvidia_fallback_when_key_present():
+    settings = Settings(nvidia_api_key="nvidia-test-key")
+    client = _build_llm_client(settings)
+    assert isinstance(client, FallbackLLMClient)
+    assert isinstance(client.primary, OpenRouterClient)
+    assert isinstance(client.fallback, NvidiaNimClient)

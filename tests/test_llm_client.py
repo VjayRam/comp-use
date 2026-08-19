@@ -1,7 +1,10 @@
 from unittest.mock import patch, MagicMock
 
 from comp_use.config import load_settings
-from comp_use.llm_client import _SYSTEM_PROMPT, _TOOL_SCHEMA, FakeLLMClient, OpenRouterClient, parse_decision
+from comp_use.llm_client import (
+    _SYSTEM_PROMPT, _TOOL_SCHEMA, FakeLLMClient, FallbackLLMClient, NvidiaNimClient,
+    OpenRouterClient, parse_decision,
+)
 from comp_use.schemas import Locator, LocatorStrategy
 
 
@@ -272,5 +275,109 @@ def test_openrouter_client_diagnose_drift_returns_not_found_when_model_says_so(m
         expected_locator={"strategy": "role", "value": {"role": "button", "name": "Confirm Transfer"}},
         screenshot_b64="ZmFrZXBuZw==",
     )
+
+    assert result["found"] is False
+
+
+@patch("comp_use.llm_client.requests.post")
+def test_nvidia_nim_client_hits_its_own_endpoint_with_bearer_auth_only(mock_post):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": '{"action": "finish", "done": true}'}}]
+    }
+    mock_response.raise_for_status.return_value = None
+    mock_post.return_value = mock_response
+
+    settings = load_settings()
+    settings.nvidia_api_key = "nvidia-test-key"
+    settings.nvidia_model = "meta/llama-3.1-8b-instruct"
+    client = NvidiaNimClient(settings)
+
+    result = client.decide_next_action(goal="find member", observed_tree="tree", screenshot_b64=None, history=[])
+
+    assert result["action"] == "finish"
+    called_url = mock_post.call_args.args[0] if mock_post.call_args.args else mock_post.call_args.kwargs.get("url")
+    assert called_url == NvidiaNimClient.ENDPOINT
+    assert called_url != OpenRouterClient.ENDPOINT
+    sent_headers = mock_post.call_args.kwargs["headers"]
+    assert sent_headers["Authorization"] == "Bearer nvidia-test-key"
+    # unlike OpenRouter, NIM needs no HTTP-Referer/X-Title
+    assert "HTTP-Referer" not in sent_headers
+    sent_payload = mock_post.call_args.kwargs["json"]
+    assert sent_payload["model"] == "meta/llama-3.1-8b-instruct"
+
+
+@patch("comp_use.llm_client.requests.post")
+def test_nvidia_nim_client_routes_vision_calls_to_its_own_vision_model(mock_post):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": '{"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}}, "done": false}'}}]
+    }
+    mock_response.raise_for_status.return_value = None
+    mock_post.return_value = mock_response
+
+    settings = load_settings()
+    settings.nvidia_api_key = "nvidia-test-key"
+    settings.nvidia_vision_model = "meta/llama-3.2-11b-vision-instruct"
+    client = NvidiaNimClient(settings)
+
+    client.decide_next_action(goal="find member", observed_tree="tree", screenshot_b64="ZmFrZXBuZw==", history=[])
+
+    sent_payload = mock_post.call_args.kwargs["json"]
+    assert sent_payload["model"] == "meta/llama-3.2-11b-vision-instruct"
+
+
+def test_fallback_client_uses_primary_result_when_primary_succeeds():
+    primary = FakeLLMClient(scripted_actions=[{"action": "finish", "done": True}])
+    fallback = FakeLLMClient(scripted_actions=[])  # would raise IndexError if ever called
+    client = FallbackLLMClient(primary, fallback)
+
+    result = client.decide_next_action(goal="g", observed_tree="t", screenshot_b64=None, history=[])
+
+    assert result["done"] is True
+
+
+class _RaisingLLMClient:
+    def __init__(self, exc):
+        self._exc = exc
+
+    def decide_next_action(self, goal, observed_tree, screenshot_b64, history):
+        raise self._exc
+
+    def diagnose_drift(self, expected_locator, screenshot_b64):
+        raise self._exc
+
+
+def test_fallback_client_switches_to_fallback_when_primary_raises():
+    # The motivating case: OpenRouter's free-tier rate limit hits (a 429,
+    # modeled here as a generic exception since the fallback logic doesn't
+    # care about the exception type - any primary failure triggers it).
+    primary = _RaisingLLMClient(RuntimeError("429 Too Many Requests"))
+    fallback = FakeLLMClient(scripted_actions=[{"action": "finish", "done": True}])
+    client = FallbackLLMClient(primary, fallback)
+
+    result = client.decide_next_action(goal="g", observed_tree="t", screenshot_b64=None, history=[])
+
+    assert result["done"] is True
+
+
+def test_fallback_client_propagates_when_both_providers_fail():
+    primary = _RaisingLLMClient(RuntimeError("primary down"))
+    fallback = _RaisingLLMClient(ValueError("fallback also down"))
+    client = FallbackLLMClient(primary, fallback)
+
+    try:
+        client.decide_next_action(goal="g", observed_tree="t", screenshot_b64=None, history=[])
+        assert False, "expected the fallback's exception to propagate"
+    except ValueError as exc:
+        assert "fallback also down" in str(exc)
+
+
+def test_fallback_client_applies_to_diagnose_drift_too():
+    primary = _RaisingLLMClient(RuntimeError("429 Too Many Requests"))
+    fallback = FakeLLMClient(scripted_actions=[], scripted_drift_diagnoses=[{"found": False, "reasoning": "n/a"}])
+    client = FallbackLLMClient(primary, fallback)
+
+    result = client.diagnose_drift(expected_locator={"strategy": "role", "value": {}}, screenshot_b64="Zg==")
 
     assert result["found"] is False

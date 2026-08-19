@@ -213,6 +213,36 @@ even cover (`"Expecting ',' delimiter"`) — caught by the outer wrap regardless
 logged as `llm_call_failed`, and the run still finished. Both real runs are
 committed (`evidence/discover_1787177243`, `evidence/discover_1787177306`).
 
+**A second LLM provider, NVIDIA NIM, exists specifically to reduce how often
+that `llm_call_failed` skip fires in the first place.** OpenRouter's free-tier
+models rate-limit under real, repeated use — the exact scenario the demo path
+above exercises. `comp_use/llm_client.py`'s `OpenRouterClient` and a new
+`NvidiaNimClient` both extend a shared `_OpenAICompatibleClient` base (the
+request/response shape, prompts, and tool schemas are identical between the
+two — NIM's hosted inference API is also OpenAI-compatible chat completions
+with tool calling; only the endpoint, auth header, and model names differ).
+`FallbackLLMClient` wraps both: it tries the primary (OpenRouter) first, and
+on *any* failure — not just a detected rate limit specifically, since a
+malformed response or a timeout deserves the same treatment — retries with
+NIM instead. `comp_use/cli.py`'s `_build_llm_client()` only constructs the
+fallback wrapper when `NVIDIA_API_KEY` is set; with no key configured,
+behavior is byte-for-byte identical to OpenRouter-only, so this is additive,
+not a breaking change to the default setup. If the fallback itself also
+fails, its exception propagates into the same `llm_call_failed` skip path
+above — trying a second provider doesn't need its own separate crash-proofing,
+it inherits the existing one for free.
+
+**Honestly unverified against a real NVIDIA key**, unlike everything else in
+this report — no key was available while building this. `NVIDIA_MODEL`/
+`NVIDIA_VISION_MODEL`'s defaults (`meta/llama-3.1-8b-instruct`,
+`meta/llama-3.2-11b-vision-instruct`) are best-effort picks from NIM's
+published catalog naming, not confirmed live the way `OPENROUTER_VISION_MODEL`
+was (a wrong first guess there 404'd and had to be corrected against the real
+API — see the Heterogeneity & multi-tenant section below). The mechanism
+itself (the shared base class, `FallbackLLMClient`'s try/except-and-retry,
+the wiring in `_build_llm_client`) is tested with mocked HTTP responses; only
+the specific model IDs are unverified.
+
 ## Drift-aware self-healing replay (`--diagnose-drift-on-failure`, optional)
 
 Beyond what the assignment requires: an opt-in extension that turns a `hard_failure`

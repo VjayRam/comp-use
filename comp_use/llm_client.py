@@ -170,11 +170,28 @@ class FakeLLMClient(LLMClient):
         return diagnosis
 
 
-class OpenRouterClient(LLMClient):
-    ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+class _OpenAICompatibleClient(LLMClient):
+    """Shared logic for any provider exposing an OpenAI-compatible chat
+    completions endpoint (tool calling + optional image content blocks) -
+    OpenRouter and NVIDIA NIM both implement this exact shape. Provider-
+    specific bits (endpoint, auth headers, which model names to use, a label
+    for logging) are supplied by subclasses; the request/response handling,
+    prompts, and tool schemas are identical either way."""
 
-    def __init__(self, settings: Settings):
-        self.settings = settings
+    def _endpoint(self) -> str:
+        raise NotImplementedError
+
+    def _headers(self) -> dict:
+        raise NotImplementedError
+
+    def _text_model(self) -> str:
+        raise NotImplementedError
+
+    def _vision_model(self) -> str:
+        raise NotImplementedError
+
+    def _provider_label(self) -> str:
+        raise NotImplementedError
 
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
         text_block = (
@@ -197,10 +214,10 @@ class OpenRouterClient(LLMClient):
                 {"type": "text", "text": text_block},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
             ]
-            model = self.settings.openrouter_vision_model
+            model = self._vision_model()
         else:
             user_content = text_block
-            model = self.settings.openrouter_model
+            model = self._text_model()
 
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -225,18 +242,14 @@ class OpenRouterClient(LLMClient):
             {"role": "system", "content": _DRIFT_SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ]
-        raw = self._post_chat(self.settings.openrouter_vision_model, messages, _DRIFT_TOOL_SCHEMA)
+        raw = self._post_chat(self._vision_model(), messages, _DRIFT_TOOL_SCHEMA)
         return _normalize_drift_diagnosis(raw)
 
     def _post_chat(self, model: str, messages: list[dict], tool_schema: dict) -> dict:
-        print(f"[discover] asking {model} ...", flush=True)
+        print(f"[discover] asking {self._provider_label()}:{model} ...", flush=True)
         response = requests.post(
-            self.ENDPOINT,
-            headers={
-                "Authorization": f"Bearer {self.settings.openrouter_api_key}",
-                "HTTP-Referer": "http://localhost:5000",
-                "X-Title": "comp-use",
-            },
+            self._endpoint(),
+            headers=self._headers(),
             json={
                 "model": model,
                 "messages": messages,
@@ -246,3 +259,90 @@ class OpenRouterClient(LLMClient):
         )
         response.raise_for_status()
         return parse_decision(response.json())
+
+
+class OpenRouterClient(_OpenAICompatibleClient):
+    ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    def _endpoint(self) -> str:
+        return self.ENDPOINT
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
+            "HTTP-Referer": "http://localhost:5000",
+            "X-Title": "comp-use",
+        }
+
+    def _text_model(self) -> str:
+        return self.settings.openrouter_model
+
+    def _vision_model(self) -> str:
+        return self.settings.openrouter_vision_model
+
+    def _provider_label(self) -> str:
+        return "openrouter"
+
+
+class NvidiaNimClient(_OpenAICompatibleClient):
+    """NVIDIA NIM's hosted inference API (integrate.api.nvidia.com) - also
+    OpenAI-compatible chat completions with tool calling. Exists as a second
+    provider so discovery can fail over here when OpenRouter's free-tier rate
+    limits are hit, rather than the whole run stalling on one provider (see
+    FallbackLLMClient)."""
+
+    ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    def _endpoint(self) -> str:
+        return self.ENDPOINT
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.settings.nvidia_api_key}"}
+
+    def _text_model(self) -> str:
+        return self.settings.nvidia_model
+
+    def _vision_model(self) -> str:
+        return self.settings.nvidia_vision_model
+
+    def _provider_label(self) -> str:
+        return "nvidia-nim"
+
+
+class FallbackLLMClient(LLMClient):
+    """Tries `primary` first; if it raises for ANY reason (a rate limit is
+    the motivating case, but this also covers timeouts, transient 5xxs, and
+    malformed responses), tries `fallback` instead. If `fallback` also
+    raises, its exception propagates - already handled gracefully further up
+    (DiscoveryAgent.run() wraps every LLM call and treats a failure as a
+    retryable skip, not a crash). This class only decides which provider
+    answers a given call; it never decides what a caller should do if both
+    providers are down."""
+
+    def __init__(self, primary: LLMClient, fallback: LLMClient):
+        self.primary = primary
+        self.fallback = fallback
+
+    def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
+        try:
+            return self.primary.decide_next_action(
+                goal=goal, observed_tree=observed_tree, screenshot_b64=screenshot_b64, history=history
+            )
+        except Exception as exc:
+            print(f"[discover] primary provider failed ({type(exc).__name__}: {exc}); falling back...", flush=True)
+            return self.fallback.decide_next_action(
+                goal=goal, observed_tree=observed_tree, screenshot_b64=screenshot_b64, history=history
+            )
+
+    def diagnose_drift(self, expected_locator: dict, screenshot_b64: str) -> dict:
+        try:
+            return self.primary.diagnose_drift(expected_locator=expected_locator, screenshot_b64=screenshot_b64)
+        except Exception as exc:
+            print(f"[discover] primary provider failed ({type(exc).__name__}: {exc}); falling back...", flush=True)
+            return self.fallback.diagnose_drift(expected_locator=expected_locator, screenshot_b64=screenshot_b64)

@@ -1482,3 +1482,73 @@ LLM I/O) and asking "is this one wrapped." A real user running the actual
 documented command found both in one sitting. `pytest` passing is not the
 same as "nothing can crash" — it only proves what the tests specifically
 exercise.
+
+---
+
+## 27. Added a second LLM provider (NVIDIA NIM) to tolerate OpenRouter's rate limits
+
+**Priority:** medium (requested directly, motivated by real rate limits hit
+during the live testing that surfaced issue 26)
+
+**Context:** OpenRouter's free-tier models rate-limit under real, repeated
+use — exactly the kind of use the README's "Exercising every outcome"
+section (and the live debugging in issue 26) puts them under. Issue 26
+already made an LLM-call failure a safe, retryable skip instead of a crash;
+this issue reduces how often that skip needs to fire at all, by giving
+discovery a second provider to fail over to.
+
+**What changed:**
+- `comp_use/llm_client.py`: extracted `OpenRouterClient`'s request/response
+  handling into a shared `_OpenAICompatibleClient` base — NVIDIA NIM's hosted
+  inference API is also OpenAI-compatible chat completions with tool calling,
+  so the prompts, tool schemas, and HTTP handling are identical; only the
+  endpoint, auth header shape, and model names differ per provider. Verified
+  the refactor was behavior-preserving before adding anything new: all 12
+  existing `OpenRouterClient` tests passed unmodified against the refactored
+  code.
+- Added `NvidiaNimClient(_OpenAICompatibleClient)` — `integrate.api.nvidia.com`,
+  bearer-only auth (no `HTTP-Referer`/`X-Title`, unlike OpenRouter).
+- Added `FallbackLLMClient(primary, fallback)`: tries `primary`
+  (`decide_next_action`/`diagnose_drift`), and on *any* exception — not just a
+  detected rate limit specifically, a malformed response or timeout deserves
+  the same treatment — retries with `fallback`. If `fallback` also raises,
+  its exception propagates into the exact `llm_call_failed` skip path issue
+  26 already built; the fallback mechanism doesn't need its own separate
+  crash-proofing.
+- `comp_use/cli.py`'s new `_build_llm_client(settings)` only constructs the
+  fallback wrapper when `NVIDIA_API_KEY` is set — with no key configured,
+  behavior is identical to OpenRouter-only, so this is additive, not a
+  breaking change to the existing default setup. Wired into both
+  `_run_discover` and `_diagnose_and_propose_patch` (drift diagnosis also
+  benefits from the fallback).
+- Added `Settings.nvidia_api_key`/`nvidia_model`/`nvidia_vision_model`
+  (`NVIDIA_API_KEY`/`NVIDIA_MODEL`/`NVIDIA_VISION_MODEL`), documented in
+  `.env.example` and `README.md`.
+
+**To do:**
+- [x] Refactor `OpenRouterClient` into a shared base with zero behavior
+      change, confirmed by running all existing tests unmodified before
+      adding anything new.
+- [x] Add `NvidiaNimClient`, tested with mocked HTTP (correct endpoint,
+      bearer-only auth, correct text/vision model routing).
+- [x] Add `FallbackLLMClient`, tested: primary succeeds → fallback never
+      called; primary raises → fallback's result is used; both raise → the
+      fallback's exception propagates; applies to both `decide_next_action`
+      and `diagnose_drift`.
+- [x] Wire into `cli.py` via `_build_llm_client`, tested: no NVIDIA key →
+      bare `OpenRouterClient`; key present → `FallbackLLMClient` wrapping
+      both providers.
+- [ ] **Not live-verified against a real NVIDIA API key** — none was
+      available while building this. `NVIDIA_MODEL`/`NVIDIA_VISION_MODEL`'s
+      defaults are best-effort picks from NIM's published catalog naming,
+      not confirmed working the way `OPENROUTER_VISION_MODEL`'s default was
+      (a wrong first guess there 404'd and had to be corrected live). Stated
+      as an open item rather than silently assumed correct — matches how
+      every other real-API integration in this project was actually proven,
+      and this one hasn't been yet. If a key becomes available: re-run the
+      README's discover command with `NVIDIA_API_KEY` set and OpenRouter's
+      key temporarily removed/invalidated, to force the fallback path and
+      confirm the model IDs actually resolve.
+
+Tests: 8 new (`NvidiaNimClient` x2, `FallbackLLMClient` x4, `_build_llm_client`
+x2), plus `test_config.py` extended for the new settings. 116/116 passing.

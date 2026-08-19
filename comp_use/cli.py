@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from comp_use.config import load_settings
+from comp_use.config import Settings, load_settings
 from comp_use.discovery.agent import DiscoveryAgent
 from comp_use.discovery.compiler import compile_artifact
 from comp_use.drift import propose_drift_patch
@@ -13,7 +13,7 @@ from comp_use.escalation.controller import EscalationController
 from comp_use.escalation.transport import LocalSharedBrowserTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
-from comp_use.llm_client import OpenRouterClient
+from comp_use.llm_client import FallbackLLMClient, LLMClient, NvidiaNimClient, OpenRouterClient
 from comp_use.replay.engine import ReplayEngine, validate_required_params
 from comp_use.schemas import (
     ActionType,
@@ -60,6 +60,19 @@ def next_artifact_version(capability_name: str, artifacts_dir: Path) -> int:
     return max(versions, default=0) + 1
 
 
+def _build_llm_client(settings: Settings) -> LLMClient:
+    """OpenRouter is always the primary provider. NVIDIA NIM is added as an
+    automatic fallback only when NVIDIA_API_KEY is configured - with no
+    NVIDIA key set, this is identical to the previous OpenRouter-only
+    behavior. The fallback exists specifically to tolerate OpenRouter's
+    free-tier rate limits without the whole discovery/drift-diagnosis run
+    stalling on one provider (see FallbackLLMClient)."""
+    primary = OpenRouterClient(settings)
+    if settings.nvidia_api_key:
+        return FallbackLLMClient(primary, NvidiaNimClient(settings))
+    return primary
+
+
 def _derive_success_checkpoint(surface: PlaywrightSurface, fallback_url: str) -> Checkpoint:
     """Build a checkpoint from the final page's own heading rather than baking in
     this run's literal URL, which would only ever match a future replay that
@@ -95,9 +108,13 @@ def _run_discover(args) -> None:
     guardrail = Guardrail(settings)
     run_id = f"discover_{int(time.time())}"
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
-    llm = OpenRouterClient(settings)
+    llm = _build_llm_client(settings)
     transport = LocalSharedBrowserTransport()
-    print(f"Discovering with {settings.openrouter_model} (max {settings.max_discovery_steps} steps)", flush=True)
+    fallback_note = f" (falls back to NVIDIA NIM:{settings.nvidia_model} on failure)" if settings.nvidia_api_key else ""
+    print(
+        f"Discovering with {settings.openrouter_model}{fallback_note} (max {settings.max_discovery_steps} steps)",
+        flush=True,
+    )
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=_headless())
@@ -164,7 +181,7 @@ def _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifac
     if not _is_action_locator_failure(artifact, result):
         return
     print(f"[replay] hard_failure at step {result.step_index}; diagnosing possible drift...", flush=True)
-    llm = OpenRouterClient(settings)
+    llm = _build_llm_client(settings)
     diagnosis = propose_drift_patch(llm, surface, artifact, result.step_index)
     if diagnosis.patched_artifact is None:
         print(

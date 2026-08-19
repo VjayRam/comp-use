@@ -34,6 +34,12 @@ class Settings(BaseModel):
     # enough to produce a usable locator (see DiscoveryAgent's needs_vision_fallback).
     # Must be a vision-capable model - the default text model above isn't.
     openrouter_vision_model: str = "google/gemma-4-26b-a4b-it:free"
+    # Second provider, tried only when OpenRouter fails (rate limit, timeout, ...) -
+    # see FallbackLLMClient. Empty by default: no NVIDIA_API_KEY means no fallback,
+    # identical to the previous OpenRouter-only behavior.
+    nvidia_api_key: str = ""
+    nvidia_model: str = "meta/llama-3.1-8b-instruct"
+    nvidia_vision_model: str = "meta/llama-3.2-11b-vision-instruct"
     max_discovery_steps: int = 25
     artifacts_dir: Path = Path("artifacts")
     evidence_dir: Path = Path("evidence")
@@ -47,5 +53,10 @@ def load_settings() -> Settings:
         ),
         openrouter_vision_model=os.environ.get(
             "OPENROUTER_VISION_MODEL", "google/gemma-4-26b-a4b-it:free"
+        ),
+        nvidia_api_key=os.environ.get("NVIDIA_API_KEY", ""),
+        nvidia_model=os.environ.get("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+        nvidia_vision_model=os.environ.get(
+            "NVIDIA_VISION_MODEL", "meta/llama-3.2-11b-vision-instruct"
         ),
     )

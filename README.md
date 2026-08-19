@@ -133,6 +133,21 @@ has a working default and rarely needs changing — it's only used as a fallback
 the accessibility tree alone isn't enough for the model to locate an element (see
 REPORT.md's Heterogeneity & multi-tenant section).
 
+**Optional second provider — NVIDIA NIM, to tolerate OpenRouter's free-tier rate
+limits.** Set `NVIDIA_API_KEY` (get one at [build.nvidia.com](https://build.nvidia.com))
+and every LLM call automatically falls back to NIM if OpenRouter fails for any
+reason (rate limit, timeout, a malformed response). Leave it blank to disable the
+fallback entirely — behavior is then identical to OpenRouter-only, as before. See
+`FallbackLLMClient` in `comp_use/llm_client.py`.
+
+> **Not yet live-verified against a real NVIDIA key** (none was available while
+> building this) — `NVIDIA_MODEL`/`NVIDIA_VISION_MODEL`'s defaults are best-effort
+> picks from NIM's published model catalog naming, not confirmed working the way
+> `OPENROUTER_VISION_MODEL`'s default was (an earlier candidate there 404'd and had
+> to be corrected live — the same could turn out to be true here). If discovery logs
+> `[discover] primary provider failed (...); falling back...` followed by a second
+> failure, check NIM's current catalog for valid model IDs and update `.env`.
+
 Run tests:
 
 ```bash
