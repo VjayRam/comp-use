@@ -53,3 +53,14 @@ def test_redact_masks_account_numbers_and_amounts():
     assert "123456789" not in redacted
     assert "$1,500.00" not in redacted
     assert "[REDACTED]" in redacted
+
+
+def test_redact_masks_mock_bank_account_and_transaction_ids():
+    g = make_guardrail()
+    redacted = g.redact(
+        "Transferred from ACC-001 to ACC-002, txn TXN-000123, "
+        "sub-account SUB-0042, confirmation CONF-000007"
+    )
+    for value in ("ACC-001", "ACC-002", "TXN-000123", "SUB-0042", "CONF-000007"):
+        assert value not in redacted
+    assert redacted.count("[REDACTED]") == 5

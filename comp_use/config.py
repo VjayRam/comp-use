@@ -17,6 +17,15 @@ class Settings(BaseModel):
         default_factory=lambda: [
             r"\b\d{9,12}\b",
             r"\$[\d,]+\.\d{2}",
+            # Mock bank's own structured identifiers (account/sub-account/
+            # transaction/confirmation numbers) - real-looking business
+            # identifiers, unlike the bare member_id used openly in the
+            # assignment's own example goal ("look up member 12345"), which is
+            # deliberately left unredacted. See REPORT.md Safety section.
+            r"\bACC-\d+\b",
+            r"\bSUB-\d+\b",
+            r"\bTXN-\d+\b",
+            r"\bCONF-\d+\b",
         ]
     )
     risky_confirm_default: bool = False

@@ -168,7 +168,15 @@ allows this ("a full real-time co-browsing operator console is out of scope") �
   this and it's now fixed.)
 - **Redaction** — one function, `Guardrail.redact`, used before LLM-bound text would
   be logged and before JSONL persistence (`comp_use/evidence.py` walks strings in the
-  event payload). Patterns: 9–12 digit IDs and `$1,234.56`-style amounts.
+  event payload). Patterns: 9–12 digit IDs, `$1,234.56`-style amounts, and the mock
+  bank's own structured identifiers (`ACC-\d+`, `SUB-\d+`, `TXN-\d+`, `CONF-\d+`).
+  **Deliberate scope decision:** the bare `member_id` (`"12345"`) is *not* redacted.
+  The assignment's own example goal is *"look up member 12345"*, used in the open,
+  in prompts — redacting every short numeric string would both fight the brief's own
+  example and turn goal text and evidence logs unreadable for a value that isn't, by
+  itself, an account number or a credential. Account/sub-account/transaction/
+  confirmation numbers *are* redacted, since those are the values that actually look
+  like real financial-system identifiers.
 
 Hosted OpenRouter still means redacted UI text leaves the machine on **discover**.
 Point `LLMClient` at a local model for production locality; `FakeLLMClient` is the

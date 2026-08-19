@@ -281,17 +281,31 @@ and fixed in commit `5baa19f` during this same audit; this issue is what's still
 open: the *evidence logs* still aren't covering our own ID formats.)
 
 **To do:**
-- [ ] Decide the redaction policy deliberately rather than guessing: does a mock
+- [x] Decide the redaction policy deliberately rather than guessing: does a mock
       member ID like `"12345"` actually need redacting (the assignment's own
       example goal is *"look up member 12345"*, used in the open, in prompts), or
       is the requirement really aimed at credentials/SSNs/card numbers/full names?
       This is a judgment call worth a sentence in `REPORT.md`'s Safety section
-      either way.
-- [ ] If member/account IDs are in scope: add patterns for our actual formats
+      either way. **Decision:** bare `member_id` stays unredacted (matches the
+      brief's own example usage); structured account/transaction identifiers are
+      redacted, since those look like real financial-system identifiers, not a
+      lookup key used in the open. Documented in `REPORT.md`'s Safety section.
+- [x] If member/account IDs are in scope: add patterns for our actual formats
       (`ACC-\d{3}`, `SUB-\d{4}`, `TXN-\d{6}`, `CONF-\d{6}`, and/or a
       narrower/shorter numeric-ID pattern than the current 9–12-digit one).
-- [ ] Add a guardrail test asserting these formats get redacted, not just the
+      (`comp_use/config.py`, `Settings.redaction_patterns` — added `ACC-\d+`,
+      `SUB-\d+`, `TXN-\d+`, `CONF-\d+`.)
+- [x] Add a guardrail test asserting these formats get redacted, not just the
       existing 9–12-digit/currency cases.
+      (`test_redact_masks_mock_bank_account_and_transaction_ids` in
+      `tests/test_guardrail.py`.)
+- [x] Retroactively re-redacted the 3 already-committed evidence logs that had
+      unredacted `ACC-*`/`TXN-*` values under the old patterns
+      (`evidence/discover_1787105313_transfer_funds/`,
+      `evidence/discover_1787097270/`, and the newly-added
+      `evidence/discover_1787149762_transfer_funds/`) — grepping for
+      `ACC-|TXN-|SUB-[0-9]|CONF-` across `evidence/**/log.jsonl` now returns
+      nothing.
 
 ---
 
