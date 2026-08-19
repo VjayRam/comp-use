@@ -595,6 +595,16 @@ capability whose success URL contains any per-run value (a member ID, a
 generated confirmation/sub-account/transaction ID) — which is `open_sub_account`
 and `transfer_funds` in addition to `lookup_member`.
 
+**Sharper consequence, found rechecking `README.md`:** the README's own Demo
+path (§"Terminal 2 — discover") instructs the reader to run exactly
+`discover --capability-name lookup_member` — the same capability name as the
+already-committed, working `artifacts/lookup_member/v1.json`. Since
+`save_artifact` always writes `v1.json` (see issue 20 below — artifacts are
+never actually versioned despite the schema supporting it), literally following
+the README's own instructions **overwrites the good committed artifact with a
+broken one**, in place. A reviewer who runs the documented demo exactly as
+written breaks the repo.
+
 **To do:**
 - [ ] Fix `_run_discover` to build a generic checkpoint instead of a literal
       URL pattern — e.g. default to an `element_visible` checkpoint on whatever
@@ -918,3 +928,199 @@ failed red if it had been wrong.
       `output_schema` require manual authoring today, not automatic discovery.
 - [ ] Either switch `TEXT_PRESENT` to check rendered text, or note the
       HTML-source caveat in `REPORT.md`.
+
+---
+
+# Third audit pass (2026-08-19, same day)
+
+Requested: re-audit thoroughly enough that fixing issues 1–19 shouldn't surface
+more. Re-read every source file end to end again (including ones already marked
+audited), every test file, and every doc/config file (`README.md`, `REPORT.md`,
+`.gitignore`, `requirements.txt`, `pyproject.toml`, `.env.example`) specifically
+looking for what the first two passes missed. Found five more, one of which is a
+gap in this very audit process — a citation to a finding I'd reasoned about but
+never actually written down. Noting that plainly rather than quietly fixing the
+citation, because it's relevant to the honest answer to "is this really the last
+set."
+
+---
+
+## 20. Artifacts are never actually versioned — `_run_discover` always writes/overwrites `v1.json`
+
+**Priority:** high (root cause behind issue 11's sharpest consequence — running
+the README's own demo verbatim destroys the working committed artifact)
+
+**Current state:** `comp_use/schemas.py`'s `Artifact.version` defaults to `1`.
+`comp_use/cli.py`'s `_run_discover` never sets it to anything else — `save_artifact`
+always writes `capability_dir / f"v{artifact.version}.json"`, i.e. always
+`v1.json`. `load_artifact` *does* support multi-version lookup (`version: int |
+None = None`, defaulting to the highest `v*.json` found), and the design spec
+clearly intends versioning (`docs/superpowers/.../design.md` and the artifact
+schema's own naming convention `artifacts/<capability_name>/v<N>.json`) — but
+nothing in the actual discover flow ever produces `v2.json`. Re-running discovery
+for an existing capability name silently clobbers whatever was there before, with
+no version history, no diff, no confirmation prompt, and no warning. This is a
+loaded gun even outside the issue-11 scenario: if a capability's underlying app UI
+changes and someone re-discovers it, the old (possibly still-working-for-other-
+tenants, in a multi-tenant future) artifact is just gone.
+
+**To do:**
+- [ ] `_run_discover` should compute the next version (scan existing
+      `v*.json` the same way `load_artifact` does, +1) rather than hardcoding
+      `1`, so re-discovery adds a new version instead of overwriting.
+- [ ] Decide and document what "latest" means for replay when multiple versions
+      exist — `load_artifact` already defaults to the highest version number,
+      so this may just be a matter of not fighting that default.
+- [ ] Add a test: running `_run_discover`-equivalent logic twice for the same
+      `capability_name` produces `v1.json` and `v2.json`, not one file
+      overwritten twice.
+
+---
+
+## 21. `_run_replay`'s required-param check duplicates `ReplayEngine._validate_params` entirely
+
+**Priority:** low-medium (code-quality/drift risk, not a live bug today)
+
+**Current state:** `comp_use/cli.py`, `_run_replay`:
+```python
+missing = [item.name for item in artifact.input_schema if item.required and item.name not in params]
+if missing:
+    detail = f"missing required param '{missing[0]}'"
+    ...
+    return
+```
+`comp_use/replay/engine.py`, `ReplayEngine._validate_params` (called from
+`ReplayEngine.run()`, the very next thing `_run_replay` does after its own
+check):
+```python
+for input_param in artifact.input_schema:
+    if input_param.required and input_param.name not in params:
+        return f"missing required param '{input_param.name}'"
+```
+Identical condition, checked twice, in two different files. Because `cli.py`'s
+check runs first and returns early on any match, `ReplayEngine`'s own validation
+is unreachable dead code on the only path that matters in production (the real
+CLI) — it only actually executes when a test or a future caller uses
+`ReplayEngine` directly, bypassing `cli.py`. Not a bug today because both
+checks express the same logic, but it's exactly the kind of duplication that
+silently drifts: if type-aware validation is ever added (see the `InputParam.type`
+note below), it would be easy to add it to only one of the two copies.
+
+**To do:**
+- [ ] Delete the duplicate check in `cli.py`'s `_run_replay` and let
+      `ReplayEngine.run()` be the single source of truth for parameter
+      validation — `cli.py` already handles the `VALIDATION_ERROR` result from
+      `engine.run()` correctly elsewhere in the codebase (it's one of the
+      `ReplayResult` outcomes printed as JSON), so this doesn't need special
+      casing to preserve the "skip launching Chromium" behavior... except it
+      currently *does* need that, since `ReplayEngine.run()` only validates
+      after a browser is already open. Fixing this cleanly means either (a)
+      keeping a *thin* pre-browser check in `cli.py` but having it call
+      `ReplayEngine._validate_params` (or a shared free function) instead of
+      reimplementing the loop, or (b) making `_validate_params` a standalone
+      function both call. Prefer (a) or (b) over leaving two copies of the loop.
+
+*(Separately: `InputParam.type` is `Literal["string", "number", "boolean"]`,*
+*but neither validation path checks that a caller's `params` value actually*
+*matches the declared type — a "number" param passed as a non-numeric string*
+*is accepted at validation time and only fails later, if at all, when*
+*`str(params[...])` gets typed into a form field. Minor, and arguably an*
+*acceptable MVP gap since every param in this build is `type="string"` in*
+*practice, but worth a one-line note in `REPORT.md`'s Artifact schema section*
+*if not fixed.)*
+
+---
+
+## 22. `REPORT.md` contradicts itself on which outcomes get a failure screenshot
+
+**Priority:** low (doc-only, internal inconsistency within a single document)
+
+**Current state:** `REPORT.md`'s Determinism & error handling section states:
+> "Every non-`SUCCESS` outcome on both the replay and discovery CLI paths also
+> gets a richer signal than the JSONL log alone... whenever the outcome isn't
+> clean success, landing a `final.png`..."
+
+But the same document's Evidence walkthrough section, describing
+`validation_error`, correctly states:
+> "returned before any `surface.act` — the CLI skips launching Chromium
+> entirely on this path."
+
+These two claims are inconsistent with each other: `_run_replay`'s early
+required-param check (see issue 21) returns *before* the `with sync_playwright()`
+block ever runs, so there is no `Surface` and no browser to screenshot —
+`validation_error` can never get a `final.png`, by construction, no matter what
+the Determinism section's "every non-SUCCESS" wording implies. The Evidence
+walkthrough section already has this right; the Determinism section doesn't.
+
+**To do:**
+- [ ] Reword the Determinism & error handling section's claim to something like
+      "every non-`SUCCESS` outcome that reaches the browser" or "every outcome
+      except `validation_error`" — matching what the Evidence walkthrough
+      section (correctly) already says elsewhere in the same file.
+
+---
+
+## 23. Smaller findings from re-reading `README.md`, `.gitignore`, and `config.py` end to end
+
+**Priority:** low (bundled)
+
+- **README's escalation demo text is stale post-issue-9.** "Risky capabilities
+  (transfer / sub-account) pause for human confirmation unless you pass
+  `--confirm-risky`. Type `resume` in the CLI when you have finished in the
+  shared browser window." doesn't mention the one-line "what did you do?" note
+  prompt added this session (issue 9) — a reader following the README verbatim
+  will be surprised by an extra prompt it doesn't warn them about.
+- **`.gitignore`'s `/evidence/*.png` and `/evidence/*.jpg` rules match nothing
+  real.** Both patterns are anchored one level too shallow — every actual
+  screenshot lives at `evidence/<run_id>/*.png` (nested one directory deeper),
+  not directly under `evidence/`. Confirmed by the fact that every screenshot
+  committed this session (`escalation_before_step8.png`, `final.png`, etc.) *was*
+  tracked by git despite this rule supposedly excluding `.png` files under
+  `evidence/`. Either the rule was always dead, or it reflects an earlier intent
+  (exclude evidence images from git) that current practice has since reversed
+  (we've deliberately committed real screenshots as evidence in three separate
+  commits this session) without anyone updating `.gitignore` to match the actual
+  intent either way.
+- **`Settings.risky_confirm_default: bool = False` is dead config**, in the
+  same family as issue 16's `requires_confirmation`. Grepped the whole repo:
+  referenced only in its own definition and the design-plan doc, never read by
+  `cli.py`, `ReplayEngine`, or `DiscoveryAgent` — risk confirmation is gated
+  entirely by the CLI's own `--confirm-risky` flag (`args.confirm_risky`), a
+  separate, unrelated boolean that happens to serve the same purpose. This
+  field can likely just be deleted.
+
+**To do:**
+- [ ] Update the README's escalation paragraph to mention the note prompt.
+- [ ] Fix or remove the `/evidence/*.png`/`/evidence/*.jpg` `.gitignore` rules
+      to match actual intent (either genuinely exclude nested screenshots with
+      `evidence/**/*.png`, or delete the now-contradicted rule since screenshots
+      are being committed on purpose).
+- [ ] Delete `Settings.risky_confirm_default` (or wire it in and use it
+      instead of/alongside `--confirm-risky`, if a config-level default is
+      actually wanted) — fold into issue 16's fix, same root cause.
+
+---
+
+## On "is this really the last set"
+
+Three audit passes in one session found 23 items total, in decreasing severity
+and increasing obscurity — the pattern of a converging, not open-ended, search
+(critical/high findings clustered in passes one and two; pass three's five
+findings are all low-to-medium and mostly doc/config precision, plus one
+already-partially-known versioning gap). That's a reasonable signal this is
+close to the bottom, not a guarantee it's the actual bottom.
+
+Two things are true at once, honestly:
+1. Every remaining *known* gap that could realistically surprise someone
+   checking the brief line-by-line is now written down here, with exact file/line
+   references and (where practical) a live reproduction — not vibes.
+2. No finite audit of a nontrivial codebase can prove a negative. A genuinely new
+   class of issue (a Playwright version-specific quirk, a race condition under
+   real timing instead of headless-test timing, something only a fresh pair of
+   eyes or an adversarial reviewer would catch) could still exist and wouldn't be
+   caught by re-reading the same files a fourth time — that stops being an audit
+   and starts being diminishing returns. The highest-value next step for
+   confidence isn't a fourth read-through; it's fixing issues 11/20 (the two that
+   compound each other and are reproducible right now) and then re-running the
+   full live demo path end to end exactly as the README describes it, which
+   would catch anything this pass's static reading still missed.
