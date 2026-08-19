@@ -85,6 +85,22 @@ Single Python process, five components:
 No services, no queues, no multi-process orchestration — synchronous single process,
 justified by scope (assignment explicitly does not reward building scaling infra).
 
+**Caller boundary (assumption).** The system does not decide for itself whether to
+discover or replay a goal — the caller states explicitly which capability it wants,
+by name (CLI: `discover --capability-name X` / `replay --capability-name X`). We are
+not building a router that takes a raw natural-language goal, checks whether a
+matching artifact already exists, and dispatches to replay-if-known /
+discover-if-not. This follows directly from the brief's own framing in §1: *"the
+agent-facing product decides what to do; this system is how it reliably and safely
+does it."* Deciding *which* capability to invoke — including matching a fuzzy goal to
+an existing artifact — is that upstream product's job, not this system's. The
+optional stretch goal in §8 of the brief ("expose saved artifacts as a catalog...
+invoke by name with typed args") is consistent with this: even the stretch version is
+invoke-by-name, not infer-intent-and-auto-select. We did not build the catalog/API
+layer itself (that remains a stretch goal, not attempted — see §11 Cuts); the
+assumption here is only about *where the dispatch decision lives*, not about
+building the dispatcher.
+
 ## 5. Artifact schema
 
 Not prescribed by the assignment beyond a minimum field list (§3.2 of the brief) —
