@@ -31,6 +31,10 @@ class Settings(BaseModel):
     risky_confirm_default: bool = False
     openrouter_api_key: str = ""
     openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
+    # Used only as a vision fallback, when the accessibility tree alone hasn't been
+    # enough to produce a usable locator (see DiscoveryAgent's needs_vision_fallback).
+    # Must be a vision-capable model - the default text model above isn't.
+    openrouter_vision_model: str = "google/gemma-4-26b-a4b-it:free"
     max_discovery_steps: int = 25
     artifacts_dir: Path = Path("artifacts")
     evidence_dir: Path = Path("evidence")
@@ -41,5 +45,8 @@ def load_settings() -> Settings:
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         openrouter_model=os.environ.get(
             "OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free"
+        ),
+        openrouter_vision_model=os.environ.get(
+            "OPENROUTER_VISION_MODEL", "google/gemma-4-26b-a4b-it:free"
         ),
     )

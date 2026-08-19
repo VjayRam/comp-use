@@ -13,34 +13,35 @@ re-reading prose.
 
 ---
 
-## Submission readiness (2026-08-19, after fixing issues 1–8): ~92/100
+## Submission readiness (2026-08-19, after fixing issues 1–10): ~96/100
 
-All 8 issues below are now resolved (code + tests + live verification against the
-running mock app, not just unit tests) — see each issue's To-do checklist for what
-changed and which commit. Rescored against the same §7 evaluation order:
+All 10 issues below are now resolved (code + tests + live verification against the
+running mock app and the real OpenRouter API, not just unit tests) — see each
+issue's To-do checklist for what changed. Rescored against the same §7 evaluation
+order:
 
 | Criterion (§7 weight order) | Score | Why |
 |---|---|---|
-| System design | 88/100 | Same clean component boundaries as before, plus `output_schema` is no longer dead weight — it's derived from `extract` steps the same way `input_schema` is derived from `goal_parameter` steps (issue 5). |
-| Correctness of core loop | 87/100 | Same verified-not-assumed baseline, plus `EXTRACT` now actually extracts and replay returns real `outputs` (verified live: `confirmation_number`/`txn_id` come back on `open_sub_account`/`transfer_funds`). |
-| Robustness & error handling | 78/100 | Unchanged core (`business_outcome`/`hard_failure` separation, mid-sequence divergence handling). Discovery now has a genuine dead-end detector (3 consecutive skipped/invalid decisions escalates mid-run), which is new robustness, not just escalation plumbing. Still docked for `recoverable` being unexercised. |
-| Human-in-the-loop escalation | **88/100** | Was the single biggest drag at 55/100. Now: discovery escalates on both `max_steps` exhaustion and repeated dead-ends (issue 2), every `InterventionRequest` carries a real `screenshot_path` on both replay and discovery (issue 3), and the human's one-line note is logged as a dedicated `escalation_human_action` event (issue 4). Not 100 because a full DOM diff of what changed during the handoff was explicitly left undone (cheap, lower-value on top of the note). |
-| Generalization (design only) | 80/100 | Unchanged — not expected to be built, and nothing this pass touched Surface/multi-tenant design. |
-| Safety & data handling | **85/100** | Was 60/100. Redaction now covers the mock bank's actual identifier formats (`ACC-`, `SUB-`, `TXN-`, `CONF-`), with a documented, deliberate policy decision on why bare `member_id` stays unredacted (matches the brief's own example usage) rather than over-redacting. The 3 already-committed evidence logs that had unredacted IDs under the old patterns were retroactively re-redacted, not just fixed going forward. |
-| Code quality | 82/100 | 64 tests now (was 55), TDD maintained throughout this pass (failing test → implementation → pass, every issue), still some `print()`-based logging instead of structured. |
-| Communication | 88/100 | REPORT.md's stale "not yet done" claim on real LLM evidence is fixed (issue 1); the README's screenshot-perception overclaim is fixed and REPORT.md's Cuts section now names it explicitly as a scope decision, not silently (issue 8) — the two documents agree with each other and with the code. |
+| System design | 90/100 | `output_schema` derived from `extract` steps (issue 5); `EscalationController` now composes cleanly with an optional `Surface` for the diff/screenshot capability (issue 9) without touching `ReplayEngine`/`DiscoveryAgent`'s own interfaces — the seam absorbed the new capability instead of needing a redesign. |
+| Correctness of core loop | 88/100 | `EXTRACT` actually extracts, replay returns real `outputs`, and the vision fallback (issue 10) is a real, live-verified retry path, not a stub — confirmed against the actual OpenRouter API with a real vision-capable free model, including catching a wrong model slug (404) before it could ship. |
+| Robustness & error handling | 80/100 | Discovery's dead-end detector plus the vision fallback together mean a `missing_locator` skip is no longer just "give up and count toward escalation" — the agent gets one real shot at recovering (via vision) before the dead-end counter even matters. Still docked for `recoverable` being unexercised. |
+| Human-in-the-loop escalation | **93/100** | Was 55/100 two passes ago. Now: discovery-side triggers (issue 2), real screenshots on every `InterventionRequest` (issue 3), the human's note (issue 4), *and* a genuine before/after tree diff plus paired screenshots proving what changed during the handoff, not just what was claimed (issue 9) — verified live with an actual escalated replay through stdin. This is now one of the most complete parts of the system, not the weakest. |
+| Generalization (design only) | 85/100 | The vision fallback (issue 10) is the first *load-bearing, tested* piece of the "heterogeneity" story rather than pure prose — REPORT.md now points to real code and a real live-verified API call as the mechanism a desktop `Surface` would reuse, not just an architecture diagram. |
+| Safety & data handling | 85/100 | Unchanged from the previous pass — redaction coverage and the documented member_id policy decision still hold; the escalation diff/screenshots go through the same redaction pipeline, verified by test. |
+| Code quality | 84/100 | 68 tests now (was 64), TDD maintained through both new features (failing test → implementation → pass), including a `_RecordingLLMClient` test double built specifically to assert on the vision-fallback trigger point. |
+| Communication | 90/100 | REPORT.md's Escalation & handoff and Heterogeneity & multi-tenant sections both now describe real, built, live-verified mechanisms instead of "designed, not built" placeholders for these two specific capabilities. |
 
-**What's left, if anything:** the two intentionally-skipped items — a full DOM diff
-of the human's escalation actions (issue 4's optional bullet) and real
-vision/screenshot input to the LLM (issue 8's optional bullet) — are both
-documented as deliberate scope calls with a one-sentence rationale each, not
-silent gaps. Nothing on the original 8-item list is still open.
+**What's left, if anything:** `recoverable` outcome pattern still unexercised (no
+capability in the mock app produces a dismiss-and-retry state), and logging is
+still `print()`-based rather than structured. Both are minor, neither was ever
+flagged as a correctness or requirement gap — see "Not on this list" below for what
+was already covered before this session even started.
 
-**Bottom line:** every explicitly-named §3.6 (escalation) and §3.4 (safety/redaction)
-requirement that was previously missing or wrong is now implemented, tested, and
-verified against the live mock app — the two categories that were dragging the
-score down the most (escalation completeness, redaction coverage) are no longer
-the weak points.
+**Bottom line:** every explicitly-named §3.4/§3.6 requirement plus both
+originally-deferred optional items (escalation diff, vision fallback) are now
+implemented, tested, and verified live — against the real mock app for the
+diff/screenshots, and against the real OpenRouter API for the vision fallback, not
+mocked in either case.
 
 ---
 
@@ -183,11 +184,9 @@ from the operator).
       `EscalationController.escalate()`. `ControlTransport.wait_for_resume()` now
       returns that note (`LocalSharedBrowserTransport` prompts for it right after
       "resume" is typed); `EscalationController.escalate()` logs it unconditionally.
-- [ ] Consider also diffing `surface.observe()` before/after the handoff (the
-      accessibility tree) as a cheap "what changed" signal, logged alongside. Left
-      undone — `EscalationController` doesn't currently hold a reference to
-      `Surface`, and the free-text note already satisfies the explicit requirement;
-      a DOM diff would be a nice-to-have on top, not required.
+- [x] Diff `surface.observe()` before/after the handoff — done, see issue 9 below
+      (originally deferred as a nice-to-have, then explicitly requested and
+      completed, including before/after screenshots alongside the tree diff).
 - [x] Note in `REPORT.md`'s Escalation & handoff section that a full action replay
       of the human's clicks is out of scope (matches the brief's own "full
       real-time co-browsing operator console is out of scope" carve-out in §3.6),
@@ -376,10 +375,134 @@ fallback, not built" in its Cuts-adjacent language; the README does not.
       "accessibility tree" alone as a valid mechanism choice, so it's a documented
       scope decision, not a missing feature. Added a matching bullet to `REPORT.md`'s
       Cuts section so the two documents agree.
-- [ ] (Not done, not required.) Actually wire `screenshot_b64` through to
-      `OpenRouterClient` (base64-encode `surface.screenshot()`, add an image content
-      block to the chat message) if real hybrid perception is wanted later — bigger
-      lift, out of scope for this pass.
+- [x] Actually wire `screenshot_b64` through to `OpenRouterClient` — done, see
+      issue 10 below (originally deferred as out of scope, then explicitly
+      requested and completed as a targeted vision *fallback*, not an always-on
+      second input).
+
+---
+
+## 9. Escalation handoff had no record of what changed, only what the human said
+
+**Priority:** medium (explicit follow-up on issue 4's deferred bullet, requested
+2026-08-19)
+
+**Assignment reference (§3.6):** same clause as issue 4 — "Preserve context and
+evidence across the handoff, and record what the human did." A free-text note
+(issue 4) covers "what the human *said* they did." It doesn't cover "what actually
+changed in the session" — a note can be wrong, vague, or absent (it's `optional`
+in the CLI prompt).
+
+**Current state (before this fix):** `EscalationController` had no reference to
+`Surface`, so it could only log the note, not compare state before/after.
+
+**What changed:**
+- `EscalationController.__init__` now takes an optional `surface` param.
+  `escalate()`, when a surface is present, captures `Surface.observe()` and
+  `Surface.screenshot()` **both** immediately before notifying the operator and
+  immediately after `wait_for_resume()` returns.
+- The two accessibility-tree snapshots are diffed with `difflib.unified_diff` and
+  logged as `tree_diff` on the same `escalation_human_action` event as the note.
+- Both screenshots are saved via `EvidenceLogger.save_screenshot` (labeled
+  `escalation_before_step<N>` / `escalation_after_step<N>`) and their paths logged
+  alongside — separate from the `InterventionRequest.screenshot_path` from issue 3,
+  which captures the moment escalation was *raised*, not the before/after pair
+  around the handoff itself.
+- `comp_use/cli.py` restructured so `EscalationController` is constructed *after*
+  `PlaywrightSurface`, inside the `with sync_playwright()` block, for both
+  `_run_discover` and `_run_replay` — previously it was built before the browser
+  even existed, so there was nothing to pass.
+- The diff and screenshots go through the same redaction/evidence pipeline as
+  everything else: a diff line containing `TXN-000001` gets `[REDACTED]` before
+  it's written to `log.jsonl`, verified by a dedicated test, not assumed.
+
+**To do:**
+- [x] Add `surface` param to `EscalationController`, capture before/after tree +
+      screenshots, diff and log them on `escalation_human_action`.
+      (`comp_use/escalation/controller.py`.)
+- [x] Wire a real `Surface` into both CLI escalation paths.
+      (`comp_use/cli.py`, `_run_discover` and `_run_replay`.)
+- [x] Add tests: diff appears when a surface is provided, `tree_diff` is `None`
+      when it isn't (backward compatible), redaction still applies to diff text.
+      (`test_escalate_logs_accessibility_tree_diff_when_surface_provided`,
+      `test_escalate_logs_what_the_human_did` in `tests/test_escalation.py`.)
+- [x] Verify live: escalated a real `transfer_funds` replay past its risky
+      "Confirm Transfer" step, typed `resume` + a note through stdin. Produced
+      `escalation_before_step8.png` and `escalation_after_step8.png` (real PNGs,
+      confirmed with `file`) plus an (empty, correctly — the human didn't touch the
+      browser, only typed `resume`; the automated click happens *after* the diff is
+      captured) `tree_diff` in `log.jsonl`.
+
+---
+
+## 10. No screenshot-based fallback for elements the DOM/accessibility tree can't
+    resolve
+
+**Priority:** medium (explicit follow-up on issue 8's deferred bullet, requested
+2026-08-19 — framed as "when DOM cannot be accessed or doesn't have the necessary
+elements to interact with, use screenshot based [perception]")
+
+**Assignment reference (§3.1, Discovery):** "the agent perceives (DOM/accessibility
+tree, screenshot, or both — your call, document the tradeoff)" — the brief allows
+either, but a system that only ever falls back to nothing when the tree is
+insufficient doesn't demonstrate the "or both" option at all. §3.7 (heterogeneity,
+design-only) separately asks what would change for "a native/desktop app" with no
+DOM access — a vision fallback inside the existing `Surface` is the concrete,
+testable slice of that same underlying problem (tree-based perception isn't always
+enough), without building a whole new desktop automation stack the assignment
+itself says is design-only.
+
+**What changed:**
+- `Settings.openrouter_vision_model` (default `google/gemma-4-26b-a4b-it:free`,
+  overridable via `OPENROUTER_VISION_MODEL`) is a second, distinct model setting
+  from `Settings.openrouter_model` — most free-tier *text* models on OpenRouter
+  silently mishandle or reject image content, so the fallback has to route to a
+  model that actually declares vision support, not just add a field to the same
+  request.
+- `OpenRouterClient.decide_next_action` now builds a multi-modal `content` list
+  (`[{"type": "text", ...}, {"type": "image_url", "image_url": {"url":
+  "data:image/png;base64,..."}}]`) instead of a plain string when `screenshot_b64`
+  is provided, and switches `model` to the vision model for that call only. Plain
+  text-only calls (`screenshot_b64=None`) are byte-for-byte unchanged from before.
+- `DiscoveryAgent.run()` tracks a `needs_vision_fallback` flag: when a decision is
+  skipped for `missing_locator` (the model wanted to act on the current page but
+  couldn't produce a valid locator from the accessibility tree alone — precisely
+  "DOM doesn't have the necessary elements to interact with"), the flag is set, and
+  the *next* `decide_next_action` call for that same page state is retried with
+  `screenshot_b64=base64(surface.screenshot())`. The flag is consumed after exactly
+  one retry, not held indefinitely — it doesn't burn image tokens on every
+  subsequent call, only the one immediately following a tree-insufficiency skip.
+- Deliberately *not* wired as an always-on second input to every decision — that
+  would roughly double the cost/latency of every discovery step for a benefit that
+  only matters when the tree actually falls short, which the existing hostile mock
+  app already tests for (decoy panel, ambiguous locator, no `aria-label`) without
+  needing vision at all in the common case.
+
+**To do:**
+- [x] Add `Settings.openrouter_vision_model`, distinct from `openrouter_model`.
+      (`comp_use/config.py`.)
+- [x] `OpenRouterClient.decide_next_action` builds a multi-modal content block and
+      routes to the vision model when a screenshot is supplied; plain-text path
+      unchanged. (`comp_use/llm_client.py`.)
+- [x] `DiscoveryAgent` triggers the fallback on a `missing_locator` skip and
+      consumes it after one retry. (`comp_use/discovery/agent.py`.)
+- [x] Add tests: `OpenRouterClient` sends the right payload shape/model with vs.
+      without a screenshot; `DiscoveryAgent` requests a screenshot exactly on the
+      call immediately following a `missing_locator` skip, not before or after.
+      (`test_openrouter_client_sends_image_content_block_when_screenshot_provided`,
+      `test_openrouter_client_uses_text_model_and_plain_string_when_no_screenshot`
+      in `tests/test_llm_client.py`;
+      `test_agent_retries_with_screenshot_after_missing_locator_skip` in
+      `tests/test_discovery_agent.py`.)
+- [x] Verify live against the real OpenRouter API, not just mocked: a direct
+      `OpenRouterClient.decide_next_action` call with a screenshot and a
+      deliberately under-described tree (`"button Search (no accessible name match
+      found)"`) returned a correctly-formed `click` decision with a real
+      `role`/`name` locator, confirming `google/gemma-4-26b-a4b-it:free` actually
+      accepts the multi-modal payload shape this code sends (an earlier candidate
+      model, `qwen/qwen2.5-vl-32b-instruct:free`, 404'd — not every model OpenRouter
+      lists as vision-capable is actually reachable under that exact slug, so this
+      had to be checked live, not assumed from the model listing).
 
 ---
 

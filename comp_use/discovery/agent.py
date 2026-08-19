@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass, field
 
@@ -112,11 +113,16 @@ class DiscoveryAgent:
         self.surface.act(ActionType.NAVIGATE, locator=None, target=start_url, text=None)
         history: list[dict] = []
         consecutive_skips = 0
+        needs_vision_fallback = False
 
         for step_index in range(self.max_steps):
             observed = self.surface.observe()
+            screenshot_b64 = None
+            if needs_vision_fallback:
+                screenshot_b64 = base64.b64encode(self.surface.screenshot()).decode("ascii")
+                needs_vision_fallback = False
             decision = self.llm_client.decide_next_action(
-                goal=goal, observed_tree=observed.accessibility_tree, screenshot_b64=None, history=history
+                goal=goal, observed_tree=observed.accessibility_tree, screenshot_b64=screenshot_b64, history=history
             )
             self.evidence_logger.log_event("decision", decision)
 
@@ -154,6 +160,9 @@ class DiscoveryAgent:
                     'Example: {"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}}',
                 })
                 self.evidence_logger.log_event("skipped_decision", {"reason": "missing_locator", "decision": decision})
+                # The tree alone wasn't enough for the model to pin down an element -
+                # give it a screenshot on the very next attempt for this same state.
+                needs_vision_fallback = True
                 consecutive_skips += 1
                 if consecutive_skips >= _DEAD_END_THRESHOLD:
                     self._escalate(goal, step_index, f"dead_end: {consecutive_skips} consecutive skipped/invalid decisions")

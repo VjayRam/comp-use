@@ -280,6 +280,43 @@ def test_agent_records_extract_as_on_extract_step(tmp_path):
     assert trace.steps[0].extract_as == "confirmation_number"
 
 
+class _RecordingLLMClient:
+    """Wraps FakeLLMClient's scripted actions but records the screenshot_b64
+    each call was made with, so tests can assert on the vision-fallback trigger."""
+
+    def __init__(self, scripted_actions):
+        self._inner = FakeLLMClient(scripted_actions=scripted_actions)
+        self.screenshot_calls = []
+
+    def decide_next_action(self, goal, observed_tree, screenshot_b64, history):
+        self.screenshot_calls.append(screenshot_b64)
+        return self._inner.decide_next_action(
+            goal=goal, observed_tree=observed_tree, screenshot_b64=screenshot_b64, history=history
+        )
+
+
+def test_agent_retries_with_screenshot_after_missing_locator_skip(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = _RecordingLLMClient(
+        scripted_actions=[
+            {"action": "type_text", "text": "12345", "done": False},  # no locator -> skip
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}}, "done": False},
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_vision_fallback")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+
+    assert llm.screenshot_calls[0] is None
+    assert llm.screenshot_calls[1] is not None
+    assert llm.screenshot_calls[2] is None
+
+
 def test_agent_treats_string_none_target_as_missing(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"

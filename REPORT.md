@@ -122,6 +122,30 @@ Designed, not built as extra runtimes (spec §9). The seams that would change:
 
 Nothing in this repo executes more than one mock tenant.
 
+**Vision fallback — the concrete slice of "apps without a usable DOM tree" that is
+actually built and testable.** A desktop `Surface` (real OS-level automation, no
+accessibility tree at all) isn't built — designing for it is the deliverable, per
+above. But the same underlying gap — the LLM can't turn what it sees into a usable
+locator — already happens *within* the web `Surface` too: a hostile app (see
+Architecture) can render an interactive control the accessibility tree doesn't
+expose cleanly enough for the model to name it. `DiscoveryAgent` now handles this
+directly: when a decision is skipped for `missing_locator` (the model wanted to act
+but couldn't produce a valid locator from the tree alone), the *next*
+`decide_next_action` call for that same page state is retried with a screenshot
+attached, routed to a separate vision-capable model
+(`Settings.openrouter_vision_model`, distinct from the text-only
+`Settings.openrouter_model` — most free-tier text models silently ignore or reject
+image content, so this has to be a deliberate model switch, not just an extra field
+on the same request). `OpenRouterClient.decide_next_action` builds a multi-modal
+`image_url` content block (`data:image/png;base64,...`) instead of a plain string
+when a screenshot is supplied. This is exactly the mechanism a desktop `Surface`
+would reuse as its *only* perception channel, rather than a fallback — proven here
+against a real OpenRouter vision model (`google/gemma-4-26b-a4b-it:free`), not just
+mocked. Verified live: a direct call with a screenshot and a deliberately
+under-described tree (`"button Search (no accessible name match found)"`) returned
+a correctly-formed `click` decision with a real `role`/`name` locator, and the
+request payload's `model` field switched to the vision model automatically.
+
 ## Escalation & handoff
 
 `EscalationController` (`comp_use/escalation/controller.py`) holds `control` in
@@ -144,6 +168,23 @@ plainly stuck; (2) three consecutive skipped/invalid decisions in a row (missing
 locator, missing target, allowlist violation, or an unrecognized action) — a
 dead-end signal that fires *mid-run*, not just at the end, so a human can unblock the
 agent and let it keep going rather than only being told after the whole run failed.
+
+**What changed during the handoff is captured, not just that it happened.**
+`EscalationController.escalate()` takes an optional `surface` reference (wired in
+`comp_use/cli.py` for both `_run_discover` and `_run_replay` — the controller is now
+constructed *after* the `Surface`, inside the `with sync_playwright()` block, so a
+real reference is available). When present, it captures the accessibility tree and a
+screenshot both immediately before notifying the operator and immediately after
+`wait_for_resume()` returns, saving both screenshots via `EvidenceLogger` and logging
+a `difflib.unified_diff` of the two trees. All three — the human's note, the tree
+diff, and both screenshot paths — land on the same `escalation_human_action` event,
+so a reviewer gets "what the human said they did" and "what actually changed"
+side by side, not just one or the other. Verified live against the running mock app:
+escalating on `transfer_funds`'s risky "Confirm Transfer" step produced
+`escalation_before_step8.png` / `escalation_after_step8.png` plus a tree diff in the
+same run's `log.jsonl` (empty in that run, correctly — the human only typed `resume`
+without touching the browser, so nothing had changed yet; the automated click happens
+*after* the diff is captured, once control returns to the agent).
 
 
 
@@ -201,12 +242,12 @@ Unchanged from spec §11:
 - On-prem LLM — documented, not built; OpenRouter is the live discover path.
 - Agent-facing NL-to-params product in front of replay — out of scope; replay takes
   JSON params.
-- Screenshot as an LLM vision input during discovery — not built. `Surface.observe()`
-  gives the LLM the accessibility tree only; screenshots are captured as evidence
-  (`EvidenceLogger.save_screenshot`) but never sent to `OpenRouterClient` as an image.
-  §3.1 explicitly allows accessibility tree alone as a valid perception mechanism, so
-  this is a scope choice, not a gap — but it means the earlier draft of this README
-  overclaimed "screenshot view of the page" for the decision loop specifically; fixed.
+- Screenshot as the *primary* perception channel — not built, and not planned. The
+  accessibility tree is primary throughout; screenshot is wired only as a targeted
+  fallback (see Heterogeneity & multi-tenant below), not an always-on second input to
+  every decision. A full desktop `Surface` (OS-level clicks + a vision model as the
+  *only* perception channel, no accessibility tree at all) is still not built — see
+  Heterogeneity & multi-tenant.
 
 ## Evidence walkthrough (captured 2026-08-18, against the hardened mock app)
 

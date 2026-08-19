@@ -83,19 +83,36 @@ class OpenRouterClient(LLMClient):
         self.settings = settings
 
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
+        text_block = (
+            f"Goal: {goal}\n"
+            f"Current page (accessibility tree): {observed_tree}\n"
+            f"History: {json.dumps(history)}\n"
+            "Return the next JSON action now."
+        )
+        if screenshot_b64 is not None:
+            # Vision fallback: the accessibility tree alone hasn't produced a usable
+            # locator (see DiscoveryAgent.needs_vision_fallback). Give the model a
+            # screenshot alongside the tree and route to a vision-capable model -
+            # the default text model isn't guaranteed to accept image content.
+            text_block = (
+                "The accessibility tree alone was not enough to locate the right "
+                "element last turn. Use the screenshot below to identify it visually, "
+                "then still describe it with a role/text/css locator.\n" + text_block
+            )
+            user_content = [
+                {"type": "text", "text": text_block},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+            ]
+            model = self.settings.openrouter_vision_model
+        else:
+            user_content = text_block
+            model = self.settings.openrouter_model
+
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Goal: {goal}\n"
-                    f"Current page (accessibility tree): {observed_tree}\n"
-                    f"History: {json.dumps(history)}\n"
-                    "Return the next JSON action now."
-                ),
-            },
+            {"role": "user", "content": user_content},
         ]
-        print(f"[discover] asking {self.settings.openrouter_model} ...", flush=True)
+        print(f"[discover] asking {model} ...", flush=True)
         response = requests.post(
             self.ENDPOINT,
             headers={
@@ -104,7 +121,7 @@ class OpenRouterClient(LLMClient):
                 "X-Title": "comp-use",
             },
             json={
-                "model": self.settings.openrouter_model,
+                "model": model,
                 "messages": messages,
                 "tools": [_TOOL_SCHEMA],
             },

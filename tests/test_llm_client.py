@@ -76,3 +76,61 @@ def test_openrouter_client_parses_json_content_without_tool_calls(mock_post):
     )
     assert result["action"] == "type_text"
     assert result["locator"]["strategy"] == "role"
+
+
+@patch("comp_use.llm_client.requests.post")
+def test_openrouter_client_sends_image_content_block_when_screenshot_provided(mock_post):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{
+            "message": {
+                "content": '{"action": "click", "locator": {"strategy": "role", '
+                           '"value": {"role": "button", "name": "Search"}}, "done": false}'
+            }
+        }]
+    }
+    mock_response.raise_for_status.return_value = None
+    mock_post.return_value = mock_response
+
+    settings = load_settings()
+    settings.openrouter_api_key = "test-key"
+    settings.openrouter_model = "text-only-model"
+    settings.openrouter_vision_model = "vision-model"
+    client = OpenRouterClient(settings)
+
+    client.decide_next_action(
+        goal="find member", observed_tree="tree", screenshot_b64="ZmFrZXBuZw==", history=[]
+    )
+
+    assert mock_post.called
+    sent_payload = mock_post.call_args.kwargs["json"]
+    assert sent_payload["model"] == "vision-model"
+    user_content = sent_payload["messages"][1]["content"]
+    assert isinstance(user_content, list)
+    types = [block["type"] for block in user_content]
+    assert "text" in types
+    assert "image_url" in types
+    image_block = next(b for b in user_content if b["type"] == "image_url")
+    assert image_block["image_url"]["url"] == "data:image/png;base64,ZmFrZXBuZw=="
+
+
+@patch("comp_use.llm_client.requests.post")
+def test_openrouter_client_uses_text_model_and_plain_string_when_no_screenshot(mock_post):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": '{"action": "finish", "done": true}'}}]
+    }
+    mock_response.raise_for_status.return_value = None
+    mock_post.return_value = mock_response
+
+    settings = load_settings()
+    settings.openrouter_api_key = "test-key"
+    settings.openrouter_model = "text-only-model"
+    settings.openrouter_vision_model = "vision-model"
+    client = OpenRouterClient(settings)
+
+    client.decide_next_action(goal="find member", observed_tree="tree", screenshot_b64=None, history=[])
+
+    sent_payload = mock_post.call_args.kwargs["json"]
+    assert sent_payload["model"] == "text-only-model"
+    assert isinstance(sent_payload["messages"][1]["content"], str)
