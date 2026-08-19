@@ -1,7 +1,7 @@
 from comp_use.escalation.controller import EscalationController
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
-from comp_use.schemas import Artifact, InterventionRequest, OutcomeType, ReplayResult, RiskTier
+from comp_use.schemas import Artifact, InterventionRequest, OutcomeType, ReplayResult
 
 
 class ReplayEngine:
@@ -39,11 +39,7 @@ class ReplayEngine:
             if outcome_result is not None:
                 return outcome_result
 
-            if (
-                step.risk_tier == RiskTier.RISKY
-                and not confirm_risky
-                and self.escalation is not None
-            ):
+            if self.guardrail.requires_confirmation(step.risk_tier, confirm_risky) and self.escalation is not None:
                 self.escalation.escalate(
                     InterventionRequest(
                         run_id=self.evidence_logger.run_id,

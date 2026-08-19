@@ -237,8 +237,13 @@ allows this ("a full real-time co-browsing operator console is out of scope") �
 - **Allowlist** — `Settings.allowed_url_prefixes` defaults to
   `http://localhost:5000`; `allowed_action_types` is the five UI actions. Enforced in
   `Guardrail.check_allowlist` on discovery and replay.
-- **Risk tiers** — `requires_confirmation(step, confirm_risky)`; CLI
-  `--confirm-risky` skips the pause. `DiscoveryAgent._classify_risk` flags a click
+- **Risk tiers** — `Guardrail.requires_confirmation(risk_tier, confirm_risky)` is
+  the single source of truth for "does this step need a human," called from both
+  `ReplayEngine.run()` and `DiscoveryAgent.run()` (each also `and`s in its own
+  `self.escalation is not None` check — whether an escalation controller is
+  wired up at all is a caller concern, not a risk-tier concern, so it stays out
+  of `Guardrail`). Each engine has its own `--confirm-risky` CLI flag to skip
+  the pause. `DiscoveryAgent._classify_risk` flags a click
   risky when its control name contains "confirm" or "delete" — i.e. the control that
   actually commits an irreversible change, not the link/button that merely navigates
   toward it. (An earlier version matched "transfer"/"sub-account" against the

@@ -195,7 +195,7 @@ class DiscoveryAgent:
             risk_tier = _classify_risk(action, target, locator)
             consecutive_skips = 0
 
-            if risk_tier == RiskTier.RISKY and not self.confirm_risky and self.escalation is not None:
+            if self.guardrail.requires_confirmation(risk_tier, self.confirm_risky) and self.escalation is not None:
                 self._escalate(goal, step_index, f"step {step_index} is risk_tier=risky and confirm_risky is False")
 
             try:

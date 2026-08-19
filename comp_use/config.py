@@ -28,7 +28,6 @@ class Settings(BaseModel):
             r"\bCONF-\d+\b",
         ]
     )
-    risky_confirm_default: bool = False
     openrouter_api_key: str = ""
     openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
     # Used only as a vision fallback, when the accessibility tree alone hasn't been

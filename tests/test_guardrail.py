@@ -2,7 +2,7 @@ import pytest
 
 from comp_use.config import load_settings
 from comp_use.guardrail import AllowlistViolation, Guardrail
-from comp_use.schemas import Locator, LocatorStrategy, RiskTier, Step
+from comp_use.schemas import RiskTier
 
 
 def make_guardrail() -> Guardrail:
@@ -28,23 +28,13 @@ def test_disallowed_action_type_raises():
 
 def test_risky_step_requires_confirmation_by_default():
     g = make_guardrail()
-    step = Step(
-        action="click",
-        locator=Locator(strategy=LocatorStrategy.TEXT, value={"text": "Transfer"}),
-        risk_tier=RiskTier.RISKY,
-    )
-    assert g.requires_confirmation(step, confirm_risky=False) is True
-    assert g.requires_confirmation(step, confirm_risky=True) is False
+    assert g.requires_confirmation(RiskTier.RISKY, confirm_risky=False) is True
+    assert g.requires_confirmation(RiskTier.RISKY, confirm_risky=True) is False
 
 
 def test_safe_step_never_requires_confirmation():
     g = make_guardrail()
-    step = Step(
-        action="click",
-        locator=Locator(strategy=LocatorStrategy.TEXT, value={"text": "Search"}),
-        risk_tier=RiskTier.SAFE,
-    )
-    assert g.requires_confirmation(step, confirm_risky=False) is False
+    assert g.requires_confirmation(RiskTier.SAFE, confirm_risky=False) is False
 
 
 def test_redact_masks_account_numbers_and_amounts():

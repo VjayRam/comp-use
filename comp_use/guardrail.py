@@ -1,7 +1,7 @@
 import re
 
 from comp_use.config import Settings
-from comp_use.schemas import RiskTier, Step
+from comp_use.schemas import RiskTier
 
 
 class AllowlistViolation(Exception):
@@ -20,8 +20,8 @@ class Guardrail:
         ):
             raise AllowlistViolation(f"url '{url}' not in allowlist")
 
-    def requires_confirmation(self, step: Step, confirm_risky: bool) -> bool:
-        return step.risk_tier == RiskTier.RISKY and not confirm_risky
+    def requires_confirmation(self, risk_tier: RiskTier, confirm_risky: bool) -> bool:
+        return risk_tier == RiskTier.RISKY and not confirm_risky
 
     def redact(self, text: str) -> str:
         redacted = text

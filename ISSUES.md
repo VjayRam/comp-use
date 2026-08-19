@@ -881,14 +881,25 @@ exists, is tested in isolation, and does the right thing — it's just never
 wired into the actual decision path it's documented as being part of.
 
 **To do:**
-- [ ] Either call `self.guardrail.requires_confirmation(step, confirm_risky)`
-      from `ReplayEngine.run()` instead of reimplementing the condition inline
-      (and, once issue 12 is fixed, from `DiscoveryAgent` too), or delete the
-      unused method and fix `REPORT.md` to describe the logic that's actually
-      there. Prefer the former — it's the documented, tested mechanism; wiring
-      it in is a small, low-risk change and removes the duplication.
-- [ ] Re-verify `REPORT.md`'s Safety section describes the real code path
-      afterward.
+- [x] Call `self.guardrail.requires_confirmation(...)` from both
+      `ReplayEngine.run()` and `DiscoveryAgent.run()` instead of each
+      reimplementing the condition inline. Changed the method's signature from
+      `requires_confirmation(step: Step, confirm_risky: bool)` to
+      `requires_confirmation(risk_tier: RiskTier, confirm_risky: bool)` — it
+      only ever used `step.risk_tier`, and `DiscoveryAgent` computes a bare
+      `risk_tier` before a `Step` object exists yet, so the narrower signature
+      is both simpler and actually callable from both sites without
+      restructuring either loop. The `self.escalation is not None` condition
+      stays as a separate `and` clause at each call site — it's a wiring
+      concern (is an escalation controller configured at all), not a risk-tier
+      concern, so it doesn't belong inside `Guardrail`.
+- [x] Also deleted `Settings.risky_confirm_default` (issue 23's related
+      finding) — grepped the repo after removal, zero remaining references.
+- [x] Updated `REPORT.md`'s Safety section to describe the call sites that
+      actually exist now.
+- [x] Updated `tests/test_guardrail.py`'s two `requires_confirmation` tests to
+      the new signature (pass `RiskTier.RISKY`/`RiskTier.SAFE` directly instead
+      of constructing a throwaway `Step`).
 
 ---
 
@@ -1178,9 +1189,8 @@ walkthrough section already has this right; the Determinism section doesn't.
       to match actual intent (either genuinely exclude nested screenshots with
       `evidence/**/*.png`, or delete the now-contradicted rule since screenshots
       are being committed on purpose).
-- [ ] Delete `Settings.risky_confirm_default` (or wire it in and use it
-      instead of/alongside `--confirm-risky`, if a config-level default is
-      actually wanted) — fold into issue 16's fix, same root cause.
+- [x] Delete `Settings.risky_confirm_default` — done alongside issue 16's fix,
+      same root cause (`comp_use/config.py`).
 
 ---
 
