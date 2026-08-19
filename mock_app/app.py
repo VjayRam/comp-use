@@ -128,7 +128,8 @@ def create_app() -> Flask:
             amount = -1
 
         from_account = _find_account(member_id, from_account_id)
-        if amount <= 0 or from_account is None:
+        to_account = _find_account(member_id, to_account_id)
+        if amount <= 0 or from_account is None or to_account is None:
             return render_template(
                 "transfer.html",
                 member_id=member_id,

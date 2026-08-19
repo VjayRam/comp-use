@@ -934,15 +934,34 @@ would never allow, and it means "the outcome was `success`" is currently a
 weaker guarantee than it should be for this specific capability.
 
 **To do:**
-- [ ] Validate `to_account_id` the same way `from_account_id` already is,
-      before the review step — render the existing `error` path (or an
-      analogous `to_account_not_found` business-outcome path) instead of
-      silently proceeding.
-- [ ] Add a mock-app test: transferring to a nonexistent `to_account` doesn't
-      debit the source account / doesn't reach the confirmation page.
-- [ ] Once fixed, consider whether `transfer_funds`'s artifact should declare
-      a matching `outcome_patterns` entry (`business_outcome`,
-      `to_account_not_found`), the same way `insufficient_funds` already is.
+- [x] Validate `to_account_id` the same way `from_account_id` already is,
+      before the review step. Reused the existing generic `error` path
+      (`"Amount must be greater than zero and accounts must be valid."`) rather
+      than inventing a new distinct message/path — a bad `to_account` is the
+      same class of caller error as a bad `from_account` or a non-positive
+      amount, all three now share one validation branch.
+- [x] Add a mock-app test:
+      `test_transfer_to_nonexistent_account_is_validation_error_not_silent_success`
+      in `tests/test_mock_app_transfer.py` — asserts both the error response
+      and that `ACC-001`'s balance is unchanged afterward (a real
+      before/after balance check, not just a status code).
+- [x] Considered the optional `outcome_patterns` entry and declined it,
+      deliberately: since the fix reuses the *same* generic validation message
+      the pre-existing amount<=0/bad-from_account case already used (which
+      never had its own `outcome_patterns` entry either), a bad `to_account`
+      now behaves exactly like that pre-existing case on replay —
+      `hard_failure` at the "Confirm Transfer" click, since the app never
+      leaves the transfer form. Adding a special-cased `outcome_pattern` for
+      just this one input would be inconsistent with how the already-existing,
+      never-flagged amount-validation case is handled; both are equally "the
+      caller passed something invalid" errors, not app-level business
+      outcomes like "insufficient funds."
+- [x] Verified live end to end, not just the mock-app unit test: replayed
+      `transfer_funds` with `to_account=ACC-999` (nonexistent) against the
+      real running app — `{"outcome": "hard_failure", ...}`, and a follow-up
+      `curl` of the member detail page confirmed `ACC-001`'s balance was still
+      `1500.00`, unchanged. Before this fix, this exact scenario would have
+      returned `{"outcome": "success"}` while silently debiting the account.
 
 ---
 

@@ -34,6 +34,19 @@ def test_transfer_exceeding_balance_is_business_outcome():
     assert b"Insufficient funds" in resp.data
 
 
+def test_transfer_to_nonexistent_account_is_validation_error_not_silent_success():
+    c = client()
+    resp = c.post(
+        "/member/12345/transfer",
+        data={"from_account": "ACC-001", "to_account": "ACC-999", "amount": "100"},
+    )
+    assert resp.status_code == 200
+    assert b"Amount must be greater than zero" in resp.data
+    # the source account's balance must be untouched - no silent debit
+    detail_resp = c.get("/member/12345")
+    assert b"1500.00" in detail_resp.data  # ACC-001's original balance, unchanged
+
+
 def test_valid_transfer_redirects_to_review():
     c = client()
     resp = c.post(
