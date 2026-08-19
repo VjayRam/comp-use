@@ -211,6 +211,148 @@ python -m comp_use.cli replay --capability-name transfer_funds \
   --confirm-risky --diagnose-drift-on-failure
 ```
 
+## Exercising every outcome (full command reference)
+
+The Demo path above covers the basics. This section is a complete run sheet —
+every `OutcomeType`, both escalation paths, versioning, and self-healing — in a
+sensible order. Requires `OPENROUTER_API_KEY` set for the `discover` steps;
+`replay` never needs it. Balances/counters (`ACC-001`'s balance, `SUB-000N`,
+`TXN-000N`) will differ from whatever's in `REPORT.md` after you run these —
+they mutate shared mock-app state, that's expected. PowerShell needs `'...'`
+JSON quoting per the Demo path section above; steps involving `curl` need
+bash/git-bash/WSL.
+
+**0. Setup**
+
+```bash
+# Terminal 1 — leave running for everything below
+python run_mock_app.py
+```
+
+```bash
+# Terminal 2
+python -m pytest -v
+```
+
+**1. Discovery — real LLM, all three capabilities**
+
+```bash
+python -m comp_use.cli discover --goal "Look up member 12345 and view their account balances" \
+  --start-url "http://localhost:5000/member/search" --capability-name lookup_member
+
+# risky flows — pause for confirmation; type `resume` + a note, or pass --confirm-risky
+python -m comp_use.cli discover --goal "Open a new sub-account for member 12345 with a 500 dollar deposit and report the confirmation number" \
+  --start-url "http://localhost:5000/member/search" --capability-name open_sub_account --confirm-risky
+
+python -m comp_use.cli discover --goal "For member 12345 transfer 100 dollars from account ACC-001 to account ACC-002" \
+  --start-url "http://localhost:5000/member/search" --capability-name transfer_funds --confirm-risky
+```
+Expected: artifacts saved as the next version for each (existing versions aren't
+overwritten), plus a real `evidence/discover_<ts>/log.jsonl` per run.
+
+**2. Discovery — risky escalation, unconfirmed** (proves discovery itself pauses, not just replay)
+
+```bash
+python -m comp_use.cli discover --goal "Open a new sub-account for member 12345 with a 500 dollar deposit" \
+  --start-url "http://localhost:5000/member/search" --capability-name open_sub_account_escalation_demo
+```
+Expected: `[ESCALATION] step N is risk_tier=risky...` appears *before* the confirm
+click happens. Type `resume`, then a note.
+
+**3. Replay — `success`** (deliberately different params than discovery used, to prove generalization)
+
+```bash
+python -m comp_use.cli replay --capability-name lookup_member --params "{\"member_id\": \"67890\"}"
+python -m comp_use.cli replay --capability-name open_sub_account --params "{\"member_id\": \"12345\", \"deposit_amount\": \"250\"}" --confirm-risky
+python -m comp_use.cli replay --capability-name transfer_funds --params "{\"member_id\": \"12345\", \"from_account\": \"ACC-001\", \"to_account\": \"ACC-002\", \"amount\": \"50\"}" --confirm-risky
+```
+Expected: `{"outcome": "success", ...}` each time; the last two include real
+`outputs` (`confirmation_number` / `txn_id`).
+
+**4. Replay — `business_outcome`**
+
+```bash
+python -m comp_use.cli replay --capability-name lookup_member --params "{\"member_id\": \"00000\"}"
+python -m comp_use.cli replay --capability-name transfer_funds --params "{\"member_id\": \"12345\", \"from_account\": \"ACC-001\", \"to_account\": \"ACC-002\", \"amount\": \"999999\"}" --confirm-risky
+```
+Expected: `"outcome": "business_outcome"`, detail `"no_such_member"` /
+`"insufficient_funds"`.
+
+**5. Replay — `validation_error`** (no browser opens — see Demo path above for the single-command version)
+
+**6. Replay — `hard_failure`**
+
+```bash
+python -m comp_use.cli replay --capability-name open_sub_account --params "{\"member_id\": \"00000\", \"deposit_amount\": \"250\"}" --confirm-risky
+```
+Expected: `"outcome": "hard_failure"` with a `TimeoutError: ...` detail (no
+`outcome_pattern` declared for this capability) — also produces
+`evidence/replay_<ts>/final.png`.
+
+**7. Replay — `recoverable`** (triggered at the HTTP layer directly — a normal
+single replay always gets a fresh review token, so this needs a manual double-submit)
+
+```bash
+LOC=$(curl -s -D - -o /dev/null -X POST http://localhost:5000/member/12345/transfer \
+  -d "from_account=ACC-001&to_account=ACC-002&amount=10" | grep -i '^location' | tr -d '\r')
+TOKEN=$(echo "$LOC" | grep -oE '[a-f0-9]{8}$')
+
+curl -s -o /dev/null -X POST "http://localhost:5000/member/12345/transfer/review/$TOKEN/confirm"  # consumes the token
+curl -s -X POST "http://localhost:5000/member/12345/transfer/review/$TOKEN/confirm" | grep -i "Session Expired"  # stale
+```
+Expected: `Session Expired` in the second response — the exact page
+`transfer_funds`'s `recoverable` `OutcomePattern` matches on.
+
+**8. Drift-aware self-healing replay** (needs a deliberately broken artifact —
+one locator typo'd to simulate drift)
+
+```bash
+python -c "
+import sys; sys.path.insert(0, '.')
+from comp_use.cli import save_artifact
+from comp_use.config import load_settings
+from comp_use.schemas import ActionType, Artifact, Checkpoint, CheckpointType, Locator, LocatorStrategy, RiskTier, Step, ValueSource
+settings = load_settings()
+artifact = Artifact(
+    capability_name='transfer_funds_drift_demo',
+    target={'app': 'mock_bank', 'base_url': 'http://localhost:5000'},
+    steps=[
+        Step(action=ActionType.NAVIGATE, target='http://localhost:5000/member/12345/transfer', risk_tier=RiskTier.SAFE),
+        Step(action=ActionType.TYPE_TEXT, locator=Locator(strategy=LocatorStrategy.ROLE, value={'role':'textbox','name':'From Account'}), value_source=ValueSource(type='fixed', reason='demo'), value='ACC-001', risk_tier=RiskTier.SAFE),
+        Step(action=ActionType.TYPE_TEXT, locator=Locator(strategy=LocatorStrategy.ROLE, value={'role':'textbox','name':'To Account'}), value_source=ValueSource(type='fixed', reason='demo'), value='ACC-002', risk_tier=RiskTier.SAFE),
+        Step(action=ActionType.TYPE_TEXT, locator=Locator(strategy=LocatorStrategy.ROLE, value={'role':'textbox','name':'Amount'}), value_source=ValueSource(type='fixed', reason='demo'), value='10', risk_tier=RiskTier.SAFE),
+        Step(action=ActionType.CLICK, locator=Locator(strategy=LocatorStrategy.ROLE, value={'role':'button','name':'Transfer'}), risk_tier=RiskTier.SAFE),
+        Step(action=ActionType.CLICK, locator=Locator(strategy=LocatorStrategy.ROLE, value={'role':'button','name':'Cofirm Transfer'}), risk_tier=RiskTier.RISKY),
+    ],
+    success_checkpoint=Checkpoint(type=CheckpointType.ELEMENT_VISIBLE, locator=Locator(strategy=LocatorStrategy.ROLE, value={'role':'heading','name':'Confirmation'})),
+    created_from_run_id='cli_demo',
+)
+print(save_artifact(artifact, settings.artifacts_dir))
+"
+
+python -m comp_use.cli replay --capability-name transfer_funds_drift_demo --confirm-risky --diagnose-drift-on-failure
+```
+Expected: `"outcome": "hard_failure"` (unchanged — this run genuinely failed) but
+`"proposed_patch_version": 2`; an `[ESCALATION]` prompt to review the patch (type
+`resume` + a note); `artifacts/transfer_funds_drift_demo/v2.json` has the
+corrected locator, `v1.json` untouched. Re-running the same replay command
+afterward (no flags needed) should now succeed, using v2 automatically.
+
+**9. Artifact versioning** (re-run discover for an existing capability)
+
+```bash
+python -m comp_use.cli discover --goal "Look up member 12345 and view their account balances" \
+  --start-url "http://localhost:5000/member/search" --capability-name lookup_member
+```
+Expected: creates the *next* version file without touching the existing one —
+check `artifacts/lookup_member/` afterward.
+
+**10. Full regression check**
+
+```bash
+python -m pytest -v
+```
+
 ## Project layout
 
 ```
