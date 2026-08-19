@@ -59,13 +59,15 @@ def _run_discover(args) -> None:
     run_id = f"discover_{int(time.time())}"
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
     llm = OpenRouterClient(settings)
+    transport = LocalSharedBrowserTransport()
+    escalation = EscalationController(evidence, transport)
     print(f"Discovering with {settings.openrouter_model} (max {settings.max_discovery_steps} steps)", flush=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=_headless())
         page = browser.new_page()
         surface = PlaywrightSurface(page)
-        agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps)
+        agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps, escalation=escalation)
         trace = agent.run(goal=args.goal, start_url=args.start_url)
         browser.close()
 

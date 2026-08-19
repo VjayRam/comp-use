@@ -58,6 +58,11 @@ Typed Pydantic models in `comp_use/schemas.py`. A capability is versioned JSON a
 - `input_schema` is **derived**, not inferred after the fact: each `type_text` /
   `select_option` during discovery carries a `value_source` of `goal_parameter` or
   `fixed`. `compile_artifact()` collects `goal_parameter` names into `input_schema`.
+- `output_schema` is derived the same way, from the other end: an `extract` step
+  carries `extract_as`, and `compile_artifact()` collects those names into
+  `output_schema`. `open_sub_account`/`transfer_funds` both end with an `extract`
+  step reading the confirmation page (`confirmation_number` / `txn_id`); replay
+  returns them in `ReplayResult.outputs`, not a hardcoded `{}`.
 - Locators are role/text-first with an optional CSS `fallback`.
 - Each `Step` has `risk_tier` (`safe` / `risky`) and an optional per-step
   `checkpoint`. The artifact also has a final `success_checkpoint`.
@@ -69,7 +74,8 @@ attempt the same actions in the same order. Outcomes (`OutcomeType` in
 `comp_use/schemas.py`):
 
 1. **`validation_error`** — required params missing/malformed; no browser interaction.
-2. **`success`** — all steps ran; `success_checkpoint` held.
+2. **`success`** — all steps ran; `success_checkpoint` held; any `extract` steps'
+   values are returned in `ReplayResult.outputs`, keyed by `extract_as`.
 3. **`business_outcome`** — a legitimate, expected non-success UI result (e.g.
    "insufficient funds" on the mock transfer form). An `Artifact` carries
    `outcome_patterns: list[OutcomePattern]` — each pairs a `Checkpoint` with the
@@ -112,15 +118,40 @@ Nothing in this repo executes more than one mock tenant.
 
 `EscalationController` (`comp_use/escalation/controller.py`) holds `control` in
 `{agent, human, none}`. `escalate()` sets `human`, logs the `InterventionRequest`,
-notifies the transport, blocks on `wait_for_resume()`, then returns to `agent`.
+notifies the transport, blocks on `wait_for_resume()`, then returns to `agent`. Every
+`InterventionRequest` carries a real `screenshot_path` — both callers capture
+`surface.screenshot()` via `EvidenceLogger.save_screenshot()` before escalating, so
+the operator's context (per §3.6: "the current state or screenshot") is a file on
+disk, not a dropped field.
 
 `LocalSharedBrowserTransport` (`comp_use/escalation/transport.py`) is the built
 transport: print the request, wait for the operator to type `resume` while they use
 the **same headed Playwright window**. Replay wires this in when a step is `risky`
 and `confirm_risky` is false.
 
+Discovery escalates too, not just replay (`comp_use/discovery/agent.py`,
+`DiscoveryAgent._escalate`, wired through `comp_use/cli.py`'s `_run_discover`), on
+two triggers: (1) `max_steps` exhausted without a `finish` decision — the agent is
+plainly stuck; (2) three consecutive skipped/invalid decisions in a row (missing
+locator, missing target, allowlist violation, or an unrecognized action) — a
+dead-end signal that fires *mid-run*, not just at the end, so a human can unblock the
+agent and let it keep going rather than only being told after the whole run failed.
+
+
+
 `ServerStreamingTransport` (CDP screencast / click proxy) is designed only — see
 Cuts.
+
+**What the human did is recorded, not just that they resumed.**
+`ControlTransport.wait_for_resume()` returns a string; `LocalSharedBrowserTransport`
+prompts the operator for a one-line free-text note right after they type `resume`,
+and `EscalationController.escalate()` logs it via a dedicated
+`escalation_human_action` evidence event (`run_id` + `note`) — separate from the
+existing `escalation_resumed` event, which only ever meant "control returned," not
+"here's what happened." A full replay of the human's individual clicks (a true
+co-browsing recorder) is intentionally out of scope — the brief's own §3.6 carve-out
+allows this ("a full real-time co-browsing operator console is out of scope") — but
+*some* record of what the human did is an explicit requirement and is now present.
 
 ## Safety
 
@@ -168,24 +199,38 @@ every replay below used `ReplayEngine` with **no LLM**.
 
 - `evidence/discover_1787105308_lookup_member/log.jsonl` →
   `artifacts/lookup_member/v1.json`
-- `evidence/discover_1787105310_open_sub_account/log.jsonl` →
+- `evidence/discover_1787149758_open_sub_account/log.jsonl` →
   `artifacts/open_sub_account/v1.json` (includes the "Confirm Sub-Account" review
-  step)
-- `evidence/discover_1787105313_transfer_funds/log.jsonl` →
-  `artifacts/transfer_funds/v1.json` (includes the "Confirm Transfer" review step)
+  step and a trailing `extract` step reading `confirmation_number` off the
+  confirmation page — supersedes the earlier
+  `evidence/discover_1787105310_open_sub_account/` run, kept for history, which
+  predates the `extract`/`output_schema` support added in this pass)
+- `evidence/discover_1787149762_transfer_funds/log.jsonl` →
+  `artifacts/transfer_funds/v1.json` (includes the "Confirm Transfer" review step
+  and a trailing `extract` step reading `txn_id` — supersedes
+  `evidence/discover_1787105313_transfer_funds/`, kept for history, same reason)
 
 All three succeeded (`trace.succeeded=True`) end to end through the label-based
-locators, the decoy panel, and the review/confirm interstitial.
+locators, the decoy panel, and the review/confirm interstitial. The `extract` step's
+first attempt (against a plain `td:has-text('Confirmation Number') + td` CSS
+locator) hit a real strict-mode violation caused by the hostile markup itself: the
+substring-based `:has-text()` also matched the outer 70%-width layout `<td>` that
+wraps the entire page content (since that ancestor's full text also contains
+"Confirmation Number"), so `+ td` resolved to the sidebar decoy `<td>` as a second
+match. Switched to `:text-is()`, which only matches an element's own exact text, not
+a descendant's — fixed, and a genuine example of the hostile app catching a locator
+bug rather than a contrived one.
 
 ### Replay — success
 
 - `lookup_member`, `member_id=67890` (a different member than any discovery used —
   confirms the artifact generalizes): `evidence/replay_1787105466/log.jsonl` →
   `{"outcome": "success"}`
-- `open_sub_account`, `deposit_amount=250`:
-  `evidence/replay_1787105470/log.jsonl` → `{"outcome": "success"}`
-- `transfer_funds`, `amount=50`: `evidence/replay_1787105473/log.jsonl` →
-  `{"outcome": "success"}`
+- `open_sub_account`, `deposit_amount=250`: `evidence/replay_1787149826/log.jsonl`
+  → `{"outcome": "success", "outputs": {"confirmation_number": "CONF-000001"}}` —
+  the `extract` step's output actually reaches `ReplayResult.outputs`, not `{}`.
+- `transfer_funds`, `amount=50`: `evidence/replay_1787149809/log.jsonl` →
+  `{"outcome": "success", "outputs": {"txn_id": "TXN-000001"}}`
 
 ### Replay — `business_outcome`
 
@@ -220,8 +265,16 @@ All five `OutcomeType` values reachable by replay are demonstrated above except
 nothing in the mock app produces a dismissable interstitial distinct from the
 always-present confirm step).
 
-To re-run **live** OpenRouter discovery instead of `FakeLLMClient`, set
-`OPENROUTER_API_KEY` and follow README Demo path. Real OpenRouter-driven discovery
-runs against a free-tier model also exist locally under `evidence/discover_*` from
-earlier development (not committed) — committing one as the canonical "real LLM"
-evidence, rather than the `FakeLLMClient` runs above, is a known open item.
+### Discovery — real LLM (non-`FakeLLMClient`), committed
+
+`evidence/discover_1787097059/log.jsonl` is a genuine OpenRouter (free-tier model)
+discovery run, committed to git, satisfying the assignment's one non-negotiable
+requirement ("the discovery run has to be real" — §4). It's distinguishable from the
+`FakeLLMClient` runs above by its literal JSON-string-encoded tool arguments (a real
+model's tool-call shape, e.g. `"locator": "{\"strategy\": \"role\", ...}"` and
+`"target": "None"` as a literal string) rather than `FakeLLMClient`'s clean scripted
+dicts. It ran `lookup_member` end to end (`type_text` → `click` → `finish`,
+`done: true`) against the mock app.
+
+To re-run **live** OpenRouter discovery yourself, set `OPENROUTER_API_KEY` and follow
+the README Demo path.

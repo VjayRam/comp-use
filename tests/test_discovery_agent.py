@@ -1,9 +1,24 @@
 from comp_use.config import load_settings
 from comp_use.discovery.agent import DiscoveryAgent
+from comp_use.escalation.controller import EscalationController
+from comp_use.escalation.transport import ControlTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
 from comp_use.llm_client import FakeLLMClient
 from comp_use.schemas import ActionType
+
+
+class FakeTransport(ControlTransport):
+    def __init__(self):
+        self.notified = []
+        self.resumed = False
+
+    def notify(self, request):
+        self.notified.append(request)
+
+    def wait_for_resume(self):
+        self.resumed = True
+        return "unblocked the agent"
 
 
 class FakeSurface:
@@ -156,6 +171,113 @@ def test_agent_skips_empty_locator_object(tmp_path):
     trace = agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
     assert trace.succeeded is True
     assert len(trace.steps) == 0
+
+
+def test_agent_escalates_when_max_steps_reached_without_finish(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "click", "locator": {"strategy": "text", "value": {"text": "x"}},
+             "target": None, "text": None, "value_source": None, "done": False},
+        ] * 5
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_stuck")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=3, escalation=escalation)
+
+    trace = agent.run(goal="do something", start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is False
+    assert len(transport.notified) == 1
+    request = transport.notified[0]
+    assert request.run_id == "run_stuck"
+    assert request.capability_or_goal == "do something"
+    assert "max_steps" in request.reason
+    assert transport.resumed is True
+
+
+def test_agent_escalates_on_repeated_skipped_decisions(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "type_text", "text": "12345", "done": False},
+            {"action": "type_text", "text": "12345", "done": False},
+            {"action": "type_text", "text": "12345", "done": False},
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_dead_end")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10, escalation=escalation)
+
+    trace = agent.run(goal="do something", start_url="http://localhost:5000/member/search")
+
+    assert len(transport.notified) == 1
+    assert "dead_end" in transport.notified[0].reason
+    assert trace.succeeded is True
+
+
+def test_agent_escalation_carries_a_real_screenshot_path(tmp_path):
+    from pathlib import Path
+
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "click", "locator": {"strategy": "text", "value": {"text": "x"}},
+             "target": None, "text": None, "value_source": None, "done": False},
+        ] * 3
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_stuck_screenshot")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=3, escalation=escalation)
+
+    agent.run(goal="do something", start_url="http://localhost:5000/member/search")
+
+    assert len(transport.notified) == 1
+    request = transport.notified[0]
+    assert request.screenshot_path is not None
+    assert Path(request.screenshot_path).exists()
+
+
+def test_agent_records_extract_as_on_extract_step(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {
+                "action": "extract",
+                "locator": {"strategy": "role", "value": {"role": "generic", "name": "confirmation-number"}},
+                "target": None,
+                "text": None,
+                "value_source": None,
+                "extract_as": "confirmation_number",
+                "done": False,
+            },
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_extract")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Open sub-account", start_url="http://localhost:5000/member/search")
+
+    assert len(trace.steps) == 1
+    assert trace.steps[0].action == ActionType.EXTRACT
+    assert trace.steps[0].extract_as == "confirmation_number"
 
 
 def test_agent_treats_string_none_target_as_missing(tmp_path):

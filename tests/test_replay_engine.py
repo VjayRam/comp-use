@@ -1,6 +1,10 @@
+from pathlib import Path
+
 import pytest
 
 from comp_use.config import load_settings
+from comp_use.escalation.controller import EscalationController
+from comp_use.escalation.transport import ControlTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
 from comp_use.replay.engine import ReplayEngine
@@ -8,6 +12,19 @@ from comp_use.schemas import (
     ActionType, Artifact, Checkpoint, CheckpointType, InputParam, Locator,
     LocatorStrategy, OutcomePattern, OutcomeType, RiskTier, Step, ValueSource,
 )
+
+
+class FakeTransport(ControlTransport):
+    def __init__(self):
+        self.notified = []
+        self.resumed = False
+
+    def notify(self, request):
+        self.notified.append(request)
+
+    def wait_for_resume(self):
+        self.resumed = True
+        return "handled it"
 
 
 class FakeSurface:
@@ -33,6 +50,9 @@ class FakeSurface:
         self.acted.append((action, target, text))
         if action == ActionType.NAVIGATE:
             self.url = target
+        if action == ActionType.EXTRACT:
+            return "CONF-000123"
+        return None
 
     def observe(self):
         from comp_use.surface import ObservedState
@@ -212,3 +232,42 @@ def test_goal_parameter_step_still_prefers_caller_param_over_recorded_value(tmp_
 
     type_text_call = surface.acted[1]
     assert type_text_call[2] == "67890"
+
+
+def test_extract_step_populates_replay_result_outputs(tmp_path):
+    artifact = _make_artifact()
+    artifact.steps.append(
+        Step(
+            action=ActionType.EXTRACT,
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "generic", "name": "confirmation-number"}),
+            extract_as="confirmation_number",
+            risk_tier=RiskTier.SAFE,
+        )
+    )
+    surface = FakeSurface()
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.SUCCESS
+    assert result.outputs == {"confirmation_number": "CONF-000123"}
+
+
+def test_escalation_carries_a_real_screenshot_path(tmp_path):
+    artifact = _make_artifact()
+    artifact.steps[1].risk_tier = RiskTier.RISKY
+    surface = FakeSurface()
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_run_escalate")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    engine.run(artifact, params={"member_id": "12345"}, confirm_risky=False)
+
+    assert len(transport.notified) == 1
+    request = transport.notified[0]
+    assert request.screenshot_path is not None
+    assert Path(request.screenshot_path).exists()

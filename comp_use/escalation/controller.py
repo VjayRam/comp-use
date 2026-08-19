@@ -21,6 +21,9 @@ class EscalationController:
         self.control = ControlState.HUMAN
         self.evidence_logger.log_event("escalation_requested", request.model_dump())
         self.transport.notify(request)
-        self.transport.wait_for_resume()
+        human_note = self.transport.wait_for_resume()
         self.evidence_logger.log_event("escalation_resumed", {"run_id": request.run_id})
+        self.evidence_logger.log_event(
+            "escalation_human_action", {"run_id": request.run_id, "note": human_note or ""}
+        )
         self.control = ControlState.AGENT

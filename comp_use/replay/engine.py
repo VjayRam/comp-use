@@ -29,6 +29,7 @@ class ReplayEngine:
             self.evidence_logger.log_event("validation_error", {"detail": validation_error})
             return ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=validation_error)
 
+        outputs: dict = {}
         for index, step in enumerate(artifact.steps):
             # The app may have already diverged onto a business/recoverable outcome
             # page after a previous step (e.g. "insufficient funds" instead of the
@@ -48,7 +49,9 @@ class ReplayEngine:
                         run_id=self.evidence_logger.run_id,
                         capability_or_goal=artifact.capability_name,
                         current_step=index,
-                        screenshot_path=None,
+                        screenshot_path=self.evidence_logger.save_screenshot(
+                            self.surface.screenshot(), f"escalation_step{index}"
+                        ),
                         reason=f"step {index} is risk_tier=risky and confirm_risky is False",
                     )
                 )
@@ -61,7 +64,9 @@ class ReplayEngine:
             self.guardrail.check_allowlist(target_url or self.surface.current_url(), step.action.value)
 
             try:
-                self.surface.act(step.action, locator=step.locator, target=target_url, text=text)
+                extracted = self.surface.act(step.action, locator=step.locator, target=target_url, text=text)
+                if step.extract_as:
+                    outputs[step.extract_as] = extracted
             except Exception as exc:
                 outcome_result = self._match_outcome_pattern(artifact)
                 if outcome_result is not None:
@@ -97,4 +102,4 @@ class ReplayEngine:
                 observed=self.surface.current_url(),
             )
 
-        return ReplayResult(outcome=OutcomeType.SUCCESS, outputs={})
+        return ReplayResult(outcome=OutcomeType.SUCCESS, outputs=outputs)
