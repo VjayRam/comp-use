@@ -65,7 +65,14 @@ Typed Pydantic models in `comp_use/schemas.py`. A capability is versioned JSON a
   returns them in `ReplayResult.outputs`, not a hardcoded `{}`.
 - Locators are role/text-first with an optional CSS `fallback`.
 - Each `Step` has `risk_tier` (`safe` / `risky`) and an optional per-step
-  `checkpoint`. The artifact also has a final `success_checkpoint`.
+  `checkpoint`. The artifact also has a final `success_checkpoint`, derived by
+  `comp_use/cli.py`'s `_derive_success_checkpoint` from the final page's own
+  heading (`element_visible` on whatever `<h1>`-equivalent is present) — not
+  from the literal final URL, which would only match a future replay that
+  happens to reproduce the exact same per-run path segments (a member ID, a
+  generated confirmation number). Re-running `discover` for an existing
+  capability name bumps the artifact version (`next_artifact_version()`) rather
+  than overwriting `v1.json` in place.
 
 ## Determinism & error handling
 
@@ -343,3 +350,28 @@ dicts. It ran `lookup_member` end to end (`type_text` → `click` → `finish`,
 
 To re-run **live** OpenRouter discovery yourself, set `OPENROUTER_API_KEY` and follow
 the README Demo path.
+
+### Discovery — real LLM, checkpoint-fix verification (2026-08-19)
+
+An earlier version of `_run_discover` baked the literal final URL of a single
+discovery run into `success_checkpoint` (e.g. `member/12345`), which meant a
+replay with any *different* valid input — the exact thing artifacts are supposed
+to generalize across — was misreported as `hard_failure`. Fixed by deriving the
+checkpoint from the final page's own heading instead (`_derive_success_checkpoint`
+in `comp_use/cli.py`). Verified with a real (non-`FakeLLMClient`) run, following
+the README's Demo path exactly as written:
+
+```
+python -m comp_use.cli discover --goal "Look up member 12345 and view their account balances" \
+  --start-url "http://localhost:5000/member/search" --capability-name lookup_member
+```
+
+against a capability name that already had a committed `v1.json`. Result:
+`artifacts/lookup_member/v2.json` (model: `nvidia/nemotron-3.5-lightning:free`)
+with `success_checkpoint: {"type": "element_visible", "locator": {"role":
+"heading", "name": "Member Detail"}}` — `v1.json` left byte-for-byte unchanged
+(artifact versioning fix, same pass). Replaying `v2.json` with `member_id=67890`
+(never used in any discovery run for this capability):
+`evidence/discover_1787154166/log.jsonl` → artifact →
+`{"outcome": "success"}` — the exact scenario that previously returned
+`hard_failure` now returns `success`.

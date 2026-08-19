@@ -19,6 +19,8 @@ from comp_use.schemas import (
     Artifact,
     Checkpoint,
     CheckpointType,
+    Locator,
+    LocatorStrategy,
     OutcomeType,
     ReplayResult,
     RiskTier,
@@ -50,6 +52,39 @@ def load_artifact(capability_name: str, artifacts_dir: Path, version: int | None
     return Artifact.model_validate_json(path.read_text())
 
 
+def next_artifact_version(capability_name: str, artifacts_dir: Path) -> int:
+    capability_dir = Path(artifacts_dir) / capability_name
+    versions = [int(p.stem[1:]) for p in capability_dir.glob("v*.json")]
+    return max(versions, default=0) + 1
+
+
+def _derive_success_checkpoint(surface: PlaywrightSurface, fallback_url: str) -> Checkpoint:
+    """Build a checkpoint from the final page's own heading rather than baking in
+    this run's literal URL, which would only ever match a future replay that
+    happens to reproduce the exact same dynamic path segments (a member ID, a
+    generated confirmation/transaction number, ...)."""
+    heading_text = None
+    try:
+        heading_text = surface.page.get_by_role("heading").first.text_content(timeout=2000)
+    except Exception:
+        heading_text = None
+    if heading_text and heading_text.strip():
+        return Checkpoint(
+            type=CheckpointType.ELEMENT_VISIBLE,
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "heading", "name": heading_text.strip()}),
+        )
+    print(
+        "[discover] WARNING: no heading found on the final page to build a generic "
+        "success checkpoint; falling back to a literal URL match, which will only "
+        f"match future replays that happen to produce this exact URL again ({fallback_url!r}).",
+        flush=True,
+    )
+    return Checkpoint(
+        type=CheckpointType.URL_MATCHES,
+        url_pattern=fallback_url.split("://", 1)[-1].split("/", 1)[-1],
+    )
+
+
 def _run_discover(args) -> None:
     import time
     from playwright.sync_api import sync_playwright
@@ -71,16 +106,15 @@ def _run_discover(args) -> None:
         trace = agent.run(goal=args.goal, start_url=args.start_url)
         if not trace.succeeded:
             evidence.save_screenshot(surface.screenshot(), "final")
-        browser.close()
+            browser.close()
+        else:
+            success_checkpoint = _derive_success_checkpoint(surface, fallback_url=trace.final_url)
+            browser.close()
 
     if not trace.succeeded:
         print(f"Discovery did not reach 'finish' within {settings.max_discovery_steps} steps.")
         return
 
-    success_checkpoint = Checkpoint(
-        type=CheckpointType.URL_MATCHES,
-        url_pattern=trace.final_url.split("://", 1)[-1].split("/", 1)[-1],
-    )
     artifact = compile_artifact(
         trace,
         capability_name=args.capability_name,
@@ -93,6 +127,10 @@ def _run_discover(args) -> None:
             0,
             Step(action=ActionType.NAVIGATE, target=args.start_url, risk_tier=RiskTier.SAFE),
         )
+    # Never silently overwrite a previous discovery run's artifact - bump the
+    # version instead, so an existing (possibly still-working) artifact isn't
+    # destroyed by re-running discovery for the same capability name.
+    artifact.version = next_artifact_version(args.capability_name, settings.artifacts_dir)
     path = save_artifact(artifact, settings.artifacts_dir)
     print(f"Saved artifact to {path}")
 

@@ -606,23 +606,35 @@ broken one**, in place. A reviewer who runs the documented demo exactly as
 written breaks the repo.
 
 **To do:**
-- [ ] Fix `_run_discover` to build a generic checkpoint instead of a literal
-      URL pattern — e.g. default to an `element_visible` checkpoint on whatever
-      heading/landmark is present on the final page (would need the agent or a
-      post-discovery step to identify a stable element), or make the URL pattern
-      only the *static* path prefix, stripping trailing path segments that look
-      like generated IDs.
-- [ ] At minimum, stop silently shipping this: warn loudly (or refuse to save)
-      when the derived `url_pattern` contains what looks like a dynamic ID
-      segment, rather than saving a checkpoint quietly doomed to fail on the
-      next distinct input.
-- [ ] Add a test that actually exercises `_run_discover`'s checkpoint
-      construction (or extracts it into a testable helper) — today
-      `tests/test_cli.py` only tests `save_artifact`/`load_artifact`, never the
-      logic in `_run_discover`/`_run_replay` themselves. See issue 18.
-- [ ] Correct `REPORT.md`'s Evidence walkthrough and Architecture sections,
-      which currently imply the shipped discovery path produces the same
-      quality of artifact as what's committed — it doesn't, today.
+- [x] Fix `_run_discover` to build a generic checkpoint instead of a literal
+      URL pattern. Implemented as `_derive_success_checkpoint(surface,
+      fallback_url)` in `comp_use/cli.py`: queries the final page for its first
+      `heading`-role element (every mock app template has an `<h1>`) and builds
+      an `element_visible` checkpoint from its text; falls back to the old
+      literal `url_matches` behavior *with a loud `WARNING` print* only when no
+      heading is found at all (e.g. `/widgets/ticker`, which has no heading).
+- [x] Stop silently shipping this — the fallback path now prints a warning
+      naming the exact URL it fell back to, instead of saving a doomed
+      checkpoint with no signal.
+- [x] Add a test that actually exercises the checkpoint-construction logic
+      directly (`test_derive_success_checkpoint_uses_page_heading_not_literal_url`,
+      `test_derive_success_checkpoint_falls_back_to_url_when_no_heading` in
+      `tests/test_cli.py`) — real Playwright against the live mock app, not
+      mocked. The first test asserts the derived checkpoint holds for a
+      *different* member's detail page than the one it was derived from, which
+      is the exact property the old code lacked.
+- [x] Verified live, for real — not `FakeLLMClient`: ran
+      `python -m comp_use.cli discover --capability-name lookup_member ...`
+      against the running mock app with a real `OPENROUTER_API_KEY`
+      (`nvidia/nemotron-3.5-lightning:free`). Produced `artifacts/lookup_member/v2.json`
+      with `{"type": "element_visible", "locator": {..., "name": "Member Detail"}}`
+      — `v1.json` was left byte-for-byte untouched (see issue 20, fixed
+      alongside this). Replayed `v2.json` with `member_id=67890` (never used in
+      any discovery run): `{"outcome": "success"}` — the exact scenario that
+      previously returned `hard_failure` now returns `success`.
+- [x] Corrected `REPORT.md`'s Architecture and Evidence walkthrough sections —
+      see the Evidence walkthrough's new "Discovery — real LLM, checkpoint fix
+      verification" entry citing this run directly.
 
 ---
 
@@ -965,15 +977,23 @@ changes and someone re-discovers it, the old (possibly still-working-for-other-
 tenants, in a multi-tenant future) artifact is just gone.
 
 **To do:**
-- [ ] `_run_discover` should compute the next version (scan existing
+- [x] `_run_discover` should compute the next version (scan existing
       `v*.json` the same way `load_artifact` does, +1) rather than hardcoding
-      `1`, so re-discovery adds a new version instead of overwriting.
-- [ ] Decide and document what "latest" means for replay when multiple versions
-      exist — `load_artifact` already defaults to the highest version number,
-      so this may just be a matter of not fighting that default.
-- [ ] Add a test: running `_run_discover`-equivalent logic twice for the same
-      `capability_name` produces `v1.json` and `v2.json`, not one file
-      overwritten twice.
+      `1`, so re-discovery adds a new version instead of overwriting. Added
+      `next_artifact_version(capability_name, artifacts_dir)` in
+      `comp_use/cli.py` (max existing version + 1, or 1 if none exist);
+      `_run_discover` now sets `artifact.version = next_artifact_version(...)`
+      right before `save_artifact`.
+- [x] "Latest" for replay already meant highest version number in
+      `load_artifact` — no change needed there, confirmed by test.
+- [x] Add tests: `test_next_artifact_version_is_1_for_a_new_capability`,
+      `test_next_artifact_version_increments_past_existing_versions` in
+      `tests/test_cli.py`.
+- [x] Verified live alongside issue 11: running real discovery for
+      `lookup_member` (a capability with an existing committed `v1.json`)
+      produced `v2.json`; `diff`'d `v1.json` before/after and confirmed it was
+      byte-for-byte unchanged. The README's demo instructions no longer destroy
+      the working artifact.
 
 ---
 
