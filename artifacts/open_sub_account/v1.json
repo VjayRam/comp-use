@@ -22,7 +22,13 @@
       "example": null
     }
   ],
-  "output_schema": [],
+  "output_schema": [
+    {
+      "name": "confirmation_number",
+      "type": "string",
+      "description": ""
+    }
+  ],
   "steps": [
     {
       "action": "navigate",
@@ -145,6 +151,22 @@
       "extract_as": null,
       "risk_tier": "risky",
       "checkpoint": null
+    },
+    {
+      "action": "extract",
+      "target": null,
+      "locator": {
+        "strategy": "css",
+        "value": {
+          "css": "td:text-is('Confirmation Number') + td"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": "confirmation_number",
+      "risk_tier": "safe",
+      "checkpoint": null
     }
   ],
   "success_checkpoint": {
@@ -161,5 +183,5 @@
     "url_pattern": null
   },
   "outcome_patterns": [],
-  "created_from_run_id": "discover_1787114276_open_sub_account"
+  "created_from_run_id": "discover_1787149758_open_sub_account"
 }

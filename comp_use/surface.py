@@ -33,7 +33,7 @@ class Surface:
     def observe(self) -> ObservedState:
         raise NotImplementedError
 
-    def act(self, action: ActionType, locator: Locator | None, target: str | None, text: str | None) -> None:
+    def act(self, action: ActionType, locator: Locator | None, target: str | None, text: str | None) -> str | None:
         raise NotImplementedError
 
     def check_checkpoint(self, checkpoint: Checkpoint) -> bool:
@@ -51,10 +51,16 @@ class PlaywrightSurface(Surface):
         self.page = page
 
     def observe(self) -> ObservedState:
-        snapshot = self.page.locator("body").aria_snapshot()
+        body = self.page.locator("body")
+        if hasattr(body, "aria_snapshot"):
+            snapshot = body.aria_snapshot()
+        else:
+            # Playwright 1.47 (pinned in requirements.txt) predates Locator.aria_snapshot();
+            # page.accessibility.snapshot() is the equivalent API on this version.
+            snapshot = str(self.page.accessibility.snapshot())
         return ObservedState(accessibility_tree=snapshot, url=self.page.url)
 
-    def act(self, action: ActionType, locator: Locator | None, target: str | None, text: str | None) -> None:
+    def act(self, action: ActionType, locator: Locator | None, target: str | None, text: str | None) -> str | None:
         if action == ActionType.NAVIGATE:
             self.page.goto(target)
         elif action == ActionType.CLICK:
@@ -64,9 +70,10 @@ class PlaywrightSurface(Surface):
         elif action == ActionType.SELECT_OPTION:
             _resolve(self.page, locator).select_option(text)
         elif action == ActionType.EXTRACT:
-            pass
+            return _resolve(self.page, locator).text_content()
         else:
             raise ValueError(f"unknown action: {action}")
+        return None
 
     def check_checkpoint(self, checkpoint: Checkpoint) -> bool:
         if checkpoint.type == CheckpointType.ELEMENT_VISIBLE:

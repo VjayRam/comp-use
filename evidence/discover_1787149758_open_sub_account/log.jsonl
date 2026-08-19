@@ -1,0 +1,8 @@
+{"event_type": "decision", "data": {"action": "type_text", "locator": {"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}}, "text": "12345", "value_source": {"type": "goal_parameter", "param_name": "member_id", "param_type": "string"}, "done": false}}
+{"event_type": "decision", "data": {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}}, "done": false}}
+{"event_type": "decision", "data": {"action": "click", "locator": {"strategy": "role", "value": {"role": "link", "name": "Open Sub-Account"}}, "done": false}}
+{"event_type": "decision", "data": {"action": "type_text", "locator": {"strategy": "role", "value": {"role": "textbox", "name": "Deposit Amount"}}, "text": "500", "value_source": {"type": "goal_parameter", "param_name": "deposit_amount", "param_type": "string"}, "done": false}}
+{"event_type": "decision", "data": {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Open Account"}}, "done": false}}
+{"event_type": "decision", "data": {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Confirm Sub-Account"}}, "done": false}}
+{"event_type": "decision", "data": {"action": "extract", "locator": {"strategy": "css", "value": {"css": "td:text-is('Confirmation Number') + td"}}, "extract_as": "confirmation_number", "done": false}}
+{"event_type": "decision", "data": {"action": "finish", "done": true}}

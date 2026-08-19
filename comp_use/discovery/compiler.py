@@ -1,5 +1,5 @@
 from comp_use.discovery.agent import RunTrace
-from comp_use.schemas import Artifact, Checkpoint, InputParam, OutputParam
+from comp_use.schemas import ActionType, Artifact, Checkpoint, InputParam, OutputParam
 
 
 def compile_artifact(
@@ -18,6 +18,13 @@ def compile_artifact(
             input_schema.append(
                 InputParam(name=vs.param_name, type=vs.param_type or "string", required=True)
             )
+
+    output_schema = list(output_schema)
+    seen_outputs = {o.name for o in output_schema}
+    for step in trace.steps:
+        if step.action == ActionType.EXTRACT and step.extract_as and step.extract_as not in seen_outputs:
+            seen_outputs.add(step.extract_as)
+            output_schema.append(OutputParam(name=step.extract_as, type="string"))
 
     return Artifact(
         capability_name=capability_name,

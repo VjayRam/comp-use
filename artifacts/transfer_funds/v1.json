@@ -36,7 +36,13 @@
       "example": null
     }
   ],
-  "output_schema": [],
+  "output_schema": [
+    {
+      "name": "txn_id",
+      "type": "string",
+      "description": ""
+    }
+  ],
   "steps": [
     {
       "action": "navigate",
@@ -203,6 +209,22 @@
       "extract_as": null,
       "risk_tier": "risky",
       "checkpoint": null
+    },
+    {
+      "action": "extract",
+      "target": null,
+      "locator": {
+        "strategy": "css",
+        "value": {
+          "css": "td:text-is('Transaction ID') + td"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": "txn_id",
+      "risk_tier": "safe",
+      "checkpoint": null
     }
   ],
   "success_checkpoint": {
@@ -230,5 +252,5 @@
       "detail": "insufficient_funds"
     }
   ],
-  "created_from_run_id": "discover_1787114278_transfer_funds"
+  "created_from_run_id": "discover_1787149762_transfer_funds"
 }

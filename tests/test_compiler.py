@@ -43,3 +43,37 @@ def test_compile_artifact_derives_input_schema_from_value_sources():
     assert artifact.input_schema[0].type == "string"
     assert artifact.created_from_run_id == "run_abc"
     assert len(artifact.steps) == 3
+
+
+def test_compile_artifact_derives_output_schema_from_extract_steps():
+    trace = RunTrace(
+        run_id="run_extract",
+        goal="Open sub-account",
+        steps=[
+            Step(action=ActionType.NAVIGATE, target="/sub-account/new", risk_tier=RiskTier.SAFE),
+            Step(
+                action=ActionType.EXTRACT,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "generic", "name": "confirmation-number"}),
+                extract_as="confirmation_number",
+                risk_tier=RiskTier.SAFE,
+            ),
+        ],
+        final_url="http://localhost:5000/sub-account/confirmation",
+        succeeded=True,
+    )
+    success_checkpoint = Checkpoint(
+        type=CheckpointType.ELEMENT_VISIBLE,
+        locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "heading", "name": "Confirmation"}),
+    )
+
+    artifact = compile_artifact(
+        trace,
+        capability_name="open_sub_account",
+        target={"app": "mock_bank", "base_url": "http://localhost:5000"},
+        success_checkpoint=success_checkpoint,
+        output_schema=[],
+    )
+
+    assert len(artifact.output_schema) == 1
+    assert artifact.output_schema[0].name == "confirmation_number"
+    assert artifact.output_schema[0].type == "string"
