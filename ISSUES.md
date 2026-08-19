@@ -13,7 +13,7 @@ re-reading prose.
 
 ---
 
-## Submission readiness (2026-08-19, all 23 issues resolved): ~97/100
+## Submission readiness (2026-08-19, all 23 issues + the `recoverable` gap resolved): ~98/100
 
 Three audit passes found 23 issues total; all 23 are now fixed, tested, and — for
 every issue where it was practical — verified live against the running mock app
@@ -27,18 +27,19 @@ after) rather than trusting that a plausible-looking fix worked.
 |---|---|---|
 | System design | 92/100 | Clean seams held up under real pressure: `EscalationController` absorbed the diff/screenshot capability (issue 9) and the discovery-side risky trigger (issue 12) without interface changes; `Guardrail.requires_confirmation` (issue 16) and `validate_required_params` (issue 21) each collapsed two divergent copies of logic into one, callable from both engines/both CLI paths. |
 | Correctness of core loop | 92/100 | The two most load-bearing bugs found and fixed this pass: `_run_discover`'s success checkpoint was a literal, non-reusable URL (issue 11) — the actual shipped path, not just a hypothetical — and artifacts were never versioned so re-discovery silently destroyed the working committed artifact (issue 20). Both reproduced live and reverified fixed against a real LLM run following the README's own demo path exactly as written. |
-| Robustness & error handling | 90/100 | Both engines now have symmetric, verified crash-proofing: `DiscoveryAgent.surface.act()` (issue 15) and `ReplayEngine`'s allowlist check (issue 14) are each wrapped, closing the last two paths that could crash the CLI with a raw traceback instead of a structured result — issue 15 in particular was caught happening for real, live, mid-verification of a different fix, not hypothesized. Still docked for `recoverable` being unexercised. |
+| Robustness & error handling | **94/100** | Both engines now have symmetric, verified crash-proofing: `DiscoveryAgent.surface.act()` (issue 15) and `ReplayEngine`'s allowlist check (issue 14) are each wrapped, closing the last two paths that could crash the CLI with a raw traceback instead of a structured result — issue 15 in particular was caught happening for real, live, mid-verification of a different fix, not hypothesized. All five `OutcomeType` values are now demonstrated against a real running system, not four — the double-submit/stale-token scenario that used to crash the mock app with a raw `KeyError` now renders a real "Session Expired" page, classified `recoverable` via a real `OutcomePattern`, verified live. |
 | Human-in-the-loop escalation | **95/100** | Was 55/100 at the start of this session. Discovery now escalates on all three §3.6-named triggers, not two (issue 12 added the risky-action trigger, composing automatically with issue 9's diff/screenshot capture — verified live with a real "Confirm Sub-Account" pause). This is the single most-improved category across the whole session. |
 | Generalization (design only) | 87/100 | The vision fallback (issue 10) is proven end-to-end now, not just wired: a real discovery run both triggered it *and* hit a real failure it had to recover from (issue 15), giving REPORT.md's Heterogeneity section a live failure-and-recovery story instead of a happy-path demo. |
 | Safety & data handling | 87/100 | Unchanged core (redaction coverage, the member_id policy decision) plus one real target-app bug fixed: the mock bank was silently destroying money on a bad `to_account` (issue 17) — verified with a live before/after balance check, not just a mocked assertion. |
 | Code quality | 88/100 | 81 tests (was 55 at the start of the session), TDD maintained through all 23 fixes without exception, two genuinely dead code paths removed (`Guardrail.requires_confirmation` was defined but never called; `Settings.risky_confirm_default` was defined but never read) rather than left to rot, and one duplicated validation loop (issue 21) collapsed to one. |
 | Communication | 93/100 | Both `REPORT.md` and `ISSUES.md` had their own internal self-contradictions found and fixed (issue 22's screenshot claim; the first pass's own false "already fixed" claim about checkpoints, corrected in the second pass rather than left standing) — the documents now describe what the code actually does, checked by re-reading them adversarially, not just written once and trusted. |
 
-**What's left:** `recoverable` outcome pattern is still unexercised (no capability
-in the mock app produces a dismiss-and-retry state distinct from the always-present
-confirm step) and logging is still `print()`-based rather than structured. Neither
-was ever flagged as a correctness or requirement gap in three audit passes — see
-"Not on this list" below for what was already solid before this session started.
+**What's left:** logging is still `print()`-based rather than structured. Never
+flagged as a correctness or requirement gap across three audit passes — see "Not
+on this list" below for what was already solid before this session started. The
+`recoverable` gap (the only other item ever flagged) is now closed: fixing it
+also fixed a real bug — a double-submitted review token used to crash the mock
+app with a raw `KeyError`/500, not just fail to classify correctly.
 
 **Bottom line:** every issue found across three audit passes — critical
 (non-reusable checkpoints, unversioned artifacts), high (discovery escalation
@@ -1258,3 +1259,76 @@ Two things are true at once, honestly:
    compound each other and are reproducible right now) and then re-running the
    full live demo path end to end exactly as the README describes it, which
    would catch anything this pass's static reading still missed.
+
+---
+
+## 24. `recoverable` outcome was wired but unexercised — fixed by fixing a real crash bug
+
+**Priority:** medium (the one gap explicitly named as "what's left" after issues
+1–23; requested directly)
+
+**Assignment reference (§3.3):** the four/five-bucket outcome taxonomy —
+`validation_error`, `success`, `business_outcome`, `recoverable`,
+`hard_failure` — is a core deliverable. A taxonomy value that's declared,
+tested for the *mechanism*, but never actually reachable against the real
+target app is an incomplete demonstration of it.
+
+**Current state (before this fix):** `OutcomeType.RECOVERABLE` and the shared
+`OutcomePattern` mechanism existed and were exercised only by
+`business_outcome` (`insufficient_funds`, `no_such_member`). No capability's
+artifact declared a `recoverable` pattern, because nothing in the mock app
+produced a state that was genuinely "dismiss and retry" rather than a
+permanent business result or an automation bug.
+
+**What changed:** Found a real bug while looking for a legitimate
+`recoverable` scenario: `sub_account_review`/`sub_account_review_confirm` and
+`transfer_review`/`transfer_review_confirm` all did a bare dict lookup
+(`_pending_sub_accounts[token]` / `.pop(token)`) with no check that the token
+still existed. Revisiting a review page after already confirming it (a real
+double-click or back-button scenario) raised an unhandled `KeyError`,
+crashing the mock app with a raw Flask 500 — not a contrived scenario, a
+genuine target-app bug.
+
+Fixed by checking token presence before the lookup/pop in all four routes and
+rendering a new `session_expired.html` ("This review session has expired or
+was already submitted. Please start again.") instead of crashing. This is
+exactly the "dismiss and retry" shape `recoverable` is meant for: not a
+permanent business state, not an automation locator bug — a transient,
+recoverable condition with an obvious retry path (start the form over).
+
+Added a matching `OutcomePattern` (`outcome: recoverable`, `detail:
+session_expired`) to both `open_sub_account/v1.json` and
+`transfer_funds/v1.json`'s committed artifacts.
+
+**To do:**
+- [x] Fix the real crash: check token presence before
+      `_pending_sub_accounts[token]`/`.pop(token)` and
+      `_pending_transfers[token]`/`.pop(token)`, in all four routes
+      (`mock_app/app.py`), rendering `session_expired.html` instead.
+- [x] Add mock-app tests proving the crash is gone, not just that a page
+      renders: double-submitting a confirm, and re-`GET`ing a stale review
+      URL, both return 200 with "Session Expired," not a 500.
+      (`test_confirming_an_already_used_token_shows_session_expired_not_a_crash`,
+      `test_reviewing_an_already_used_token_shows_session_expired_not_a_crash`
+      in `tests/test_mock_app_sub_account.py`, mirrored in
+      `tests/test_mock_app_transfer.py` — the transfer version also asserts
+      the source account isn't double-debited by the stale second submit, via
+      a real before/after balance comparison.)
+- [x] Add a `ReplayEngine` unit test proving the taxonomy machinery itself
+      correctly discriminates `recoverable` from `business_outcome`/
+      `hard_failure` when a matching `OutcomePattern` is declared.
+      (`test_recoverable_returned_when_a_dismiss_and_retry_pattern_matches` in
+      `tests/test_replay_engine.py`, mirroring the existing `business_outcome`
+      test.)
+- [x] Add the `OutcomePattern` to the real committed artifacts, not just a
+      test fixture.
+- [x] Verified live against the real running mock app, not mocked: drove a
+      real transfer through to confirmation with Playwright, navigated back
+      to the now-stale review URL, confirmed the real page renders "Session
+      Expired," and confirmed `PlaywrightSurface.check_checkpoint()` against
+      the real `transfer_funds` artifact's `recoverable` `OutcomePattern`
+      matches the real page (`True`). All five `OutcomeType` values are now
+      demonstrated against a real running system.
+- [x] Updated `REPORT.md`'s Determinism & error handling section and Evidence
+      walkthrough to describe the real mechanism and cite the live
+      verification, replacing the "wired but unexercised" language.

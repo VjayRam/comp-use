@@ -182,6 +182,17 @@
     "text": null,
     "url_pattern": null
   },
-  "outcome_patterns": [],
+  "outcome_patterns": [
+    {
+      "outcome": "recoverable",
+      "checkpoint": {
+        "type": "text_present",
+        "locator": null,
+        "text": "This review session has expired or was already submitted.",
+        "url_pattern": null
+      },
+      "detail": "session_expired"
+    }
+  ],
   "created_from_run_id": "discover_1787149758_open_sub_account"
 }

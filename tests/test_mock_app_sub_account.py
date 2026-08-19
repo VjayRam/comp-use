@@ -56,3 +56,31 @@ def test_confirming_review_creates_account_and_shows_confirmation_number():
     confirm_resp = c.post(confirm_url, follow_redirects=True)
     assert b"Confirmation Number" in confirm_resp.data
     assert b"500.00" in confirm_resp.data
+
+
+def test_confirming_an_already_used_token_shows_session_expired_not_a_crash():
+    c = client()
+    submit_resp = c.post(
+        "/member/12345/sub-account/new",
+        data={"account_type": "Savings", "deposit_amount": "500"},
+    )
+    confirm_url = submit_resp.headers["Location"] + "/confirm"
+    c.post(confirm_url, follow_redirects=True)  # consumes the token
+    second_resp = c.post(confirm_url, follow_redirects=True)  # double-submit
+    assert second_resp.status_code == 200
+    assert b"Session Expired" in second_resp.data
+    assert b"start" in second_resp.data.lower()
+
+
+def test_reviewing_an_already_used_token_shows_session_expired_not_a_crash():
+    c = client()
+    submit_resp = c.post(
+        "/member/12345/sub-account/new",
+        data={"account_type": "Savings", "deposit_amount": "500"},
+    )
+    review_url = submit_resp.headers["Location"]
+    confirm_url = review_url + "/confirm"
+    c.post(confirm_url, follow_redirects=True)  # consumes the token
+    second_resp = c.get(review_url)  # GET the now-stale review page again
+    assert second_resp.status_code == 200
+    assert b"Session Expired" in second_resp.data

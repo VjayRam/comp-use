@@ -117,9 +117,21 @@ attempt the same actions in the same order. Outcomes (`OutcomeType` in
    the committed artifacts (`no_such_member`, `insufficient_funds`) was
    hand-authored after discovery, not discovered automatically. Stated here
    rather than left implicit.
-4. **`recoverable`** — same `outcome_patterns` mechanism, reserved for
-   dismiss-and-retry conditions; no capability in this build declares one (nothing in
-   the mock app produces a dismissable interstitial), so it's wired but unexercised.
+4. **`recoverable`** — same `outcome_patterns` mechanism, for a transient
+   condition that isn't a permanent business state (unlike `business_outcome`)
+   and isn't an automation bug (unlike `hard_failure`) — a dismiss-and-retry
+   condition. `open_sub_account` and `transfer_funds` both declare one:
+   double-submitting a review/confirm step (a stale token — the review page
+   revisited, or Confirm clicked twice — a genuine double-click/back-button
+   scenario) previously crashed the mock app with a raw `KeyError`/500;
+   `mock_app/app.py` now renders `session_expired.html` ("This review session
+   has expired or was already submitted. Please start again.") instead, and
+   the artifacts' `outcome_patterns` classify that page as `recoverable`,
+   detail `session_expired`. Verified live: drove a real transfer to
+   confirmation, navigated back to the now-stale review URL, and confirmed
+   both that the real page renders "Session Expired" and that
+   `PlaywrightSurface.check_checkpoint()` against the real
+   `transfer_funds` artifact's `recoverable` `OutcomePattern` matches it.
 5. **`hard_failure`** — checkpoint miss, or an action that raised (missing element,
    timeout), with no matching outcome pattern; result includes `step_index`,
    `expected`/`detail`, `observed`.
@@ -392,10 +404,15 @@ bug rather than a contrived one.
   returned before any `surface.act` — the CLI skips launching Chromium entirely on
   this path.
 
-All five `OutcomeType` values reachable by replay are demonstrated above except
-`recoverable` (see Determinism & error handling — no capability declares one, since
-nothing in the mock app produces a dismissable interstitial distinct from the
-always-present confirm step).
+### Replay — `recoverable`
+
+- `transfer_funds`: a real Playwright session drove a transfer through to
+  confirmation, then navigated back to the (now-stale, already-consumed)
+  review URL — `mock_app/app.py` rendered `"Session Expired"` instead of
+  crashing, and `PlaywrightSurface.check_checkpoint()` against the real
+  artifact's `recoverable` `OutcomePattern` (`detail: "session_expired"`)
+  matched the real page. All five `OutcomeType` values reachable by replay are
+  now demonstrated against a real running system — none left theoretical.
 
 ### Discovery — real LLM (non-`FakeLLMClient`), committed
 

@@ -250,6 +250,16 @@
         "url_pattern": null
       },
       "detail": "insufficient_funds"
+    },
+    {
+      "outcome": "recoverable",
+      "checkpoint": {
+        "type": "text_present",
+        "locator": null,
+        "text": "This review session has expired or was already submitted.",
+        "url_pattern": null
+      },
+      "detail": "session_expired"
     }
   ],
   "created_from_run_id": "discover_1787149762_transfer_funds"

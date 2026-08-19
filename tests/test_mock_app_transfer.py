@@ -78,3 +78,40 @@ def test_confirming_review_commits_transfer_and_shows_txn_id():
     confirm_url = submit_resp.headers["Location"] + "/confirm"
     confirm_resp = c.post(confirm_url, follow_redirects=True)
     assert b"Transaction ID" in confirm_resp.data
+
+
+def _acc_001_balance(client) -> str:
+    import re
+    detail_data = client.get("/member/12345").data.decode()
+    match = re.search(r"ACC-001</td><td>Checking</td><td>([\d.]+)</td>", detail_data)
+    return match.group(1)
+
+
+def test_confirming_an_already_used_transfer_token_shows_session_expired_not_a_crash():
+    c = client()
+    submit_resp = c.post(
+        "/member/12345/transfer",
+        data={"from_account": "ACC-001", "to_account": "ACC-002", "amount": "100"},
+    )
+    confirm_url = submit_resp.headers["Location"] + "/confirm"
+    c.post(confirm_url, follow_redirects=True)  # consumes the token
+    balance_after_first_confirm = _acc_001_balance(c)
+    second_resp = c.post(confirm_url, follow_redirects=True)  # double-submit
+    assert second_resp.status_code == 200
+    assert b"Session Expired" in second_resp.data
+    # the source account must not be double-debited by the second, stale submit
+    assert _acc_001_balance(c) == balance_after_first_confirm
+
+
+def test_reviewing_an_already_used_transfer_token_shows_session_expired_not_a_crash():
+    c = client()
+    submit_resp = c.post(
+        "/member/12345/transfer",
+        data={"from_account": "ACC-001", "to_account": "ACC-002", "amount": "100"},
+    )
+    review_url = submit_resp.headers["Location"]
+    confirm_url = review_url + "/confirm"
+    c.post(confirm_url, follow_redirects=True)  # consumes the token
+    second_resp = c.get(review_url)  # GET the now-stale review page again
+    assert second_resp.status_code == 200
+    assert b"Session Expired" in second_resp.data

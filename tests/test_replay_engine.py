@@ -171,6 +171,24 @@ def test_business_outcome_returned_when_outcome_pattern_matches_instead_of_hard_
     assert result.detail == "insufficient funds"
 
 
+def test_recoverable_returned_when_a_dismiss_and_retry_pattern_matches(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="This review session has expired"),
+            detail="session_expired",
+        )
+    ]
+    surface = FakeSurface(checkpoint_result=False, matching_checkpoint_text="This review session has expired")
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.RECOVERABLE
+    assert result.detail == "session_expired"
+
+
 def test_hard_failure_still_returned_when_no_outcome_pattern_matches(tmp_path):
     artifact = _make_artifact()
     artifact.outcome_patterns = [

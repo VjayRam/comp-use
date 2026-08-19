@@ -61,6 +61,12 @@ def create_app() -> Flask:
 
     @app.get("/member/<member_id>/sub-account/review/<token>")
     def sub_account_review(member_id: str, token: str):
+        if token not in _pending_sub_accounts:
+            return render_template(
+                "session_expired.html",
+                member_id=member_id,
+                restart_url=url_for("new_sub_account_form", member_id=member_id),
+            )
         pending = _pending_sub_accounts[token]
         return render_template(
             "sub_account_review.html",
@@ -72,6 +78,12 @@ def create_app() -> Flask:
 
     @app.post("/member/<member_id>/sub-account/review/<token>/confirm")
     def sub_account_review_confirm(member_id: str, token: str):
+        if token not in _pending_sub_accounts:
+            return render_template(
+                "session_expired.html",
+                member_id=member_id,
+                restart_url=url_for("new_sub_account_form", member_id=member_id),
+            )
         pending = _pending_sub_accounts.pop(token)
         sub_account_id = next_sub_account_id()
         member = MEMBERS[member_id]
@@ -150,6 +162,12 @@ def create_app() -> Flask:
 
     @app.get("/member/<member_id>/transfer/review/<token>")
     def transfer_review(member_id: str, token: str):
+        if token not in _pending_transfers:
+            return render_template(
+                "session_expired.html",
+                member_id=member_id,
+                restart_url=url_for("transfer_form", member_id=member_id),
+            )
         pending = _pending_transfers[token]
         return render_template(
             "transfer_review.html",
@@ -162,6 +180,12 @@ def create_app() -> Flask:
 
     @app.post("/member/<member_id>/transfer/review/<token>/confirm")
     def transfer_review_confirm(member_id: str, token: str):
+        if token not in _pending_transfers:
+            return render_template(
+                "session_expired.html",
+                member_id=member_id,
+                restart_url=url_for("transfer_form", member_id=member_id),
+            )
         pending = _pending_transfers.pop(token)
         from_account = _find_account(member_id, pending["from_account"])
         to_account = _find_account(member_id, pending["to_account"])
