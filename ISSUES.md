@@ -666,17 +666,34 @@ method `REPORT.md` cites as *the* risk-tier mechanism (see issue 14) — isn't
 even the right description for discovery: it's never called there either.
 
 **To do:**
-- [ ] Before calling `self.surface.act()` for a step whose `risk_tier` would be
-      `RiskTier.RISKY` (i.e. run `_classify_risk` on the decision before acting,
-      not just after), escalate the same way `ReplayEngine` does, and block for
-      human confirmation before proceeding — discovery has no `confirm_risky`
-      equivalent today, so this may need one (e.g. `--confirm-risky` on the
-      `discover` subcommand too, currently only on `replay`).
-  - [ ] Add a test asserting a risky decision during discovery calls
-      `escalation.escalate(...)` before `surface.act()` is invoked.
-- [ ] Update `REPORT.md`'s Escalation & handoff section, which currently
-      describes escalation triggers per-engine without calling out that the
-      "risky step" trigger is replay-only today.
+- [x] Before calling `self.surface.act()` for a step whose `risk_tier` would be
+      `RiskTier.RISKY`, escalate the same way `ReplayEngine` does, and block for
+      human confirmation before proceeding. `DiscoveryAgent` now takes a
+      `confirm_risky: bool = False` constructor param (mirroring
+      `ReplayEngine.run()`'s parameter); `comp_use/cli.py`'s `discover`
+      subcommand gained its own `--confirm-risky` flag (previously only
+      `replay` had one), wired through to `DiscoveryAgent`.
+- [x] Add a test asserting a risky decision during discovery calls
+      `escalation.escalate(...)` (with a real screenshot) before `surface.act()`
+      is invoked, and a second test confirming `confirm_risky=True` skips it.
+      (`test_agent_escalates_before_acting_on_a_risky_decision`,
+      `test_agent_skips_risky_escalation_when_confirm_risky_is_true` in
+      `tests/test_discovery_agent.py` — the first uses an explicit order-tracking
+      list to prove escalation happens strictly before the click, not just that
+      both happened.)
+- [x] Update `REPORT.md`'s Escalation & handoff section to describe the risky
+      trigger as symmetric across both engines, not replay-only.
+- [x] Verified live against the running mock app with a scripted
+      `FakeLLMClient` reaching the real "Confirm Sub-Account" button: the run
+      printed `[ESCALATION] step 5 is risk_tier=risky and confirm_risky is
+      False`, blocked on stdin, and only proceeded to `finish` after `resume` +
+      a note were typed. The escalation carried a real screenshot
+      (`escalation_step5.png`) and, since issue 9's before/after diff mechanism
+      composes automatically with any `EscalationController.escalate()` call,
+      also produced `escalation_before_step5.png`/`escalation_after_step5.png`
+      and a `tree_diff` on the same `escalation_human_action` event — issue 9's
+      work didn't need any changes to also cover discovery-side risky
+      escalation.
 
 ---
 
@@ -1110,7 +1127,9 @@ walkthrough section already has this right; the Determinism section doesn't.
   field can likely just be deleted.
 
 **To do:**
-- [ ] Update the README's escalation paragraph to mention the note prompt.
+- [x] Update the README's escalation paragraph to mention the note prompt (and,
+      while there, that `discover` now has its own `--confirm-risky` flag too —
+      see issue 12).
 - [ ] Fix or remove the `/evidence/*.png`/`/evidence/*.jpg` `.gitignore` rules
       to match actual intent (either genuinely exclude nested screenshots with
       `evidence/**/*.png`, or delete the now-contradicted rule since screenshots

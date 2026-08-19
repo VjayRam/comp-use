@@ -85,6 +85,7 @@ class DiscoveryAgent:
         evidence_logger: EvidenceLogger,
         max_steps: int,
         escalation: EscalationController | None = None,
+        confirm_risky: bool = False,
     ):
         self.surface = surface
         self.llm_client = llm_client
@@ -92,6 +93,7 @@ class DiscoveryAgent:
         self.evidence_logger = evidence_logger
         self.max_steps = max_steps
         self.escalation = escalation
+        self.confirm_risky = confirm_risky
 
     def _escalate(self, goal: str, current_step: int, reason: str) -> None:
         if self.escalation is None:
@@ -192,6 +194,9 @@ class DiscoveryAgent:
                 continue
             risk_tier = _classify_risk(action, target, locator)
             consecutive_skips = 0
+
+            if risk_tier == RiskTier.RISKY and not self.confirm_risky and self.escalation is not None:
+                self._escalate(goal, step_index, f"step {step_index} is risk_tier=risky and confirm_risky is False")
 
             self.surface.act(action, locator=locator, target=target, text=text)
             # Only persist the literal text for steps that AREN'T a goal_parameter -

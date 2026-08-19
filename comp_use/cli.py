@@ -102,7 +102,10 @@ def _run_discover(args) -> None:
         page = browser.new_page()
         surface = PlaywrightSurface(page)
         escalation = EscalationController(evidence, transport, surface=surface)
-        agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps, escalation=escalation)
+        agent = DiscoveryAgent(
+            surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps,
+            escalation=escalation, confirm_risky=args.confirm_risky,
+        )
         trace = agent.run(goal=args.goal, start_url=args.start_url)
         if not trace.succeeded:
             evidence.save_screenshot(surface.screenshot(), "final")
@@ -181,6 +184,7 @@ def main() -> None:
     discover_parser.add_argument("--goal", required=True)
     discover_parser.add_argument("--start-url", required=True)
     discover_parser.add_argument("--capability-name", required=True)
+    discover_parser.add_argument("--confirm-risky", action="store_true")
     discover_parser.set_defaults(func=_run_discover)
 
     replay_parser = subparsers.add_parser("replay")

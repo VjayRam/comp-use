@@ -165,16 +165,20 @@ disk, not a dropped field.
 
 `LocalSharedBrowserTransport` (`comp_use/escalation/transport.py`) is the built
 transport: print the request, wait for the operator to type `resume` while they use
-the **same headed Playwright window**. Replay wires this in when a step is `risky`
-and `confirm_risky` is false.
+the **same headed Playwright window**. Both engines wire this in symmetrically when
+a step is `risky` and `confirm_risky` is false — `discover` and `replay` each have
+their own `--confirm-risky` flag on the CLI.
 
-Discovery escalates too, not just replay (`comp_use/discovery/agent.py`,
-`DiscoveryAgent._escalate`, wired through `comp_use/cli.py`'s `_run_discover`), on
-two triggers: (1) `max_steps` exhausted without a `finish` decision — the agent is
-plainly stuck; (2) three consecutive skipped/invalid decisions in a row (missing
-locator, missing target, allowlist violation, or an unrecognized action) — a
-dead-end signal that fires *mid-run*, not just at the end, so a human can unblock the
-agent and let it keep going rather than only being told after the whole run failed.
+Discovery escalates on three triggers, not two, matching all three named in §3.6:
+(1) a step whose `risk_tier` is `RISKY` — checked *before* `self.surface.act()` is
+called, not after, so the irreversible action never happens un-confirmed; (2)
+`max_steps` exhausted without a `finish` decision — the agent is plainly stuck; (3)
+three consecutive skipped/invalid decisions in a row (missing locator, missing
+target, allowlist violation, or an unrecognized action) — a dead-end signal that
+fires *mid-run*, not just at the end, so a human can unblock the agent and let it
+keep going rather than only being told after the whole run failed. All three are
+wired through `comp_use/discovery/agent.py`'s `DiscoveryAgent._escalate`, called
+from `comp_use/cli.py`'s `_run_discover`.
 
 **What changed during the handoff is captured, not just that it happened.**
 `EscalationController.escalate()` takes an optional `surface` reference (wired in

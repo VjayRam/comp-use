@@ -317,6 +317,81 @@ def test_agent_retries_with_screenshot_after_missing_locator_skip(tmp_path):
     assert llm.screenshot_calls[2] is None
 
 
+def test_agent_escalates_before_acting_on_a_risky_decision(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    order: list[str] = []
+
+    class OrderedFakeSurface(FakeSurface):
+        def act(self, action, locator, target, text):
+            if action == ActionType.CLICK:
+                order.append("act")
+            super().act(action, locator, target, text)
+
+        def screenshot(self):
+            order.append("screenshot")
+            return super().screenshot()
+
+    class OrderedFakeTransport(FakeTransport):
+        def notify(self, request):
+            order.append("escalate")
+            super().notify(request)
+
+    surface = OrderedFakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {
+                "action": "click",
+                "locator": {"strategy": "role", "value": {"role": "button", "name": "Confirm Transfer"}},
+                "done": False,
+            },
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_risky_discovery")
+    transport = OrderedFakeTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10, escalation=escalation)
+
+    trace = agent.run(goal="Transfer funds", start_url="http://localhost:5000/member/search")
+
+    assert len(transport.notified) == 1
+    request = transport.notified[0]
+    assert "risk_tier=risky" in request.reason
+    assert request.screenshot_path is not None
+    # the escalation (and its screenshot) must happen BEFORE the risky click is acted on
+    assert order == ["screenshot", "escalate", "act"]
+    assert trace.steps[0].risk_tier.value == "risky"
+
+
+def test_agent_skips_risky_escalation_when_confirm_risky_is_true(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {
+                "action": "click",
+                "locator": {"strategy": "role", "value": {"role": "button", "name": "Confirm Transfer"}},
+                "done": False,
+            },
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_risky_confirmed")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(
+        surface, llm, guardrail, evidence, max_steps=10, escalation=escalation, confirm_risky=True
+    )
+
+    agent.run(goal="Transfer funds", start_url="http://localhost:5000/member/search")
+
+    assert len(transport.notified) == 0
+
+
 def test_agent_treats_string_none_target_as_missing(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"

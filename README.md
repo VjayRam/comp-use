@@ -185,9 +185,10 @@ python -m comp_use.cli replay --capability-name lookup_member --params "{}"
 
 Expected: `"outcome": "validation_error"` and detail `missing required param 'member_id'`.
 
-Risky capabilities (transfer / sub-account) pause for human confirmation unless you
-pass `--confirm-risky`. Type `resume` in the CLI when you have finished in the shared
-browser window.
+Risky steps (opening a sub-account, transferring funds) pause for human
+confirmation on both `discover` and `replay` unless you pass `--confirm-risky`.
+Type `resume` in the CLI when you have finished in the shared browser window,
+then a one-line note describing what you did (optional — press Enter to skip it).
 
 ## Project layout
 
