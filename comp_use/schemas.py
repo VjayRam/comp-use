@@ -114,6 +114,10 @@ class ReplayResult(BaseModel):
     step_index: int | None = None
     expected: str | None = None
     observed: str | None = None
+    # Set only by the CLI's optional --diagnose-drift-on-failure post-mortem
+    # (comp_use/drift.py) - never by ReplayEngine itself, which stays LLM-free.
+    # Points at a NEW artifact version saved to disk, not yet approved/active.
+    proposed_patch_version: int | None = None
 
 
 class InterventionRequest(BaseModel):

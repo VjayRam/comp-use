@@ -1,0 +1,138 @@
+{
+  "capability_name": "transfer_funds_drift_live_check",
+  "version": 2,
+  "target": {
+    "app": "mock_bank",
+    "base_url": "http://localhost:5000"
+  },
+  "description": "",
+  "input_schema": [],
+  "output_schema": [],
+  "steps": [
+    {
+      "action": "navigate",
+      "target": "http://localhost:5000/member/12345/transfer",
+      "locator": null,
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "From Account"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "fixed",
+        "param_name": null,
+        "param_type": null,
+        "reason": "test"
+      },
+      "value": "ACC-001",
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "To Account"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "fixed",
+        "param_name": null,
+        "param_type": null,
+        "reason": "test"
+      },
+      "value": "ACC-002",
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "Amount"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "fixed",
+        "param_name": null,
+        "param_type": null,
+        "reason": "test"
+      },
+      "value": "15",
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "button",
+          "name": "Transfer"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "button",
+          "name": "Confirm Transfer"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "risky",
+      "checkpoint": null
+    }
+  ],
+  "success_checkpoint": {
+    "type": "element_visible",
+    "locator": {
+      "strategy": "role",
+      "value": {
+        "role": "heading",
+        "name": "Confirmation"
+      },
+      "fallback": null
+    },
+    "text": null,
+    "url_pattern": null
+  },
+  "outcome_patterns": [],
+  "created_from_run_id": "run_drift_live_check"
+}

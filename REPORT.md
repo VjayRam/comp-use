@@ -186,6 +186,82 @@ own try/except, "no action in this system is ever allowed to crash the CLI with
 a raw traceback" is true end to end, not just for the paths that happened to be
 tested first.
 
+## Drift-aware self-healing replay (`--diagnose-drift-on-failure`, optional)
+
+Beyond what the assignment requires: an opt-in extension that turns a `hard_failure`
+into a diagnostic opportunity instead of a dead end, built entirely from primitives
+that already existed — the vision fallback, `EscalationController`, artifact
+versioning, and the outcome taxonomy — rather than a new subsystem.
+
+**The core invariant is preserved, not bent.** `comp_use/replay/engine.py`
+still never imports `LLMClient` and still never calls one — `ReplayEngine.run()`
+produces the exact same, fully deterministic `ReplayResult` it always did, and
+that outcome (`HARD_FAILURE` here) is never altered by anything below. The
+diagnosis is a separate, new module, `comp_use/drift.py`, invoked only by
+`cli.py`'s `_run_replay` — the orchestration layer that already talks to an LLM
+for `discover` — strictly *after* `engine.run()` has returned its final result.
+It's a best-effort post-mortem on an already-failed run, not a decision the
+replay itself makes.
+
+**How it works.** On `HARD_FAILURE` where the failure was specifically the
+recorded action's own locator not resolving (`comp_use/cli.py`'s
+`_is_action_locator_failure` — deliberately *not* triggered for a checkpoint
+mismatch, since patching a step's action locator wouldn't address the page
+looking different after a successful action):
+1. Take a screenshot of the real, current page state.
+2. Ask a vision model (`OpenRouterClient.diagnose_drift`, a dedicated tool
+   schema/prompt distinct from `decide_next_action`) whether a control serving
+   the same purpose is still visible, just renamed/moved — or whether it's
+   genuinely gone.
+3. If found, build a **new**, unsaved `Artifact` with only that one step's
+   locator patched (`comp_use/drift.py`'s `propose_drift_patch`) and save it as
+   the next version via the same `next_artifact_version()` issue 20 built —
+   never overwriting `v1`.
+4. Escalate to a human via the same `EscalationController` replay already
+   uses, naming the proposed version and file path. The patch is never applied
+   to the run that just failed, and never becomes "the" artifact without a
+   human explicitly reviewing it — `load_artifact()`'s existing
+   highest-version-wins default means the patch only takes effect once a human
+   has looked at it and left it as the latest version (or explicitly rejected
+   it by not promoting it / deleting it).
+
+**Live evidence — including the honest failure modes hit along the way, not
+just the eventual success.** Verified against a deliberately broken artifact
+(`transfer_funds_drift_live_check`, a real `transfer_funds`-shaped artifact
+with one locator typo'd — `"Cofirm Transfer"` instead of the real page's
+`"Confirm Transfer"`) and the real running mock app:
+
+- `evidence/replay_1787173876/` — first real attempt: the model (a small
+  free-tier vision model, `google/gemma-4-26b-a4b-it:free`) correctly
+  recognized the typo semantically but replied with a malformed tool-call
+  shape (`{"diagnose_drift": {...}}`, wrapped, using `"reason"` instead of the
+  schema's `"reasoning"`, and no `locator` field at all) — logged honestly as
+  `{"found": false, "reasoning": "model returned an invalid locator"}` rather
+  than silently discarded or misreported as a clean "not found."
+- Debugged directly (not guessed): a standalone call to
+  `OpenRouterClient.diagnose_drift` reproduced the exact malformed response,
+  confirming this was a real free-tier-model quirk, not a fabricated scenario.
+  Fixed with `_normalize_drift_diagnosis()` (tolerates the wrapping-key and
+  `reason`/`reasoning` divergence) plus a stricter worked-example prompt.
+- `evidence/replay_1787174182/` — same broken artifact, after the fix:
+  `{"found": true, "proposed_version": 2, "proposed_locator": {"role":
+  "button", "name": "Confirm Transfer"}, "reasoning": "The expected control
+  'Cofirm Transfer' has a typo in the expectation, but the 'Confirm Transfer'
+  button is clearly visible on the page."}` — saved as `v2.json`,
+  `v1.json` left untouched, and a real escalation raised
+  (`evidence/replay_1787174182/drift_diagnosis.png` is a real screenshot of
+  the actual page).
+- Closing the loop: replaying the same capability again (no flags needed —
+  `load_artifact()` picks up the new highest version automatically) —
+  `evidence/replay_1787174265/` — `{"outcome": "success"}`. The proposed patch
+  wasn't just plausible-looking; it actually works.
+
+This is the concrete, tested slice of what the Heterogeneity section below
+still describes as a design-only "Drift" bullet at the fleet/multi-tenant
+scale — single-artifact, single-locator, human-gated, but genuinely built and
+genuinely proven against a real model's real (and, honestly, initially
+malformed) output, not just described.
+
 ## Heterogeneity & multi-tenant
 
 Designed, not built as extra runtimes (spec §9). The seams that would change:
@@ -194,23 +270,26 @@ Designed, not built as extra runtimes (spec §9). The seams that would change:
   `locator.strategy` can grow `native_id` without touching replay/guardrails.
 - **Multi-tenant** — locator values are the tenant-specific part; a future
   `variant_overrides` map would be a sparse diff on a base artifact.
-- **Drift** — sampled replay of checkpoints per tenant would flag a stale variant.
+- **Drift** — sampled replay of checkpoints per tenant would flag a stale variant,
+  and (see above) a single-artifact, human-gated slice of the *repair* half of
+  this — not the fleet-wide sampling/flagging half — is actually built.
 
 Nothing in this repo executes more than one mock tenant.
 
 **What's actually proven here vs. what's asserted.** Of the three bullets above,
-only **Surface** has any live evidence behind it — the vision fallback below is
-a real, tested, live-verified instance of "perception needs a fallback when the
-primary channel isn't enough," which is the load-bearing idea behind a desktop
-`Surface` too. **Multi-tenant** and **Drift** are not backed by any code at
-all — no second tenant has ever been executed, no `variant_overrides` field
-exists on `Artifact` today, and no drift-sampling logic has been written, even
-as a stub. They're included because the assignment asks for the design, not
-because this repo demonstrates any part of them working. Stating that
-distinction plainly here, rather than letting the vision fallback's real proof
-imply equal confidence in the other two.
+**Surface** and **Drift** now each have real, live-verified evidence behind
+them — the vision fallback is a tested instance of "perception needs a fallback
+when the primary channel isn't enough" (the load-bearing idea behind a desktop
+`Surface` too), and the drift-aware patch proposal above is a tested instance
+of "a failed replay can diagnose and propose its own fix, gated on a human"
+(the load-bearing idea behind fleet-wide drift *sampling*, even though the
+sampling/scheduling half of that idea isn't built). **Multi-tenant** is the one
+bullet with no code behind it at all — no second tenant has ever been executed,
+no `variant_overrides` field exists on `Artifact` today. Stating that
+distinction plainly here, rather than letting the two real proof points imply
+equal confidence in the third.
 
-**Failure modes for the two unbuilt pieces, since a design that hand-waves past
+**Failure modes for the still-unbuilt piece, since a design that hand-waves past
 failure is worse than one that's honest about not being built:**
 - **`variant_overrides` review and rollback.** A sparse per-tenant diff on a
   base artifact is easy to describe and easy to get wrong in practice — a bad
@@ -224,16 +303,18 @@ failure is worse than one that's honest about not being built:**
   Rollback would mean reverting to the base artifact (or a prior override
   version) for that tenant only; nothing here designs what "known-good"
   means across a fleet of per-tenant overrides at scale.
-- **Drift detection false positives/negatives.** Sampled replay flagging a
-  "stale" variant is only as good as its sample rate and what it checks —
-  a checkpoint that still resolves but now means something different (a
+- **Fleet-wide drift *sampling and scheduling* false positives/negatives.**
+  The *repair* half is built and proven above (given a known failure, propose
+  and gate a fix); the *detection-at-scale* half — deciding which tenants to
+  sample, how often, and whether a given mismatch is worth surfacing — is not.
+  A checkpoint that still resolves but now means something different (a
   relabeled button, a moved confirmation number) would pass a naive
   checkpoint-presence check while actually being drifted, a false negative.
   Conversely, a transient app outage or maintenance window during a sampled
   replay would look identical to genuine drift, a false positive that would
-  incorrectly flag a healthy artifact for re-discovery. Neither failure mode
-  is designed for here; both would need to be before "drift detection" is
-  more than a diagram label.
+  incorrectly flag a healthy artifact for re-discovery. Neither is designed
+  for here; both would need to be before fleet-wide drift *detection* is more
+  than a diagram label, even though drift *repair*, once detected, no longer is.
 
 **Vision fallback — the concrete slice of "apps without a usable DOM tree" that is
 actually built and testable.** A desktop `Surface` (real OS-level automation, no

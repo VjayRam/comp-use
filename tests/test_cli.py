@@ -10,8 +10,12 @@ from playwright.sync_api import sync_playwright
 import comp_use.cli as cli
 from comp_use.cli import _derive_success_checkpoint, load_artifact, next_artifact_version, save_artifact
 from comp_use.config import Settings
+from comp_use.escalation.transport import ControlTransport
 from comp_use.llm_client import FakeLLMClient
-from comp_use.schemas import ActionType, Artifact, Checkpoint, CheckpointType, Locator, LocatorStrategy, RiskTier, Step
+from comp_use.schemas import (
+    ActionType, Artifact, Checkpoint, CheckpointType, InputParam, Locator,
+    LocatorStrategy, OutcomeType, RiskTier, Step, ValueSource,
+)
 from comp_use.surface import PlaywrightSurface
 from mock_app.app import create_app
 
@@ -146,6 +150,7 @@ def test_run_discover_produces_a_reusable_checkpoint_end_to_end(tmp_path, live_s
             capability_name="lookup_member_cli_integration_test",
             params=json.dumps({"member_id": "67890"}),
             confirm_risky=False,
+            diagnose_drift_on_failure=False,
         )
         with patch("builtins.print") as mock_print:
             cli._run_replay(replay_args)
@@ -186,3 +191,111 @@ def test_main_dispatches_replay_subcommand_with_parsed_args(monkeypatch):
     assert called_args.capability_name == "lookup_member"
     assert called_args.params == '{"member_id": "12345"}'
     assert called_args.confirm_risky is False  # not passed - defaults to False
+    assert called_args.diagnose_drift_on_failure is False  # not passed - defaults to False
+
+
+class FakeDriftTransport(ControlTransport):
+    def __init__(self):
+        self.notified = []
+
+    def notify(self, request):
+        self.notified.append(request)
+
+    def wait_for_resume(self):
+        return "reviewed the proposed patch"
+
+
+class FakeVisionDriftClient:
+    """Stands in for OpenRouterClient - the real vision-diagnosis behavior is
+    already covered live in comp_use/llm_client.py's own tests; here we're
+    proving cli.py wires the diagnosis result through to a saved artifact
+    version and an escalation, not re-testing the LLM call itself."""
+
+    def diagnose_drift(self, expected_locator, screenshot_b64):
+        return {"found": True, "locator": {"strategy": "role", "value": {"role": "button", "name": "Confirm Transfer"}}}
+
+
+def _broken_transfer_artifact(live_server: str) -> Artifact:
+    """A transfer_funds-shaped artifact whose final step's locator has a typo
+    ("Cofirm Transfer" vs. the real page's "Confirm Transfer") - simulating
+    drift (a control renamed) without needing to actually modify the mock app."""
+    return Artifact(
+        capability_name="transfer_funds_drift_test",
+        target={"app": "mock_bank", "base_url": live_server},
+        steps=[
+            Step(action=ActionType.NAVIGATE, target=f"{live_server}/member/12345/transfer", risk_tier=RiskTier.SAFE),
+            Step(
+                action=ActionType.TYPE_TEXT,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "textbox", "name": "From Account"}),
+                value_source=ValueSource(type="fixed", reason="test"), value="ACC-001", risk_tier=RiskTier.SAFE,
+            ),
+            Step(
+                action=ActionType.TYPE_TEXT,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "textbox", "name": "To Account"}),
+                value_source=ValueSource(type="fixed", reason="test"), value="ACC-002", risk_tier=RiskTier.SAFE,
+            ),
+            Step(
+                action=ActionType.TYPE_TEXT,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "textbox", "name": "Amount"}),
+                value_source=ValueSource(type="fixed", reason="test"), value="25", risk_tier=RiskTier.SAFE,
+            ),
+            Step(
+                action=ActionType.CLICK,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Transfer"}),
+                risk_tier=RiskTier.SAFE,
+            ),
+            Step(
+                action=ActionType.CLICK,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Cofirm Transfer"}),
+                risk_tier=RiskTier.RISKY,
+            ),
+        ],
+        success_checkpoint=Checkpoint(
+            type=CheckpointType.ELEMENT_VISIBLE,
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "heading", "name": "Confirmation"}),
+        ),
+        created_from_run_id="run_drift_test",
+    )
+
+
+def test_run_replay_with_diagnose_drift_proposes_a_patched_version_not_active(tmp_path, live_server, monkeypatch):
+    monkeypatch.setenv("COMP_USE_HEADLESS", "1")
+    settings = _settings_for(tmp_path, live_server)
+    save_artifact(_broken_transfer_artifact(live_server), settings.artifacts_dir)
+    transport = FakeDriftTransport()
+
+    with patch.object(cli, "load_settings", return_value=settings), \
+         patch.object(cli, "OpenRouterClient", return_value=FakeVisionDriftClient()), \
+         patch.object(cli, "LocalSharedBrowserTransport", return_value=transport):
+        replay_args = argparse.Namespace(
+            capability_name="transfer_funds_drift_test",
+            params="{}",
+            confirm_risky=True,  # skip the unrelated risky-step pause; only care about drift escalation here
+            diagnose_drift_on_failure=True,
+        )
+        result_json = None
+
+        def _capture(*args, **kwargs):
+            nonlocal result_json
+            if args and isinstance(args[0], str) and '"outcome"' in args[0]:
+                result_json = args[0]
+
+        with patch("builtins.print", side_effect=_capture):
+            cli._run_replay(replay_args)
+
+    import json as _json
+    result = _json.loads(result_json)
+    # the run itself genuinely failed - drift diagnosis must never change that
+    assert result["outcome"] == "hard_failure"
+    assert result["proposed_patch_version"] == 2
+
+    # v1 (the original, broken artifact) must be untouched
+    original = load_artifact("transfer_funds_drift_test", settings.artifacts_dir, version=1)
+    assert original.steps[5].locator.value["name"] == "Cofirm Transfer"
+    # v2 is the proposed patch, saved but never applied to this run
+    patched = load_artifact("transfer_funds_drift_test", settings.artifacts_dir, version=2)
+    assert patched.steps[5].locator.value["name"] == "Confirm Transfer"
+
+    assert len(transport.notified) == 1
+    assert "drift" in transport.notified[0].reason.lower()
+    assert "v2" in transport.notified[0].reason

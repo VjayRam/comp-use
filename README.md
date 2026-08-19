@@ -30,6 +30,11 @@ Built for the interface.ai take-home assignment
    a replay run can't safely proceed on its own.
 6. Enforce an allowlist, risk-tiered action handling, and redaction of sensitive data
    before it's sent to the LLM or persisted anywhere.
+7. **Optional:** on a replay failure, diagnose whether the target control just
+   drifted (moved/renamed) rather than genuinely broke, and propose a patched
+   artifact version for human review — never auto-applied. See
+   [Drift-aware self-healing replay](REPORT.md#drift-aware-self-healing-replay---diagnose-drift-on-failure-optional)
+   in REPORT.md.
 
 ## System design
 
@@ -192,6 +197,19 @@ Risky steps (opening a sub-account, transferring funds) pause for human
 confirmation on both `discover` and `replay` unless you pass `--confirm-risky`.
 Type `resume` in the CLI when you have finished in the shared browser window,
 then a one-line note describing what you did (optional — press Enter to skip it).
+
+**Drift-aware self-healing replay** (optional — see REPORT.md for the full
+write-up and live evidence): add `--diagnose-drift-on-failure` to `replay`. If
+a step's recorded control genuinely can't be found (not a checkpoint mismatch),
+a vision model checks whether it just moved/got renamed, and — only if it finds
+a plausible match — saves a patched artifact as a new version and escalates for
+human review. Nothing is auto-applied; the failed run's own result is unchanged.
+
+```bash
+python -m comp_use.cli replay --capability-name transfer_funds \
+  --params "{\"member_id\": \"12345\", \"from_account\": \"ACC-001\", \"to_account\": \"ACC-002\", \"amount\": \"25\"}" \
+  --confirm-risky --diagnose-drift-on-failure
+```
 
 ## Project layout
 
