@@ -420,6 +420,60 @@ def test_agent_action_failure_does_not_crash_and_is_recorded(tmp_path):
     assert len(trace.steps) == 0  # the failed click was never recorded as a step
 
 
+def test_agent_action_failure_evidence_names_the_exception_type(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface(raise_on_action_call=2)
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}}, "done": False},
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_action_failure_type")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+
+    log_path = evidence.run_dir / "log.jsonl"
+    import json
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    skipped = [e for e in events if e["event_type"] == "skipped_decision" and e["data"]["reason"] == "action_failed"]
+    assert len(skipped) == 1
+    # a bare exception message alone doesn't say what kind of failure it was -
+    # the type name distinguishes a genuine code bug from an environmental one.
+    assert skipped[0]["data"]["error"].startswith("TimeoutError:")
+
+
+def test_agent_console_output_redacts_typed_values(tmp_path, capsys):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {
+                "action": "type_text",
+                "locator": {"strategy": "role", "value": {"role": "textbox", "name": "From Account"}},
+                "text": "ACC-001",
+                "value_source": {"type": "fixed", "reason": "test"},
+                "done": False,
+            },
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_console_redaction")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    agent.run(goal="Transfer funds", start_url="http://localhost:5000/member/search")
+
+    captured = capsys.readouterr()
+    assert "ACC-001" not in captured.out
+    assert "[REDACTED]" in captured.out
+    assert "type_text" in captured.out  # the action name itself must survive redaction
+
+
 def test_agent_treats_string_none_target_as_missing(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"

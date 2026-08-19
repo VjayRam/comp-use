@@ -151,3 +151,38 @@ def test_run_discover_produces_a_reusable_checkpoint_end_to_end(tmp_path, live_s
             cli._run_replay(replay_args)
         printed = "".join(str(c.args[0]) for c in mock_print.call_args_list)
         assert '"outcome": "success"' in printed
+
+
+def test_main_dispatches_discover_subcommand_with_parsed_args(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "comp-use", "discover",
+            "--goal", "Look up member 12345",
+            "--start-url", "http://localhost:5000/member/search",
+            "--capability-name", "lookup_member",
+            "--confirm-risky",
+        ],
+    )
+    with patch.object(cli, "_run_discover") as mock_run_discover:
+        cli.main()
+    assert mock_run_discover.called
+    called_args = mock_run_discover.call_args.args[0]
+    assert called_args.goal == "Look up member 12345"
+    assert called_args.start_url == "http://localhost:5000/member/search"
+    assert called_args.capability_name == "lookup_member"
+    assert called_args.confirm_risky is True
+
+
+def test_main_dispatches_replay_subcommand_with_parsed_args(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["comp-use", "replay", "--capability-name", "lookup_member", "--params", '{"member_id": "12345"}'],
+    )
+    with patch.object(cli, "_run_replay") as mock_run_replay:
+        cli.main()
+    assert mock_run_replay.called
+    called_args = mock_run_replay.call_args.args[0]
+    assert called_args.capability_name == "lookup_member"
+    assert called_args.params == '{"member_id": "12345"}'
+    assert called_args.confirm_risky is False  # not passed - defaults to False

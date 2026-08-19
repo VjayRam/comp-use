@@ -1332,3 +1332,67 @@ session_expired`) to both `open_sub_account/v1.json` and
 - [x] Updated `REPORT.md`'s Determinism & error handling section and Evidence
       walkthrough to describe the real mechanism and cite the live
       verification, replacing the "wired but unexercised" language.
+
+---
+
+## 25. Safety/code-quality closing pass: stdout redaction leak, duplicated dead-end block, opaque exception details
+
+**Priority:** medium (raised directly, in response to "why is Generalization /
+Safety / Code quality still below 90")
+
+**25a. Console output wasn't redacted — only the evidence JSONL was.**
+`DiscoveryAgent.run()` had `print(f"[discover] {action.value}
+locator={locator} target={target} text={text}", flush=True)` — this printed
+the real typed value straight to the terminal, unredacted, even though
+`EvidenceLogger.log_event()` redacts the exact same data before it reaches
+`log.jsonl`. Confirmed live: an `ACC-001` value (which matches a redaction
+pattern) printed in the clear to stdout before this fix. If that console
+output is captured anywhere (CI logs, a shared terminal recording, a
+copy-pasted bug report), it leaks exactly the data the redaction patterns
+exist to protect — the JSONL log being clean doesn't help if the terminal
+isn't.
+
+**25b. The dead-end/escalation block was duplicated five times verbatim** in
+`DiscoveryAgent.run()` (unknown action, missing locator, missing target,
+allowlist violation, action failed) — the same three-line
+increment/threshold-check/escalate/reset pattern, copy-pasted rather than
+factored out.
+
+**25c. `hard_failure`/`action_failed` details didn't name the exception
+type**, only its message (`str(exc)`) — a genuine code bug (e.g. a `TypeError`
+from a logic error) and an expected environmental failure (a Playwright
+`TimeoutError`) were indistinguishable in evidence/detail text, since both
+just produce a message string with no indication of which kind of failure
+it was.
+
+**To do:**
+- [x] Added `DiscoveryAgent._print(message)`, which redacts via
+      `self.guardrail.redact(message)` before printing, and routed every
+      `print()` call in `DiscoveryAgent.run()` through it.
+- [x] Added `DiscoveryAgent._note_skip(goal, step_index, consecutive_skips) ->
+      int`, replacing all five duplicated copies of the
+      increment/threshold-check/escalate block with one call each.
+- [x] Both `DiscoveryAgent`'s `action_failed` handling and
+      `ReplayEngine.run()`'s `hard_failure` detail now format exceptions as
+      `f"{type(exc).__name__}: {exc}"` instead of bare `str(exc)`.
+- [x] Tests: `test_agent_console_output_redacts_typed_values` (captures real
+      stdout via `capsys`, asserts a redaction-pattern value doesn't appear
+      and `[REDACTED]` does, while the action name itself survives),
+      `test_agent_action_failure_evidence_names_the_exception_type`, and a
+      new assertion on the existing `test_action_exception_returns_hard_failure_instead_of_crashing`
+      in `tests/test_replay_engine.py` (`result.detail.startswith("TimeoutError:")`).
+- [x] Verified live, not just unit-tested: ran real discovery against the
+      live mock app twice — once typing a bare `member_id` (`"12345"`,
+      correctly *not* redacted, matching the documented policy) and once
+      typing an `ACC-001` value through a scripted flow (correctly printed
+      as `[REDACTED]`) — confirming the fix respects the existing redaction
+      policy rather than over-redacting everything.
+- [x] Added `test_main_dispatches_discover_subcommand_with_parsed_args` /
+      `test_main_dispatches_replay_subcommand_with_parsed_args` in
+      `tests/test_cli.py` — the one remaining untested layer, real
+      `sys.argv` parsed through `argparse` and `main()`'s actual dispatch,
+      not just calling `_run_discover`/`_run_replay` directly.
+- [ ] Not done, deliberately out of scope for this pass: `mypy`/`pyright` in
+      CI. A real improvement, but a separate investment (config, fixing
+      whatever it flags, wiring into the test run) rather than a small,
+      mechanical fix like the others above.

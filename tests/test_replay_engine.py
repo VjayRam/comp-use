@@ -248,6 +248,9 @@ def test_action_exception_returns_hard_failure_instead_of_crashing(tmp_path):
     assert result.outcome == OutcomeType.HARD_FAILURE
     assert result.step_index == 1
     assert "element not found" in (result.detail or "")
+    # the exception's type name must be visible too - a bare message alone
+    # doesn't distinguish an expected environmental timeout from a genuine bug.
+    assert result.detail.startswith("TimeoutError:")
 
 
 def test_disallowed_url_step_returns_hard_failure_instead_of_crashing(tmp_path):

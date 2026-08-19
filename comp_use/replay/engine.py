@@ -75,7 +75,7 @@ class ReplayEngine:
                 return ReplayResult(
                     outcome=OutcomeType.HARD_FAILURE,
                     step_index=index,
-                    detail=str(exc),
+                    detail=f"{type(exc).__name__}: {exc}",
                     expected=f"{step.action.value} to succeed",
                     observed=self.surface.current_url(),
                 )

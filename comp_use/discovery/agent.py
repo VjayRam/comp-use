@@ -110,6 +110,19 @@ class DiscoveryAgent:
             )
         )
 
+    def _print(self, message: str) -> None:
+        # Console output isn't the evidence JSONL (which is already redacted via
+        # EvidenceLogger) - without this, real typed values print to the
+        # terminal in the clear, e.g. into CI logs or a shared screen recording.
+        print(self.guardrail.redact(message), flush=True)
+
+    def _note_skip(self, goal: str, step_index: int, consecutive_skips: int) -> int:
+        consecutive_skips += 1
+        if consecutive_skips >= _DEAD_END_THRESHOLD:
+            self._escalate(goal, step_index, f"dead_end: {consecutive_skips} consecutive skipped/invalid decisions")
+            consecutive_skips = 0
+        return consecutive_skips
+
     def run(self, goal: str, start_url: str) -> RunTrace:
         trace = RunTrace(run_id=self.evidence_logger.run_id, goal=goal)
         self.surface.act(ActionType.NAVIGATE, locator=None, target=start_url, text=None)
@@ -129,7 +142,7 @@ class DiscoveryAgent:
             self.evidence_logger.log_event("decision", decision)
 
             if decision.get("done") or decision.get("action") == "finish":
-                print("[discover] finish", flush=True)
+                self._print("[discover] finish")
                 trace.succeeded = True
                 break
 
@@ -137,10 +150,7 @@ class DiscoveryAgent:
                 action = ActionType(decision["action"])
             except ValueError:
                 history.append({**decision, "error": f"unknown action '{decision.get('action')}'"})
-                consecutive_skips += 1
-                if consecutive_skips >= _DEAD_END_THRESHOLD:
-                    self._escalate(goal, step_index, f"dead_end: {consecutive_skips} consecutive skipped/invalid decisions")
-                    consecutive_skips = 0
+                consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
                 continue
 
             locator = _locator_from_decision(decision.get("locator"))
@@ -150,11 +160,10 @@ class DiscoveryAgent:
             extract_as = _optional_str(decision.get("extract_as"))
 
             if action in _LOCATOR_ACTIONS and locator is None:
-                print(
+                self._print(
                     f"[discover] skipped {action.value}: locator must look like "
                     '{"strategy":"role","value":{"role":"textbox","name":"Member ID"}} '
-                    f"(model sent {decision.get('locator')!r})",
-                    flush=True,
+                    f"(model sent {decision.get('locator')!r})"
                 )
                 history.append({
                     **decision,
@@ -165,32 +174,23 @@ class DiscoveryAgent:
                 # The tree alone wasn't enough for the model to pin down an element -
                 # give it a screenshot on the very next attempt for this same state.
                 needs_vision_fallback = True
-                consecutive_skips += 1
-                if consecutive_skips >= _DEAD_END_THRESHOLD:
-                    self._escalate(goal, step_index, f"dead_end: {consecutive_skips} consecutive skipped/invalid decisions")
-                    consecutive_skips = 0
+                consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
                 continue
             if action == ActionType.NAVIGATE and not target:
                 history.append({**decision, "error": "target URL is required for navigate"})
                 self.evidence_logger.log_event("skipped_decision", {"reason": "missing_target", "decision": decision})
-                consecutive_skips += 1
-                if consecutive_skips >= _DEAD_END_THRESHOLD:
-                    self._escalate(goal, step_index, f"dead_end: {consecutive_skips} consecutive skipped/invalid decisions")
-                    consecutive_skips = 0
+                consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
                 continue
 
-            print(f"[discover] {action.value} locator={locator} target={target} text={text}", flush=True)
+            self._print(f"[discover] {action.value} locator={locator} target={target} text={text}")
             url = target or self.surface.current_url() or start_url
             try:
                 self.guardrail.check_allowlist(url, action.value)
             except AllowlistViolation as exc:
-                print(f"[discover] skipped {action.value}: {exc}", flush=True)
+                self._print(f"[discover] skipped {action.value}: {exc}")
                 history.append({**decision, "error": str(exc)})
                 self.evidence_logger.log_event("skipped_decision", {"reason": "allowlist", "decision": decision})
-                consecutive_skips += 1
-                if consecutive_skips >= _DEAD_END_THRESHOLD:
-                    self._escalate(goal, step_index, f"dead_end: {consecutive_skips} consecutive skipped/invalid decisions")
-                    consecutive_skips = 0
+                consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
                 continue
             risk_tier = _classify_risk(action, target, locator)
             consecutive_skips = 0
@@ -201,19 +201,17 @@ class DiscoveryAgent:
             try:
                 self.surface.act(action, locator=locator, target=target, text=text)
             except Exception as exc:
-                print(f"[discover] action failed: {action.value} raised {exc}", flush=True)
-                history.append({**decision, "error": f"action failed: {exc}"})
+                error_detail = f"{type(exc).__name__}: {exc}"
+                self._print(f"[discover] action failed: {action.value} raised {error_detail}")
+                history.append({**decision, "error": f"action failed: {error_detail}"})
                 self.evidence_logger.log_event(
-                    "skipped_decision", {"reason": "action_failed", "decision": decision, "error": str(exc)}
+                    "skipped_decision", {"reason": "action_failed", "decision": decision, "error": error_detail}
                 )
                 # A locator that looked valid but didn't actually resolve is the same
                 # underlying problem the vision fallback exists for - give the model a
                 # screenshot on the very next attempt, same as a missing_locator skip.
                 needs_vision_fallback = True
-                consecutive_skips += 1
-                if consecutive_skips >= _DEAD_END_THRESHOLD:
-                    self._escalate(goal, step_index, f"dead_end: {consecutive_skips} consecutive skipped/invalid decisions")
-                    consecutive_skips = 0
+                consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
                 continue
 
             # Only persist the literal text for steps that AREN'T a goal_parameter -

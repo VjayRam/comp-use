@@ -157,7 +157,13 @@ still "click Confirm Transfer," a control that page never renders). Blindly atte
 step 8 timed out with a raw Playwright exception the first time this was tested for
 real; `ReplayEngine.run` now re-checks `outcome_patterns` at the top of every loop
 iteration and also wraps `surface.act` in try/except, re-checking outcome patterns
-before falling back to `hard_failure` with the exception text as `detail`.
+before falling back to `hard_failure` with the exception text as `detail`. That
+detail is `f"{type(exc).__name__}: {exc}"`, not a bare message — a broad
+`except Exception` is necessary for crash-proofing, but it also means a genuine
+code bug and an expected environmental failure (a Playwright `TimeoutError`)
+would otherwise produce indistinguishable failure text; naming the exception
+type is the mitigation for that trade-off. `DiscoveryAgent`'s equivalent
+`action_failed` path does the same.
 
 `DiscoveryAgent.run()`'s own `surface.act()` call is wrapped the same way — a
 locator that passed the "is a locator present" check but doesn't actually resolve
@@ -294,17 +300,26 @@ allows this ("a full real-time co-browsing operator console is out of scope") �
   navigation link instead of the commit button — backwards, since the link is fully
   reversible and the commit isn't. Adding the confirm-interstitial step surfaced
   this and it's now fixed.)
-- **Redaction** — one function, `Guardrail.redact`, used before LLM-bound text would
-  be logged and before JSONL persistence (`comp_use/evidence.py` walks strings in the
-  event payload). Patterns: 9–12 digit IDs, `$1,234.56`-style amounts, and the mock
-  bank's own structured identifiers (`ACC-\d+`, `SUB-\d+`, `TXN-\d+`, `CONF-\d+`).
-  **Deliberate scope decision:** the bare `member_id` (`"12345"`) is *not* redacted.
-  The assignment's own example goal is *"look up member 12345"*, used in the open,
-  in prompts — redacting every short numeric string would both fight the brief's own
-  example and turn goal text and evidence logs unreadable for a value that isn't, by
-  itself, an account number or a credential. Account/sub-account/transaction/
-  confirmation numbers *are* redacted, since those are the values that actually look
-  like real financial-system identifiers.
+- **Redaction** — one function, `Guardrail.redact`, applied at every point real
+  data reaches an output a human or another system might see: before JSONL
+  persistence (`comp_use/evidence.py` walks strings in the event payload), and
+  — since finding this session that it wasn't — before every console `print()`
+  in `DiscoveryAgent.run()` (routed through `self._print()`). The evidence log
+  being clean didn't help if the terminal wasn't: an `ACC-001` value printed to
+  stdout unredacted before this fix, confirmed live. Patterns: 9–12 digit IDs,
+  `$1,234.56`-style amounts, and the mock bank's own structured identifiers
+  (`ACC-\d+`, `SUB-\d+`, `TXN-\d+`, `CONF-\d+`). **Deliberate scope decision:**
+  the bare `member_id` (`"12345"`) is *not* redacted. The assignment's own
+  example goal is *"look up member 12345"*, used in the open, in prompts —
+  redacting every short numeric string would both fight the brief's own
+  example and turn goal text and evidence logs unreadable for a value that
+  isn't, by itself, an account number or a credential. Account/sub-account/
+  transaction/confirmation numbers *are* redacted, since those are the values
+  that actually look like real financial-system identifiers. **Known scope
+  limit, stated rather than assumed away:** these are hand-picked patterns
+  matching this mock app's specific ID shapes, not a general PII detector — a
+  name, an SSN in a different format, or an email address would pass through
+  unredacted, and nothing in the design claims otherwise.
 
 Hosted OpenRouter still means redacted UI text leaves the machine on **discover**.
 Point `LLMClient` at a local model for production locality; `FakeLLMClient` is the
