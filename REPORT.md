@@ -186,6 +186,33 @@ own try/except, "no action in this system is ever allowed to crash the CLI with
 a raw traceback" is true end to end, not just for the paths that happened to be
 tested first.
 
+**Two more crash paths found from a real user report, after a genuinely clean
+`pytest` run gave false confidence.** Screenshot capture itself was never
+protected anywhere — `DiscoveryAgent`'s vision-fallback call to
+`self.surface.screenshot()` sat completely outside any try/except, and a real
+`Page.screenshot()` timeout (independent of any locator/action problem) crashed
+a live `discover` run. Auditing every `surface.screenshot()` call site found 8,
+one of which (`comp_use/drift.py`'s own diagnosis capture) had been missed
+entirely in the original audit that produced the fixes above. Added a single
+shared `safe_screenshot(surface) -> bytes | None` (`comp_use/surface.py`) and
+routed every call site through it — including `EscalationController`'s
+before/after capture, arguably the single most safety-critical of all of them,
+since a screenshot failure there must never be allowed to prevent the human
+from being notified in the first place.
+
+Separately, `DiscoveryAgent.run()`'s call to `llm_client.decide_next_action()`
+was never wrapped at all, unlike every other external interaction in the loop.
+A real model response triggered `json.loads()` to raise `"Extra data"` (valid
+JSON with trailing commentary appended) and crashed the run. Fixed
+`parse_decision()` to fall back to `json.JSONDecoder().raw_decode()`, but also
+wrapped the call itself in try/except — defense in depth, not reliance on the
+parser fix alone. Verified live, repeatedly: re-running the exact failing
+command hit the vision-fallback `action_failed` path again (recovered cleanly)
+and, separately, a *different* malformed-JSON shape the `raw_decode` fix didn't
+even cover (`"Expecting ',' delimiter"`) — caught by the outer wrap regardless,
+logged as `llm_call_failed`, and the run still finished. Both real runs are
+committed (`evidence/discover_1787177243`, `evidence/discover_1787177306`).
+
 ## Drift-aware self-healing replay (`--diagnose-drift-on-failure`, optional)
 
 Beyond what the assignment requires: an opt-in extension that turns a `hard_failure`

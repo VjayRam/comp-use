@@ -1406,3 +1406,79 @@ it was.
       CI. A real improvement, but a separate investment (config, fixing
       whatever it flags, wiring into the test run) rather than a small,
       mechanical fix like the others above.
+
+---
+
+## 26. Two live crashes found from a real user report, after `pytest` gave false confidence
+
+**Priority:** high (real, reproducible crashes in the exact documented demo
+path — not hypothetical, not found by audit, found by a user actually running
+the command README instructs)
+
+**Context:** every prior "crash-proofing" pass (issues 14, 15) audited
+`surface.act()` and `check_allowlist()` specifically, and REPORT.md concluded
+"no action in this system is ever allowed to crash the CLI with a raw
+traceback." That conclusion was too narrow — it covered every *action*
+call site, but two entirely different call classes were never audited at
+all: screenshot capture, and the LLM call itself.
+
+**26a. Screenshot capture unprotected everywhere.** `DiscoveryAgent`'s
+vision-fallback path called `self.surface.screenshot()` directly at the top
+of the loop, completely outside any try/except. A real `Page.screenshot()`
+timeout (independent of any locator/action problem — fonts loading, in the
+observed traceback) crashed a live `discover` run with a raw traceback.
+Grepped every `surface.screenshot()` call site in the codebase: 8 total,
+across `DiscoveryAgent` (2), `ReplayEngine` (1), `EscalationController` (2),
+`cli.py` (3), and `comp_use/drift.py` (1) — the last one had been missed
+entirely by the original issue 14/15 audit.
+
+**26b. The LLM call itself was never wrapped.** `DiscoveryAgent.run()`'s call
+to `llm_client.decide_next_action()` sat outside any try/except, unlike every
+other external interaction in the loop. A real model response triggered
+`json.loads()` to raise `"Extra data"` (valid JSON followed by trailing
+commentary the model appended) and crashed the run.
+
+**To do:**
+- [x] Added a single shared `safe_screenshot(surface) -> bytes | None` in
+      `comp_use/surface.py` and routed all 8 call sites through it.
+      `EvidenceLogger.save_screenshot` now accepts `None` and returns `None`
+      cleanly instead of crashing on `path.write_bytes(None)`.
+- [x] `EscalationController`'s before/after tree+screenshot capture (the
+      single most safety-critical of all 8 sites — a failure here must never
+      prevent the human from being notified in the first place) now degrades
+      to `None`/no-diff instead of crashing before `transport.notify()` is
+      even reached.
+- [x] Fixed `parse_decision()` to fall back to
+      `json.JSONDecoder().raw_decode()` when strict `json.loads()` fails,
+      tolerating trailing text after a valid decision.
+- [x] Also wrapped `DiscoveryAgent.run()`'s `decide_next_action()` call
+      itself in try/except, treating any failure as a skip that counts
+      toward the existing dead-end/escalation machinery — defense in depth,
+      not reliance on the parser fix alone.
+- [x] Tests: 8 new, each reproducing the real failure first (confirmed red)
+      before the fix — `safe_screenshot` (raises/succeeds),
+      `save_screenshot`-with-`None`, `DiscoveryAgent` screenshot-failure and
+      LLM-call-failure survival, `ReplayEngine`/`EscalationController`
+      screenshot-failure survival, `propose_drift_patch` screenshot-failure,
+      `parse_decision` trailing-text tolerance.
+- [x] Verified live, repeatedly, under real model non-determinism, not just
+      unit tests: re-ran the exact command that crashed multiple times. One
+      run hit the `action_failed`/vision-fallback path again and recovered
+      cleanly; another hit a *different* malformed-JSON shape the
+      `raw_decode` fix didn't even fully cover (`"Expecting ',' delimiter"`)
+      — caught by the outer wrap anyway, logged as `llm_call_failed`, run
+      still completed. Both real runs committed
+      (`evidence/discover_1787177243`, `evidence/discover_1787177306`).
+- [x] Updated `REPORT.md`'s Determinism & error handling section — the
+      "no action is ever allowed to crash" claim now names these two
+      previously-missed call classes explicitly, with the live evidence.
+
+**Lesson for next time, stated plainly:** three prior audit passes and a
+targeted "why is X below 90" follow-up all missed these two call classes,
+because every pass searched for patterns similar to what had already been
+found (locator failures, allowlist checks) rather than systematically
+enumerating *every* external call type (network I/O, browser I/O,
+LLM I/O) and asking "is this one wrapped." A real user running the actual
+documented command found both in one sitting. `pytest` passing is not the
+same as "nothing can crash" — it only proves what the tests specifically
+exercise.
