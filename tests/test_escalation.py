@@ -38,6 +38,48 @@ class FakeSurfaceForDiff:
         return b"fakepng"
 
 
+class FailingSurface:
+    """observe() and screenshot() both raise - reproduces a real live crash
+    (Page.screenshot() timing out on its own) in the single most
+    safety-critical path in the system: bringing a human into the loop must
+    never itself be the thing that crashes."""
+
+    def observe(self):
+        raise TimeoutError("Page.aria_snapshot: Timeout 30000ms exceeded.")
+
+    def screenshot(self):
+        raise TimeoutError("Page.screenshot: Timeout 30000ms exceeded.")
+
+
+def test_escalate_survives_surface_failures_and_still_notifies_and_resumes(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="esc_run_surface_failure")
+    transport = FakeTransport(human_note="handled it despite the broken page")
+    controller = EscalationController(evidence, transport, surface=FailingSurface())
+
+    request = InterventionRequest(
+        run_id="esc_run_surface_failure", capability_or_goal="transfer funds",
+        current_step=5, screenshot_path=None, reason="risky action needs confirmation",
+    )
+    controller.escalate(request)  # must not raise
+
+    assert transport.notified == [request]  # the human WAS notified despite the failures
+    assert transport.resumed is True
+    assert controller.control == ControlState.AGENT
+
+    log_path = evidence.run_dir / "log.jsonl"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    human_action_events = [e for e in events if e["event_type"] == "escalation_human_action"]
+    assert len(human_action_events) == 1
+    data = human_action_events[0]["data"]
+    assert data["tree_diff"] is None
+    assert data["before_screenshot_path"] is None
+    assert data["after_screenshot_path"] is None
+    assert data["note"] == "handled it despite the broken page"
+
+
 def test_escalate_transitions_control_and_resumes(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"

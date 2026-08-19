@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from comp_use.llm_client import LLMClient
 from comp_use.schemas import Artifact, Locator
+from comp_use.surface import safe_screenshot
 
 
 @dataclass
@@ -36,7 +37,10 @@ def propose_drift_patch(
         # of problem entirely).
         return DriftDiagnosis(patched_artifact=None, reasoning="step has no locator to diagnose")
 
-    screenshot_b64 = base64.b64encode(surface.screenshot()).decode("ascii")
+    png = safe_screenshot(surface)
+    if png is None:
+        return DriftDiagnosis(patched_artifact=None, reasoning="screenshot capture failed, cannot diagnose")
+    screenshot_b64 = base64.b64encode(png).decode("ascii")
     diagnosis = llm_client.diagnose_drift(
         expected_locator=step.locator.model_dump(mode="json"), screenshot_b64=screenshot_b64
     )

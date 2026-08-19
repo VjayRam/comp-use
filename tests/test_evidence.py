@@ -30,3 +30,16 @@ def test_save_screenshot_writes_file_and_returns_path(tmp_path):
 
     assert path.endswith("step_1.png")
     assert (tmp_path / "evidence" / "run_002" / "step_1.png").exists()
+
+
+def test_save_screenshot_returns_none_and_writes_nothing_when_bytes_are_none(tmp_path):
+    # Capture can fail upstream (see comp_use.surface.safe_screenshot) - this
+    # must degrade to "no screenshot" cleanly, not crash trying to write None.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    logger = EvidenceLogger(settings, Guardrail(settings), run_id="run_003")
+
+    path = logger.save_screenshot(None, label="step_1")
+
+    assert path is None
+    assert not (tmp_path / "evidence" / "run_003" / "step_1.png").exists()

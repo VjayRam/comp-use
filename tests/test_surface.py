@@ -5,7 +5,7 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 from comp_use.schemas import ActionType, Checkpoint, CheckpointType, Locator, LocatorStrategy
-from comp_use.surface import PlaywrightSurface
+from comp_use.surface import PlaywrightSurface, safe_screenshot
 from mock_app.app import create_app
 
 
@@ -60,3 +60,25 @@ def test_check_checkpoint_element_visible(surface, live_server):
         locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "heading", "name": "Member Detail"}),
     )
     assert surface.check_checkpoint(checkpoint) is True
+
+
+class _RaisingSurface:
+    def screenshot(self):
+        raise TimeoutError("Page.screenshot: Timeout 30000ms exceeded.")
+
+
+class _WorkingSurface:
+    def screenshot(self):
+        return b"realpng"
+
+
+def test_safe_screenshot_returns_none_when_capture_raises():
+    # Reproduces a real live crash: Page.screenshot() itself can time out
+    # (seen live, unrelated to any locator/action) - this call is best-effort
+    # evidence/context and must never be allowed to crash an otherwise-healthy
+    # or otherwise-failing run.
+    assert safe_screenshot(_RaisingSurface()) is None
+
+
+def test_safe_screenshot_returns_bytes_when_capture_succeeds():
+    assert safe_screenshot(_WorkingSurface()) == b"realpng"

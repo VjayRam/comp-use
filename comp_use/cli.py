@@ -28,7 +28,7 @@ from comp_use.schemas import (
     RiskTier,
     Step,
 )
-from comp_use.surface import PlaywrightSurface
+from comp_use.surface import PlaywrightSurface, safe_screenshot
 
 
 def _headless() -> bool:
@@ -110,7 +110,7 @@ def _run_discover(args) -> None:
         )
         trace = agent.run(goal=args.goal, start_url=args.start_url)
         if not trace.succeeded:
-            evidence.save_screenshot(surface.screenshot(), "final")
+            evidence.save_screenshot(safe_screenshot(surface), "final")
             browser.close()
         else:
             success_checkpoint = _derive_success_checkpoint(surface, fallback_url=trace.final_url)
@@ -194,7 +194,7 @@ def _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifac
             run_id=evidence.run_id,
             capability_or_goal=artifact.capability_name,
             current_step=result.step_index,
-            screenshot_path=evidence.save_screenshot(surface.screenshot(), "drift_diagnosis"),
+            screenshot_path=evidence.save_screenshot(safe_screenshot(surface), "drift_diagnosis"),
             reason=f"possible drift detected at step {result.step_index} - review proposed patch "
             f"v{patched.version} at {path} before relying on it for future replays",
         )
@@ -230,7 +230,7 @@ def _run_replay(args) -> None:
         engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
         result = engine.run(artifact, params, confirm_risky=args.confirm_risky)
         if result.outcome != OutcomeType.SUCCESS:
-            evidence.save_screenshot(surface.screenshot(), "final")
+            evidence.save_screenshot(safe_screenshot(surface), "final")
         if args.diagnose_drift_on_failure and result.outcome == OutcomeType.HARD_FAILURE:
             _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifact, result)
         browser.close()

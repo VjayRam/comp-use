@@ -1,7 +1,7 @@
 from unittest.mock import patch, MagicMock
 
 from comp_use.config import load_settings
-from comp_use.llm_client import _SYSTEM_PROMPT, _TOOL_SCHEMA, FakeLLMClient, OpenRouterClient
+from comp_use.llm_client import _SYSTEM_PROMPT, _TOOL_SCHEMA, FakeLLMClient, OpenRouterClient, parse_decision
 from comp_use.schemas import Locator, LocatorStrategy
 
 
@@ -77,6 +77,26 @@ def test_openrouter_client_parses_json_content_without_tool_calls(mock_post):
     )
     assert result["action"] == "type_text"
     assert result["locator"]["strategy"] == "role"
+
+
+def test_parse_decision_tolerates_trailing_text_after_the_json_object():
+    # Reproduces a real live crash: a free-tier model appended extra
+    # commentary after a perfectly valid JSON decision, and json.loads()
+    # requires the ENTIRE string to be exactly one JSON value - "Extra data"
+    # crashed the whole discover run instead of using the decision that was
+    # actually there.
+    data = {
+        "choices": [{
+            "message": {
+                "content": '{"action": "finish", "locator": null, "target": null, '
+                           '"text": null, "value_source": null, "done": true} '
+                           "Let me know if you need anything else!"
+            }
+        }]
+    }
+    result = parse_decision(data)
+    assert result["action"] == "finish"
+    assert result["done"] is True
 
 
 def test_tool_schema_declares_extract_as():

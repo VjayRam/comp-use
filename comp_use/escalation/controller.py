@@ -4,6 +4,7 @@ from enum import Enum
 from comp_use.evidence import EvidenceLogger
 from comp_use.escalation.transport import ControlTransport
 from comp_use.schemas import InterventionRequest
+from comp_use.surface import safe_screenshot
 
 
 class ControlState(str, Enum):
@@ -20,6 +21,17 @@ def _diff_trees(before: str, after: str) -> str:
     return "\n".join(diff)
 
 
+def _safe_observe_tree(surface) -> str | None:
+    # Same reasoning as safe_screenshot: bringing a human into the loop is the
+    # single most safety-critical path in the system and must never itself be
+    # the thing that crashes, even if the page is in a broken enough state
+    # that reading its own accessibility tree also fails.
+    try:
+        return surface.observe().accessibility_tree
+    except Exception:
+        return None
+
+
 class EscalationController:
     def __init__(self, evidence_logger: EvidenceLogger, transport: ControlTransport, surface=None):
         self.evidence_logger = evidence_logger
@@ -34,9 +46,9 @@ class EscalationController:
         before_tree = None
         before_screenshot_path = None
         if self.surface is not None:
-            before_tree = self.surface.observe().accessibility_tree
+            before_tree = _safe_observe_tree(self.surface)
             before_screenshot_path = self.evidence_logger.save_screenshot(
-                self.surface.screenshot(), f"escalation_before_step{request.current_step}"
+                safe_screenshot(self.surface), f"escalation_before_step{request.current_step}"
             )
 
         self.transport.notify(request)
@@ -46,10 +58,11 @@ class EscalationController:
         tree_diff = None
         after_screenshot_path = None
         if self.surface is not None:
-            after_tree = self.surface.observe().accessibility_tree
-            tree_diff = _diff_trees(before_tree, after_tree)
+            after_tree = _safe_observe_tree(self.surface)
+            if before_tree is not None and after_tree is not None:
+                tree_diff = _diff_trees(before_tree, after_tree)
             after_screenshot_path = self.evidence_logger.save_screenshot(
-                self.surface.screenshot(), f"escalation_after_step{request.current_step}"
+                safe_screenshot(self.surface), f"escalation_after_step{request.current_step}"
             )
 
         self.evidence_logger.log_event(

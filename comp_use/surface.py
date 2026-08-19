@@ -29,6 +29,18 @@ def _resolve(page: Page, locator: Locator):
     raise ValueError(f"unknown locator strategy: {locator.strategy}")
 
 
+def safe_screenshot(surface: "Surface") -> bytes | None:
+    """Screenshot capture is best-effort evidence/context, never load-bearing
+    for correctness - a Playwright screenshot call can itself time out (a real,
+    live-observed failure: Page.screenshot() timing out independent of any
+    locator/action problem) and must never be allowed to crash a run that
+    would otherwise complete, fail cleanly, or escalate."""
+    try:
+        return surface.screenshot()
+    except Exception:
+        return None
+
+
 class Surface:
     def observe(self) -> ObservedState:
         raise NotImplementedError

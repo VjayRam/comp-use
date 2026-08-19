@@ -22,11 +22,13 @@ class FakeTransport(ControlTransport):
 
 
 class FakeSurface:
-    def __init__(self, raise_on_action_call=None):
+    def __init__(self, raise_on_action_call=None, raise_on_screenshot_call=None):
         self.actions = []
         self.url = "http://localhost:5000/member/search"
         self.raise_on_action_call = raise_on_action_call
         self._act_calls = 0
+        self.raise_on_screenshot_call = raise_on_screenshot_call
+        self._screenshot_calls = 0
 
     def act(self, action, locator, target, text):
         self._act_calls += 1
@@ -44,6 +46,9 @@ class FakeSurface:
         return True
 
     def screenshot(self):
+        self._screenshot_calls += 1
+        if self.raise_on_screenshot_call == self._screenshot_calls:
+            raise TimeoutError("Page.screenshot: Timeout 30000ms exceeded.")
         return b"fakepng"
 
     def current_url(self):
@@ -300,6 +305,34 @@ class _RecordingLLMClient:
         )
 
 
+def test_agent_survives_screenshot_capture_failure_during_vision_fallback(tmp_path):
+    # Reproduces a real live crash: after a missing_locator skip sets
+    # needs_vision_fallback, the screenshot capture itself (not any locator or
+    # action) timed out - Page.screenshot() failing independent of any element
+    # resolution problem - and this call sat outside the try/except that
+    # protects surface.act(), crashing the whole discover run uncaught.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface(raise_on_screenshot_call=1)
+    llm = _RecordingLLMClient(
+        scripted_actions=[
+            {"action": "type_text", "text": "12345", "done": False},  # no locator -> triggers vision fallback next turn
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}}, "done": False},
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_screenshot_failure")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is True
+    # the screenshot capture failed, so the model degrades to text-only for
+    # that turn instead of crashing - it never received a (broken) image
+    assert llm.screenshot_calls[1] is None
+
+
 def test_agent_retries_with_screenshot_after_missing_locator_skip(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"
@@ -444,6 +477,56 @@ def test_agent_action_failure_evidence_names_the_exception_type(tmp_path):
     # a bare exception message alone doesn't say what kind of failure it was -
     # the type name distinguishes a genuine code bug from an environmental one.
     assert skipped[0]["data"]["error"].startswith("TimeoutError:")
+
+
+class _FlakyLLMClient:
+    """Raises on specific calls (1-indexed), then defers to a FakeLLMClient
+    for the rest - simulates a real network/parse failure mid-run without
+    needing a real network."""
+
+    def __init__(self, scripted_actions, raise_on_call):
+        self._inner = FakeLLMClient(scripted_actions=scripted_actions)
+        self._raise_on_call = raise_on_call
+        self._calls = 0
+
+    def decide_next_action(self, goal, observed_tree, screenshot_b64, history):
+        self._calls += 1
+        if self._calls == self._raise_on_call:
+            raise ValueError("Extra data: line 1 column 105 (char 104)")
+        return self._inner.decide_next_action(
+            goal=goal, observed_tree=observed_tree, screenshot_b64=screenshot_b64, history=history
+        )
+
+
+def test_agent_survives_llm_call_failure_and_treats_it_as_a_skip(tmp_path):
+    # Reproduces a real live crash: decide_next_action() raised (a malformed
+    # JSON response from a real model) and the call sat completely outside
+    # any try/except in the discovery loop - unlike surface.act() and
+    # check_allowlist(), which issues 14/15 already protected.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = _FlakyLLMClient(
+        scripted_actions=[
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}}, "done": False},
+            {"action": "finish", "done": True},
+        ],
+        raise_on_call=1,
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_llm_call_failure")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is True
+
+    log_path = evidence.run_dir / "log.jsonl"
+    import json
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    skipped = [e for e in events if e["event_type"] == "skipped_decision" and e["data"]["reason"] == "llm_call_failed"]
+    assert len(skipped) == 1
+    assert skipped[0]["data"]["error"].startswith("ValueError:")
 
 
 def test_agent_console_output_redacts_typed_values(tmp_path, capsys):

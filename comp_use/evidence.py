@@ -29,7 +29,9 @@ class EvidenceLogger:
         with log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
-    def save_screenshot(self, png_bytes: bytes, label: str) -> str:
+    def save_screenshot(self, png_bytes: bytes | None, label: str) -> str | None:
+        if png_bytes is None:
+            return None
         path = self.run_dir / f"{label}.png"
         path.write_bytes(png_bytes)
         return str(path)

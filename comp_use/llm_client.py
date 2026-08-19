@@ -118,7 +118,16 @@ def parse_decision(data: dict) -> dict:
         if inner and inner[-1].strip().startswith("```"):
             inner = inner[:-1]
         content = "\n".join(inner)
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        # Real models sometimes append trailing commentary after a perfectly
+        # valid JSON object ("...}\nLet me know if you need anything else!").
+        # json.loads() requires the whole string to be exactly one JSON value;
+        # raw_decode() parses just the leading value and reports where it
+        # ended, which is exactly what's needed here - use the decision that
+        # was actually there instead of discarding it over trailing text.
+        return json.JSONDecoder().raw_decode(content)[0]
 
 
 def _normalize_drift_diagnosis(raw: dict) -> dict:

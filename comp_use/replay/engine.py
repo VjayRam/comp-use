@@ -2,6 +2,7 @@ from comp_use.escalation.controller import EscalationController
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
 from comp_use.schemas import Artifact, InterventionRequest, OutcomeType, ReplayResult
+from comp_use.surface import safe_screenshot
 
 
 def validate_required_params(artifact: Artifact, params: dict) -> str | None:
@@ -51,7 +52,7 @@ class ReplayEngine:
                         capability_or_goal=artifact.capability_name,
                         current_step=index,
                         screenshot_path=self.evidence_logger.save_screenshot(
-                            self.surface.screenshot(), f"escalation_step{index}"
+                            safe_screenshot(self.surface), f"escalation_step{index}"
                         ),
                         reason=f"step {index} is risk_tier=risky and confirm_risky is False",
                     )

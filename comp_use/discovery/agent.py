@@ -9,6 +9,7 @@ from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import AllowlistViolation, Guardrail
 from comp_use.llm_client import LLMClient
 from comp_use.schemas import ActionType, InterventionRequest, Locator, RiskTier, Step, ValueSource
+from comp_use.surface import safe_screenshot
 
 def _optional_str(raw) -> str | None:
     if raw is None:
@@ -104,7 +105,7 @@ class DiscoveryAgent:
                 capability_or_goal=goal,
                 current_step=current_step,
                 screenshot_path=self.evidence_logger.save_screenshot(
-                    self.surface.screenshot(), f"escalation_step{current_step}"
+                    safe_screenshot(self.surface), f"escalation_step{current_step}"
                 ),
                 reason=reason,
             )
@@ -134,11 +135,24 @@ class DiscoveryAgent:
             observed = self.surface.observe()
             screenshot_b64 = None
             if needs_vision_fallback:
-                screenshot_b64 = base64.b64encode(self.surface.screenshot()).decode("ascii")
+                png = safe_screenshot(self.surface)
+                if png is not None:
+                    screenshot_b64 = base64.b64encode(png).decode("ascii")
+                else:
+                    self._print("[discover] WARNING: screenshot capture failed; falling back to a text-only decision this turn.")
                 needs_vision_fallback = False
-            decision = self.llm_client.decide_next_action(
-                goal=goal, observed_tree=observed.accessibility_tree, screenshot_b64=screenshot_b64, history=history
-            )
+            try:
+                decision = self.llm_client.decide_next_action(
+                    goal=goal, observed_tree=observed.accessibility_tree, screenshot_b64=screenshot_b64, history=history
+                )
+            except Exception as exc:
+                error_detail = f"{type(exc).__name__}: {exc}"
+                self._print(f"[discover] LLM call failed: {error_detail}")
+                self.evidence_logger.log_event(
+                    "skipped_decision", {"reason": "llm_call_failed", "error": error_detail}
+                )
+                consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
+                continue
             self.evidence_logger.log_event("decision", decision)
 
             if decision.get("done") or decision.get("action") == "finish":

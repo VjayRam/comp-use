@@ -7,10 +7,13 @@ from comp_use.schemas import (
 
 
 class FakeSurfaceForDrift:
-    def __init__(self, png=b"fakepng"):
+    def __init__(self, png=b"fakepng", raise_on_screenshot=False):
         self._png = png
+        self.raise_on_screenshot = raise_on_screenshot
 
     def screenshot(self):
+        if self.raise_on_screenshot:
+            raise TimeoutError("Page.screenshot: Timeout 30000ms exceeded.")
         return self._png
 
 
@@ -100,3 +103,15 @@ def test_propose_drift_patch_skips_llm_call_when_step_has_no_locator():
     diagnosis = propose_drift_patch(_ExplodingLLMClient(), surface, artifact, failed_step_index=0)
 
     assert diagnosis.patched_artifact is None
+
+
+def test_propose_drift_patch_returns_no_patch_when_screenshot_capture_fails():
+    # Same live crash as everywhere else - diagnosis fundamentally needs a
+    # screenshot, so a capture failure here means "can't diagnose," not a crash.
+    artifact = _make_artifact()
+    surface = FakeSurfaceForDrift(raise_on_screenshot=True)
+
+    diagnosis = propose_drift_patch(_ExplodingLLMClient(), surface, artifact, failed_step_index=1)
+
+    assert diagnosis.patched_artifact is None
+    assert "screenshot" in diagnosis.reasoning.lower()

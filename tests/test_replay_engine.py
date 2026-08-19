@@ -35,6 +35,7 @@ class FakeSurface:
         matching_checkpoint_text=None,
         outcome_visible_after_step=None,
         raise_on_step=None,
+        raise_on_screenshot=False,
     ):
         self.acted = []
         self.checkpoint_result = checkpoint_result
@@ -42,6 +43,7 @@ class FakeSurface:
         self.matching_checkpoint_text = matching_checkpoint_text
         self.outcome_visible_after_step = outcome_visible_after_step
         self.raise_on_step = raise_on_step
+        self.raise_on_screenshot = raise_on_screenshot
         self.url = "http://localhost:5000/member/search"
 
     def act(self, action, locator, target, text):
@@ -68,6 +70,8 @@ class FakeSurface:
         return self.checkpoint_result
 
     def screenshot(self):
+        if self.raise_on_screenshot:
+            raise TimeoutError("Page.screenshot: Timeout 30000ms exceeded.")
         return b"png"
 
     def current_url(self):
@@ -315,3 +319,25 @@ def test_escalation_carries_a_real_screenshot_path(tmp_path):
     request = transport.notified[0]
     assert request.screenshot_path is not None
     assert Path(request.screenshot_path).exists()
+
+
+def test_escalation_survives_screenshot_capture_failure(tmp_path):
+    # Same live crash as DiscoveryAgent's - Page.screenshot() timing out on
+    # its own must not crash a risky-step escalation, arguably the single
+    # most safety-critical path in the system.
+    artifact = _make_artifact()
+    artifact.steps[1].risk_tier = RiskTier.RISKY
+    surface = FakeSurface(raise_on_screenshot=True)
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_run_escalate_screenshot_fail")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    result = engine.run(artifact, params={"member_id": "12345"}, confirm_risky=False)
+
+    assert result.outcome == OutcomeType.SUCCESS
+    assert len(transport.notified) == 1
+    assert transport.notified[0].screenshot_path is None
