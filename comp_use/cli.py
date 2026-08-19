@@ -60,13 +60,13 @@ def _run_discover(args) -> None:
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
     llm = OpenRouterClient(settings)
     transport = LocalSharedBrowserTransport()
-    escalation = EscalationController(evidence, transport)
     print(f"Discovering with {settings.openrouter_model} (max {settings.max_discovery_steps} steps)", flush=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=_headless())
         page = browser.new_page()
         surface = PlaywrightSurface(page)
+        escalation = EscalationController(evidence, transport, surface=surface)
         agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps, escalation=escalation)
         trace = agent.run(goal=args.goal, start_url=args.start_url)
         if not trace.succeeded:
@@ -106,7 +106,6 @@ def _run_replay(args) -> None:
     run_id = f"replay_{int(time.time())}"
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
     transport = LocalSharedBrowserTransport()
-    escalation = EscalationController(evidence, transport)
 
     artifact = load_artifact(args.capability_name, settings.artifacts_dir)
     params = json.loads(args.params) if args.params else {}
@@ -125,6 +124,7 @@ def _run_replay(args) -> None:
         browser = p.chromium.launch(headless=_headless())
         page = browser.new_page()
         surface = PlaywrightSurface(page)
+        escalation = EscalationController(evidence, transport, surface=surface)
         engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
         result = engine.run(artifact, params, confirm_risky=args.confirm_risky)
         if result.outcome != OutcomeType.SUCCESS:

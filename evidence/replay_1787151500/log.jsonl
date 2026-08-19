@@ -1,0 +1,13 @@
+{"event_type": "replay_step", "data": {"index": 0, "action": "navigate"}}
+{"event_type": "replay_step", "data": {"index": 1, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 2, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 3, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 4, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 5, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 6, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 7, "action": "click"}}
+{"event_type": "escalation_requested", "data": {"run_id": "replay_1787151500", "capability_or_goal": "transfer_funds", "current_step": 8, "screenshot_path": "evidence\\replay_1787151500\\escalation_step8.png", "reason": "step 8 is risk_tier=risky and confirm_risky is False"}}
+{"event_type": "escalation_resumed", "data": {"run_id": "replay_1787151500"}}
+{"event_type": "escalation_human_action", "data": {"run_id": "replay_1787151500", "note": "clicked confirm manually to test escalation diff", "tree_diff": "", "before_screenshot_path": "evidence\\replay_1787151500\\escalation_before_step8.png", "after_screenshot_path": "evidence\\replay_1787151500\\escalation_after_step8.png"}}
+{"event_type": "replay_step", "data": {"index": 8, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 9, "action": "extract"}}
