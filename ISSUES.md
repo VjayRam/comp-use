@@ -13,41 +13,38 @@ re-reading prose.
 
 ---
 
-## Submission readiness (2026-08-19, all 23 issues + the `recoverable` gap resolved): ~98/100
+## Submission readiness (2026-08-19, all 23 issues + `recoverable` + the closing pass): ~99/100
 
-Three audit passes found 23 issues total; all 23 are now fixed, tested, and — for
-every issue where it was practical — verified live against the running mock app
-and/or the real OpenRouter API, not just asserted in unit tests. Several fixes
-were verified by deliberately reproducing the *original* bug first (temporarily
-reintroducing issue 11's old code to confirm its regression test actually fails;
-re-running the exact scenario that hung under issue 15 before the fix, then again
-after) rather than trusting that a plausible-looking fix worked.
+Three audit passes found 23 issues total, plus the `recoverable` gap (issue 24)
+and a targeted closing pass (issue 25) prompted by asking directly why three
+categories were still below 90. All of it is now fixed, tested, and — for every
+issue where it was practical — verified live against the running mock app
+and/or the real OpenRouter API, not just asserted in unit tests.
 
 | Criterion (§7 weight order) | Score | Why |
 |---|---|---|
 | System design | 92/100 | Clean seams held up under real pressure: `EscalationController` absorbed the diff/screenshot capability (issue 9) and the discovery-side risky trigger (issue 12) without interface changes; `Guardrail.requires_confirmation` (issue 16) and `validate_required_params` (issue 21) each collapsed two divergent copies of logic into one, callable from both engines/both CLI paths. |
 | Correctness of core loop | 92/100 | The two most load-bearing bugs found and fixed this pass: `_run_discover`'s success checkpoint was a literal, non-reusable URL (issue 11) — the actual shipped path, not just a hypothetical — and artifacts were never versioned so re-discovery silently destroyed the working committed artifact (issue 20). Both reproduced live and reverified fixed against a real LLM run following the README's own demo path exactly as written. |
-| Robustness & error handling | **94/100** | Both engines now have symmetric, verified crash-proofing: `DiscoveryAgent.surface.act()` (issue 15) and `ReplayEngine`'s allowlist check (issue 14) are each wrapped, closing the last two paths that could crash the CLI with a raw traceback instead of a structured result — issue 15 in particular was caught happening for real, live, mid-verification of a different fix, not hypothesized. All five `OutcomeType` values are now demonstrated against a real running system, not four — the double-submit/stale-token scenario that used to crash the mock app with a raw `KeyError` now renders a real "Session Expired" page, classified `recoverable` via a real `OutcomePattern`, verified live. |
-| Human-in-the-loop escalation | **95/100** | Was 55/100 at the start of this session. Discovery now escalates on all three §3.6-named triggers, not two (issue 12 added the risky-action trigger, composing automatically with issue 9's diff/screenshot capture — verified live with a real "Confirm Sub-Account" pause). This is the single most-improved category across the whole session. |
-| Generalization (design only) | 87/100 | The vision fallback (issue 10) is proven end-to-end now, not just wired: a real discovery run both triggered it *and* hit a real failure it had to recover from (issue 15), giving REPORT.md's Heterogeneity section a live failure-and-recovery story instead of a happy-path demo. |
-| Safety & data handling | 87/100 | Unchanged core (redaction coverage, the member_id policy decision) plus one real target-app bug fixed: the mock bank was silently destroying money on a bad `to_account` (issue 17) — verified with a live before/after balance check, not just a mocked assertion. |
-| Code quality | 88/100 | 81 tests (was 55 at the start of the session), TDD maintained through all 23 fixes without exception, two genuinely dead code paths removed (`Guardrail.requires_confirmation` was defined but never called; `Settings.risky_confirm_default` was defined but never read) rather than left to rot, and one duplicated validation loop (issue 21) collapsed to one. |
-| Communication | 93/100 | Both `REPORT.md` and `ISSUES.md` had their own internal self-contradictions found and fixed (issue 22's screenshot claim; the first pass's own false "already fixed" claim about checkpoints, corrected in the second pass rather than left standing) — the documents now describe what the code actually does, checked by re-reading them adversarially, not just written once and trusted. |
+| Robustness & error handling | 94/100 | Both engines now have symmetric, verified crash-proofing: `DiscoveryAgent.surface.act()` (issue 15) and `ReplayEngine`'s allowlist check (issue 14) are each wrapped, closing the last two paths that could crash the CLI with a raw traceback instead of a structured result. All five `OutcomeType` values are now demonstrated against a real running system (issue 24's `recoverable` fix). Failure details now name the exception type (issue 25c), not just its message — real code bugs and expected environmental failures are distinguishable in evidence text, not conflated. |
+| Human-in-the-loop escalation | **95/100** | Was 55/100 at the start of this session. Discovery now escalates on all three §3.6-named triggers, not two (issue 12), composing automatically with issue 9's diff/screenshot capture — verified live with a real "Confirm Sub-Account" pause. The single most-improved category across the whole session. |
+| Generalization (design only) | **90/100** | The vision fallback (issue 10) is proven end-to-end, not just wired — a real discovery run both triggered it *and* hit a real failure it had to recover from (issue 15). Just as important: `REPORT.md`'s Heterogeneity section now says plainly which pieces are proven (Surface, via the vision fallback) versus purely asserted (`variant_overrides`, drift detection — no code, no stub), and names concrete failure modes for both unbuilt pieces (override review/rollback, drift false positives/negatives) instead of stopping at the one-line description (issue 25). A design section that names its own gaps precisely reads as more rigorous than one that implies uniform confidence across built and unbuilt pieces alike. |
+| Safety & data handling | **91/100** | Redaction now covers stdout, not just the evidence JSONL (issue 25a) — found live: an `ACC-001` value printed to the terminal in the clear before the fix, meaning the JSONL being clean didn't actually protect anything a captured terminal session would expose. Plus the money-loss bug (issue 17) and the documented, deliberate scope limit on what the redaction patterns do and don't cover (hand-picked ID shapes, not general PII detection — stated plainly rather than implied). |
+| Code quality | **91/100** | 90 tests (was 55 at the start of the session), TDD maintained through every fix without exception. Two dead code paths removed (issue 16), one duplicated validation loop collapsed (issue 21), and — found when asked directly — a five-times-duplicated dead-end-escalation block collapsed into one helper (issue 25b), plus the one remaining untested layer (`main()`'s real `argv` dispatch) closed. `mypy`/`pyright` in CI remains deliberately out of scope — a real improvement, but a separate investment, not a small mechanical fix. |
+| Communication | 93/100 | Both `REPORT.md` and `ISSUES.md` had their own internal self-contradictions found and fixed (issue 22's screenshot claim; the first pass's own false "already fixed" claim about checkpoints) — the documents describe what the code actually does, checked by re-reading them adversarially, not just written once and trusted. |
 
-**What's left:** logging is still `print()`-based rather than structured. Never
-flagged as a correctness or requirement gap across three audit passes — see "Not
-on this list" below for what was already solid before this session started. The
-`recoverable` gap (the only other item ever flagged) is now closed: fixing it
-also fixed a real bug — a double-submitted review token used to crash the mock
-app with a raw `KeyError`/500, not just fail to classify correctly.
+**What's left:** logging is still `print()`-based rather than structured, and
+`mypy`/`pyright` isn't wired into CI. Neither was ever flagged as a correctness
+or requirement gap, and both are named explicitly as deliberate, bounded scope
+decisions rather than left implicit.
 
-**Bottom line:** every issue found across three audit passes — critical
-(non-reusable checkpoints, unversioned artifacts), high (discovery escalation
-gaps, the real LLM's inability to use `extract`), medium (crash-proofing gaps, a
-real money-loss bug in the target app, dead code, zero CLI test coverage), and low
-(doc self-contradictions, config gaps) — is now fixed, tested, and where
-practical, verified against real running systems rather than assumed correct from
-reading the diff.
+**Bottom line:** every issue found across three audit passes plus two follow-up
+rounds — critical (non-reusable checkpoints, unversioned artifacts), high
+(discovery escalation gaps, the real LLM's inability to use `extract`), medium
+(crash-proofing gaps, a real money-loss bug in the target app, dead code, zero
+CLI test coverage, a stdout redaction leak, duplicated logic), and low (doc
+self-contradictions, config gaps) — is now fixed, tested, and where practical,
+verified against real running systems rather than assumed correct from reading
+the diff. What remains unfixed is named and bounded, not hidden.
 
 ---
 

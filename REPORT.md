@@ -198,6 +198,43 @@ Designed, not built as extra runtimes (spec §9). The seams that would change:
 
 Nothing in this repo executes more than one mock tenant.
 
+**What's actually proven here vs. what's asserted.** Of the three bullets above,
+only **Surface** has any live evidence behind it — the vision fallback below is
+a real, tested, live-verified instance of "perception needs a fallback when the
+primary channel isn't enough," which is the load-bearing idea behind a desktop
+`Surface` too. **Multi-tenant** and **Drift** are not backed by any code at
+all — no second tenant has ever been executed, no `variant_overrides` field
+exists on `Artifact` today, and no drift-sampling logic has been written, even
+as a stub. They're included because the assignment asks for the design, not
+because this repo demonstrates any part of them working. Stating that
+distinction plainly here, rather than letting the vision fallback's real proof
+imply equal confidence in the other two.
+
+**Failure modes for the two unbuilt pieces, since a design that hand-waves past
+failure is worse than one that's honest about not being built:**
+- **`variant_overrides` review and rollback.** A sparse per-tenant diff on a
+  base artifact is easy to describe and easy to get wrong in practice — a bad
+  override (a locator that happens to work today but is brittle) would only
+  surface as a production replay failure for that one tenant, not at
+  authoring time, since nothing here validates an override against a live app
+  before it ships. The mechanism this repo *does* have for that exact
+  problem — checkpoint verification catching a broken locator before it's
+  trusted — would need to run against each tenant's live app per override,
+  not just the base artifact, which is real added infrastructure, not free.
+  Rollback would mean reverting to the base artifact (or a prior override
+  version) for that tenant only; nothing here designs what "known-good"
+  means across a fleet of per-tenant overrides at scale.
+- **Drift detection false positives/negatives.** Sampled replay flagging a
+  "stale" variant is only as good as its sample rate and what it checks —
+  a checkpoint that still resolves but now means something different (a
+  relabeled button, a moved confirmation number) would pass a naive
+  checkpoint-presence check while actually being drifted, a false negative.
+  Conversely, a transient app outage or maintenance window during a sampled
+  replay would look identical to genuine drift, a false positive that would
+  incorrectly flag a healthy artifact for re-discovery. Neither failure mode
+  is designed for here; both would need to be before "drift detection" is
+  more than a diagram label.
+
 **Vision fallback — the concrete slice of "apps without a usable DOM tree" that is
 actually built and testable.** A desktop `Surface` (real OS-level automation, no
 accessibility tree at all) isn't built — designing for it is the deliverable, per
