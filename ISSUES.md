@@ -788,13 +788,21 @@ crash the CLI with a raw traceback — everything resolves to one of the five
 `ReplayResult` outcomes") is currently false for this one path.
 
 **To do:**
-- [ ] Wrap `self.guardrail.check_allowlist(...)` in `ReplayEngine.run()` in a
-      try/except, converting `AllowlistViolation` into a `ReplayResult` (likely
-      `HARD_FAILURE`, since an artifact stepping outside its own allowlist is a
-      genuine automation/configuration problem, not a business outcome).
-- [ ] Add a test: an artifact step targeting a disallowed URL returns a
-      structured result, not a raised exception.
-- [ ] Re-verify (or soften) `REPORT.md`'s "never crash" claim once fixed.
+- [x] Wrap `self.guardrail.check_allowlist(...)` in `ReplayEngine.run()` in a
+      try/except, converting `AllowlistViolation` into a `ReplayResult`.
+      Implemented by moving the call inside the existing `try` block that
+      already wraps `surface.act()`, rather than adding a second, separate
+      try/except — one exception-to-`HARD_FAILURE` boundary per step, not two.
+- [x] Add a test: `test_disallowed_url_step_returns_hard_failure_instead_of_crashing`
+      in `tests/test_replay_engine.py` — an artifact step targeting
+      `http://evil.example.com/x` returns `HARD_FAILURE` with `"not in
+      allowlist"` in the detail, and asserts the disallowed action was never
+      actually performed (`len(surface.acted) == 0`), not just that the process
+      didn't crash.
+- [x] `REPORT.md`'s Determinism & error handling section's claim is accurate
+      again now that both engines' allowlist checks are inside their
+      respective try/except blocks — no softening needed, the claim just
+      needed to be true.
 
 ---
 

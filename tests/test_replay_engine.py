@@ -223,6 +223,20 @@ def test_action_exception_returns_hard_failure_instead_of_crashing(tmp_path):
     assert "element not found" in (result.detail or "")
 
 
+def test_disallowed_url_step_returns_hard_failure_instead_of_crashing(tmp_path):
+    artifact = _make_artifact()
+    artifact.steps[0].target = "http://evil.example.com/x"
+    surface = FakeSurface()
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
+    assert result.step_index == 0
+    assert "not in allowlist" in (result.detail or "")
+    assert len(surface.acted) == 0  # the disallowed action must never actually run
+
+
 def test_goal_parameter_step_still_prefers_caller_param_over_recorded_value(tmp_path):
     artifact = _make_artifact()
     artifact.steps[1].value = "12345"  # value recorded at discovery time

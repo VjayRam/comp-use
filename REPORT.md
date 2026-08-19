@@ -127,8 +127,14 @@ the full Playwright timeout with no recovery path before this fix. After the fix
 the identical scenario still takes the one timeout to fail (expected — a bad
 locator genuinely takes time to time out) but is caught, logged, and
 automatically retried with the vision fallback on the next call, which resolved
-cleanly. See `Guardrail.check_allowlist` below for the one remaining gap in this
-pattern — `ReplayEngine`'s allowlist check is not yet inside its own try/except.
+cleanly. `ReplayEngine.run()`'s own `Guardrail.check_allowlist()` call is inside
+the same try/except as `surface.act()` too, for the same reason — an
+`AllowlistViolation` (a step's target URL or action type falling outside the
+configured allowlist) is now a `HARD_FAILURE` `ReplayResult`, not a raised
+exception. With both engines' allowlist and action-execution calls inside their
+own try/except, "no action in this system is ever allowed to crash the CLI with
+a raw traceback" is true end to end, not just for the paths that happened to be
+tested first.
 
 ## Heterogeneity & multi-tenant
 

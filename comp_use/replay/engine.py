@@ -61,9 +61,9 @@ class ReplayEngine:
                 text = str(params[step.value_source.param_name])
 
             target_url = step.target
-            self.guardrail.check_allowlist(target_url or self.surface.current_url(), step.action.value)
 
             try:
+                self.guardrail.check_allowlist(target_url or self.surface.current_url(), step.action.value)
                 extracted = self.surface.act(step.action, locator=step.locator, target=target_url, text=text)
                 if step.extract_as:
                     outputs[step.extract_as] = extracted
