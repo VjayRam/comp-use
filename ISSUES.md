@@ -982,14 +982,26 @@ existed undetected through the entire previous session: nothing would have
 failed red if it had been wrong.
 
 **To do:**
-- [ ] Add integration-style tests for `_run_discover`/`_run_replay` against
-      the real mock app + `FakeLLMClient` (mirroring the scratchpad script's
-      approach, but as a committed, CI-running test) — at minimum, asserting
-      the produced `success_checkpoint` is *not* a literal `url_matches` on a
-      per-run-unique path, and that a second replay with different valid
-      params against the same freshly-discovered artifact succeeds.
-- [ ] This test would have caught issue 11 immediately; treat it as the
-      regression test for that fix, not a separate nice-to-have.
+- [x] Add an integration-style test for `_run_discover`/`_run_replay` against
+      the real mock app + `FakeLLMClient`, calling the actual CLI functions
+      directly (not a scratchpad script bypassing them) — `Settings` and
+      `OpenRouterClient` patched via `unittest.mock.patch.object` so the test
+      redirects `artifacts_dir`/`evidence_dir` to `tmp_path` and injects a
+      scripted `FakeLLMClient` instead of hitting the real network, while
+      `_run_discover`/`_run_replay` themselves run completely unmodified.
+      (`test_run_discover_produces_a_reusable_checkpoint_end_to_end` in
+      `tests/test_cli.py`.) Asserts: the produced `success_checkpoint` is
+      `element_visible`, not a literal `url_matches`; a second `_run_discover`
+      call for the same capability name produces `v2.json` without touching
+      `v1.json`; and a `_run_replay` call with a *different* member than
+      discovery used returns `"outcome": "success"`.
+- [x] **Confirmed this test would have caught issue 11**, not just asserted it
+      in the abstract — temporarily reintroduced the exact old buggy
+      checkpoint-construction code in `_run_discover`, reran just this test,
+      watched it fail with `AssertionError: url_matches != element_visible`,
+      then reverted (confirmed `git diff` was empty afterward). This is now
+      the regression test for issue 11's fix, proven to actually regress-test
+      it, not a separate nice-to-have that happens to pass.
 
 ---
 
