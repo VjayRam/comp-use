@@ -46,6 +46,19 @@ self-contradictions, config gaps) — is now fixed, tested, and where practical,
 verified against real running systems rather than assumed correct from reading
 the diff. What remains unfixed is named and bounded, not hidden.
 
+**Beyond bare-minimum compliance:** added drift-aware self-healing replay
+(`--diagnose-drift-on-failure`, see `REPORT.md`'s dedicated section) — not
+required by the assignment. On a replay `hard_failure` where a recorded
+control genuinely can't be found, a vision model diagnoses whether it merely
+drifted (renamed/moved) and proposes a patched artifact version for human
+review, never auto-applied. Built entirely from primitives that already
+existed (vision fallback, escalation, versioning, the outcome taxonomy)
+without touching `ReplayEngine`'s core "no LLM calls" invariant. Live-verified
+end to end against a deliberately broken artifact and the real running mock
+app — including a real malformed-response bug hit and fixed mid-verification
+(a free-tier vision model wrapped its JSON reply and used a different key
+name than the schema asked for), not a cherry-picked single success.
+
 ---
 
 ## 1. REPORT.md doesn't cite the real LLM-driven discovery run it already has
