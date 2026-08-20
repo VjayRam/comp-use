@@ -1,9 +1,0 @@
-{"event_type": "replay_step", "data": {"index": 0, "action": "navigate"}}
-{"event_type": "replay_step", "data": {"index": 1, "action": "type_text"}}
-{"event_type": "replay_step", "data": {"index": 2, "action": "type_text"}}
-{"event_type": "replay_step", "data": {"index": 3, "action": "type_text"}}
-{"event_type": "replay_step", "data": {"index": 4, "action": "click"}}
-{"event_type": "drift_diagnosis", "data": {"found": true, "step_index": 5, "proposed_version": 2, "proposed_locator": {"strategy": "role", "value": {"role": "button", "name": "Confirm Transfer"}, "fallback": null}, "reasoning": "The expected control 'Cofirm Transfer' has a typo in the expectation, but the 'Confirm Transfer' button is clearly visible on the page."}}
-{"event_type": "escalation_requested", "data": {"run_id": "replay_1787174182", "capability_or_goal": "transfer_funds_drift_live_check", "current_step": 5, "screenshot_path": "evidence\\replay_1787174182\\drift_diagnosis.png", "reason": "possible drift detected at step 5 - review proposed patch v2 at artifacts\\transfer_funds_drift_live_check\\v2.json before relying on it for future replays"}}
-{"event_type": "escalation_resumed", "data": {"run_id": "replay_1787174182"}}
-{"event_type": "escalation_human_action", "data": {"run_id": "replay_1787174182", "note": "approved - the typo fix is correct", "tree_diff": "", "before_screenshot_path": "evidence\\replay_1787174182\\escalation_before_step5.png", "after_screenshot_path": "evidence\\replay_1787174182\\escalation_after_step5.png"}}

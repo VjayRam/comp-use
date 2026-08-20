@@ -135,10 +135,17 @@ REPORT.md's Heterogeneity & multi-tenant section).
 
 **Optional second provider — NVIDIA NIM, to tolerate OpenRouter's free-tier rate
 limits.** Set `NVIDIA_API_KEY` (get one at [build.nvidia.com](https://build.nvidia.com))
-and every LLM call automatically falls back to NIM if OpenRouter fails for any
-reason (rate limit, timeout, a malformed response). Leave it blank to disable the
-fallback entirely — behavior is then identical to OpenRouter-only, as before. See
+and every LLM call automatically falls back to NIM if the primary provider fails for
+any reason (rate limit, timeout, a malformed response). Leave it blank to disable the
+fallback entirely — behavior is then identical to a single provider, as before. See
 `FallbackLLMClient` in `comp_use/llm_client.py`.
+
+**`MODEL_PROVIDER`** (`openrouter` default, or `nvidia`) picks which provider is tried
+*first*; the other is still used as the automatic fallback above if its key is
+configured. Set `MODEL_PROVIDER=nvidia` to make NIM primary and OpenRouter the
+fallback — useful once OpenRouter's free tier is rate-limited for the session. If the
+chosen primary has no key configured, `_build_llm_client` falls back to whichever
+provider does have a key rather than build a client guaranteed to fail immediately.
 
 > **Not yet live-verified against a real NVIDIA key** (none was available while
 > building this) — `NVIDIA_MODEL`/`NVIDIA_VISION_MODEL`'s defaults are best-effort

@@ -313,3 +313,26 @@ def test_build_llm_client_wraps_openrouter_with_nvidia_fallback_when_key_present
     assert isinstance(client, FallbackLLMClient)
     assert isinstance(client.primary, OpenRouterClient)
     assert isinstance(client.fallback, NvidiaNimClient)
+
+
+def test_build_llm_client_is_nvidia_only_when_provider_is_nvidia_and_no_openrouter_key():
+    settings = Settings(model_provider="nvidia", nvidia_api_key="nvidia-test-key", openrouter_api_key="")
+    client = _build_llm_client(settings)
+    assert isinstance(client, NvidiaNimClient)
+
+
+def test_build_llm_client_wraps_nvidia_with_openrouter_fallback_when_provider_is_nvidia():
+    settings = Settings(model_provider="nvidia", nvidia_api_key="nvidia-test-key", openrouter_api_key="or-test-key")
+    client = _build_llm_client(settings)
+    assert isinstance(client, FallbackLLMClient)
+    assert isinstance(client.primary, NvidiaNimClient)
+    assert isinstance(client.fallback, OpenRouterClient)
+
+
+def test_build_llm_client_nvidia_provider_with_no_nvidia_key_still_falls_back_to_openrouter():
+    # MODEL_PROVIDER=nvidia with no NVIDIA_API_KEY configured can't actually
+    # use NVIDIA as primary - fall back to OpenRouter-only rather than
+    # building a client that's guaranteed to fail on first use.
+    settings = Settings(model_provider="nvidia", nvidia_api_key="", openrouter_api_key="or-test-key")
+    client = _build_llm_client(settings)
+    assert isinstance(client, OpenRouterClient)

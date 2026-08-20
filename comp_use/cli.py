@@ -61,15 +61,22 @@ def next_artifact_version(capability_name: str, artifacts_dir: Path) -> int:
 
 
 def _build_llm_client(settings: Settings) -> LLMClient:
-    """OpenRouter is always the primary provider. NVIDIA NIM is added as an
-    automatic fallback only when NVIDIA_API_KEY is configured - with no
-    NVIDIA key set, this is identical to the previous OpenRouter-only
-    behavior. The fallback exists specifically to tolerate OpenRouter's
-    free-tier rate limits without the whole discovery/drift-diagnosis run
-    stalling on one provider (see FallbackLLMClient)."""
-    primary = OpenRouterClient(settings)
-    if settings.nvidia_api_key:
-        return FallbackLLMClient(primary, NvidiaNimClient(settings))
+    """MODEL_PROVIDER picks which provider is tried first; the other is used
+    as an automatic fallback only if its own API key is configured (see
+    FallbackLLMClient). If the primary provider's own key isn't configured,
+    there's nothing usable to put first, so fall back to whichever provider
+    does have a key rather than build a client guaranteed to fail on first
+    use."""
+    openrouter = OpenRouterClient(settings)
+    nvidia = NvidiaNimClient(settings)
+
+    if settings.model_provider == "nvidia" and settings.nvidia_api_key:
+        primary, fallback, fallback_key = nvidia, openrouter, settings.openrouter_api_key
+    else:
+        primary, fallback, fallback_key = openrouter, nvidia, settings.nvidia_api_key
+
+    if fallback_key:
+        return FallbackLLMClient(primary, fallback)
     return primary
 
 
@@ -110,9 +117,15 @@ def _run_discover(args) -> None:
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
     llm = _build_llm_client(settings)
     transport = LocalSharedBrowserTransport()
-    fallback_note = f" (falls back to NVIDIA NIM:{settings.nvidia_model} on failure)" if settings.nvidia_api_key else ""
+    if settings.model_provider == "nvidia" and settings.nvidia_api_key:
+        primary_label, primary_model = "NVIDIA NIM", settings.nvidia_model
+        fallback_label, fallback_model, fallback_key = "OpenRouter", settings.openrouter_model, settings.openrouter_api_key
+    else:
+        primary_label, primary_model = "OpenRouter", settings.openrouter_model
+        fallback_label, fallback_model, fallback_key = "NVIDIA NIM", settings.nvidia_model, settings.nvidia_api_key
+    fallback_note = f" (falls back to {fallback_label}:{fallback_model} on failure)" if fallback_key else ""
     print(
-        f"Discovering with {settings.openrouter_model}{fallback_note} (max {settings.max_discovery_steps} steps)",
+        f"Discovering with {primary_label}:{primary_model}{fallback_note} (max {settings.max_discovery_steps} steps)",
         flush=True,
     )
 

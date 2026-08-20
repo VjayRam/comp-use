@@ -1,6 +1,0 @@
-{"event_type": "replay_step", "data": {"index": 0, "action": "navigate"}}
-{"event_type": "replay_step", "data": {"index": 1, "action": "type_text"}}
-{"event_type": "replay_step", "data": {"index": 2, "action": "type_text"}}
-{"event_type": "replay_step", "data": {"index": 3, "action": "type_text"}}
-{"event_type": "replay_step", "data": {"index": 4, "action": "click"}}
-{"event_type": "drift_diagnosis", "data": {"found": false, "step_index": 5, "reasoning": "model returned an invalid locator"}}

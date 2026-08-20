@@ -1,0 +1,240 @@
+{
+  "capability_name": "transfer_funds",
+  "version": 2,
+  "target": {
+    "app": "mock_bank",
+    "base_url": "http://localhost:5000"
+  },
+  "description": "For member 12345 transfer 100 dollars from account ACC-001 to account ACC-002",
+  "input_schema": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "required": true,
+      "description": "",
+      "example": null
+    },
+    {
+      "name": "from_account",
+      "type": "string",
+      "required": true,
+      "description": "",
+      "example": null
+    },
+    {
+      "name": "to_account",
+      "type": "string",
+      "required": true,
+      "description": "",
+      "example": null
+    },
+    {
+      "name": "transfer_amount",
+      "type": "string",
+      "required": true,
+      "description": "",
+      "example": null
+    }
+  ],
+  "output_schema": [],
+  "steps": [
+    {
+      "action": "navigate",
+      "target": "http://localhost:5000/member/search",
+      "locator": null,
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "Member ID"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "goal_parameter",
+        "param_name": "member_id",
+        "param_type": "string",
+        "reason": null
+      },
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "button",
+          "name": "Search"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "link",
+          "name": "Transfer Funds"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "From Account"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "From Account"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "goal_parameter",
+        "param_name": "from_account",
+        "param_type": "string",
+        "reason": null
+      },
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "To Account"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "goal_parameter",
+        "param_name": "to_account",
+        "param_type": "string",
+        "reason": null
+      },
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "Amount"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "goal_parameter",
+        "param_name": "transfer_amount",
+        "param_type": "string",
+        "reason": null
+      },
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "button",
+          "name": "Transfer"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "button",
+          "name": "Confirm Transfer"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "risky",
+      "checkpoint": null
+    }
+  ],
+  "success_checkpoint": {
+    "type": "element_visible",
+    "locator": {
+      "strategy": "role",
+      "value": {
+        "role": "heading",
+        "name": "Confirmation"
+      },
+      "fallback": null
+    },
+    "text": null,
+    "url_pattern": null
+  },
+  "outcome_patterns": [],
+  "created_from_run_id": "discover_1787180782"
+}

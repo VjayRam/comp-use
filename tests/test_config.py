@@ -1,10 +1,15 @@
 import os
-from comp_use.config import load_settings
+
+import pytest
+from pydantic import ValidationError
+
+from comp_use.config import Settings, load_settings
 
 
 def test_defaults(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
     settings = load_settings()
     assert settings.allowed_url_prefixes == ["http://localhost:5000"]
     assert "navigate" in settings.allowed_action_types
@@ -13,6 +18,7 @@ def test_defaults(monkeypatch):
     assert settings.evidence_dir.name == "evidence"
     # no NVIDIA_API_KEY means no fallback provider configured, by default
     assert settings.nvidia_api_key == ""
+    assert settings.model_provider == "openrouter"
 
 
 def test_env_override(monkeypatch):
@@ -22,6 +28,7 @@ def test_env_override(monkeypatch):
     monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-test-key")
     monkeypatch.setenv("NVIDIA_MODEL", "meta/some-model")
     monkeypatch.setenv("NVIDIA_VISION_MODEL", "meta/some-vision-model")
+    monkeypatch.setenv("MODEL_PROVIDER", "nvidia")
     settings = load_settings()
     assert settings.openrouter_api_key == "test-key"
     assert settings.openrouter_model == "some/model:free"
@@ -29,3 +36,18 @@ def test_env_override(monkeypatch):
     assert settings.nvidia_api_key == "nvidia-test-key"
     assert settings.nvidia_model == "meta/some-model"
     assert settings.nvidia_vision_model == "meta/some-vision-model"
+    assert settings.model_provider == "nvidia"
+
+
+def test_model_provider_env_value_is_lowercased(monkeypatch):
+    # MODEL_PROVIDER=NVIDIA or Nvidia should work the same as nvidia - env
+    # vars are easy to type inconsistently, and this is a pure convenience,
+    # not a place where case should matter.
+    monkeypatch.setenv("MODEL_PROVIDER", "NVIDIA")
+    settings = load_settings()
+    assert settings.model_provider == "nvidia"
+
+
+def test_model_provider_rejects_unknown_values():
+    with pytest.raises(ValidationError):
+        Settings(model_provider="anthropic")

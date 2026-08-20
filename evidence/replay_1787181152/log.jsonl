@@ -1,0 +1,8 @@
+{"event_type": "replay_step", "data": {"index": 0, "action": "navigate"}}
+{"event_type": "replay_step", "data": {"index": 1, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 2, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 3, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 4, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 5, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 6, "action": "extract"}}
+{"event_type": "replay_step", "data": {"index": 7, "action": "extract"}}

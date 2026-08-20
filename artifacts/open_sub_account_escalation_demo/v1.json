@@ -1,0 +1,148 @@
+{
+  "capability_name": "open_sub_account_escalation_demo",
+  "version": 1,
+  "target": {
+    "app": "mock_bank",
+    "base_url": "http://localhost:5000"
+  },
+  "description": "Open a new sub-account for member 12345 with a 500 dollar deposit",
+  "input_schema": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "required": true,
+      "description": "",
+      "example": null
+    },
+    {
+      "name": "deposit_amount",
+      "type": "string",
+      "required": true,
+      "description": "",
+      "example": null
+    }
+  ],
+  "output_schema": [],
+  "steps": [
+    {
+      "action": "navigate",
+      "target": "http://localhost:5000/member/search",
+      "locator": null,
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "Member ID"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "goal_parameter",
+        "param_name": "member_id",
+        "param_type": "string",
+        "reason": null
+      },
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "button",
+          "name": "Search"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "link",
+          "name": "Open Sub-Account"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "Deposit Amount"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "goal_parameter",
+        "param_name": "deposit_amount",
+        "param_type": "string",
+        "reason": null
+      },
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "button",
+          "name": "Open Account"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    }
+  ],
+  "success_checkpoint": {
+    "type": "element_visible",
+    "locator": {
+      "strategy": "role",
+      "value": {
+        "role": "heading",
+        "name": "Confirmation"
+      },
+      "fallback": null
+    },
+    "text": null,
+    "url_pattern": null
+  },
+  "outcome_patterns": [],
+  "created_from_run_id": "discover_1787180861"
+}

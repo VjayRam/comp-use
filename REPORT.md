@@ -221,14 +221,18 @@ above exercises. `comp_use/llm_client.py`'s `OpenRouterClient` and a new
 request/response shape, prompts, and tool schemas are identical between the
 two — NIM's hosted inference API is also OpenAI-compatible chat completions
 with tool calling; only the endpoint, auth header, and model names differ).
-`FallbackLLMClient` wraps both: it tries the primary (OpenRouter) first, and
-on *any* failure — not just a detected rate limit specifically, since a
-malformed response or a timeout deserves the same treatment — retries with
-NIM instead. `comp_use/cli.py`'s `_build_llm_client()` only constructs the
-fallback wrapper when `NVIDIA_API_KEY` is set; with no key configured,
-behavior is byte-for-byte identical to OpenRouter-only, so this is additive,
-not a breaking change to the default setup. If the fallback itself also
-fails, its exception propagates into the same `llm_call_failed` skip path
+`FallbackLLMClient` wraps both: it tries the primary first, and on *any*
+failure — not just a detected rate limit specifically, since a malformed
+response or a timeout deserves the same treatment — retries with the other
+provider instead. Which one is primary is controlled by `Settings.model_provider`
+(`MODEL_PROVIDER` env var, `openrouter` default or `nvidia`) — `_build_llm_client()`
+in `comp_use/cli.py` picks primary/fallback symmetrically based on it, and
+falls back to whichever provider actually has a key configured if the chosen
+primary doesn't (rather than build a client guaranteed to fail on its first
+call). With no `NVIDIA_API_KEY` set at all, behavior is byte-for-byte
+identical to OpenRouter-only regardless of `MODEL_PROVIDER`, so this remains
+additive, not a breaking change to the default setup. If the fallback itself
+also fails, its exception propagates into the same `llm_call_failed` skip path
 above — trying a second provider doesn't need its own separate crash-proofing,
 it inherits the existing one for free.
 

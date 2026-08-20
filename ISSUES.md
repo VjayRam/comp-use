@@ -1524,6 +1524,25 @@ discovery a second provider to fail over to.
 - Added `Settings.nvidia_api_key`/`nvidia_model`/`nvidia_vision_model`
   (`NVIDIA_API_KEY`/`NVIDIA_MODEL`/`NVIDIA_VISION_MODEL`), documented in
   `.env.example` and `README.md`.
+- **Follow-up (same session):** the first cut above always made OpenRouter
+  primary — NVIDIA NIM could only ever be the fallback. Added
+  `Settings.model_provider` (`MODEL_PROVIDER` env var, `"openrouter"` default
+  or `"nvidia"`, a Pydantic `Literal` so an unrecognized value is rejected at
+  `Settings()` construction rather than silently misconfiguring which
+  provider runs) and rewrote `_build_llm_client` to be symmetric: it picks
+  primary/fallback based on `model_provider`, and if the chosen primary has
+  no API key configured, falls back to whichever provider *does* have a key
+  rather than building a client that's guaranteed to fail on its first call.
+  `_run_discover`'s startup print was also updated to name whichever
+  provider/model is actually primary, instead of hardcoding OpenRouter's.
+
+**Design note (protected namespace):** `model_provider` as a field name
+triggers Pydantic's built-in warning that `model_*` names collide with its
+own reserved namespace (`model_config`, `model_dump()`, ...). Resolved by
+setting `model_config = ConfigDict(protected_namespaces=())` on `Settings`
+rather than renaming the field — `model_provider` is the clearer name for
+what it does, and the collision is with Pydantic's internals, not with any
+other field or behavior in this codebase.
 
 **To do:**
 - [x] Refactor `OpenRouterClient` into a shared base with zero behavior
@@ -1538,6 +1557,12 @@ discovery a second provider to fail over to.
 - [x] Wire into `cli.py` via `_build_llm_client`, tested: no NVIDIA key →
       bare `OpenRouterClient`; key present → `FallbackLLMClient` wrapping
       both providers.
+- [x] Make provider selection symmetric via `MODEL_PROVIDER`, tested:
+      `nvidia` + both keys → NVIDIA primary/OpenRouter fallback; `nvidia` +
+      only NVIDIA key → bare `NvidiaNimClient`; `nvidia` + no NVIDIA key →
+      falls back to bare `OpenRouterClient` instead of a dead-on-arrival
+      client; invalid `MODEL_PROVIDER` value → rejected by Pydantic at
+      `Settings()` construction.
 - [ ] **Not live-verified against a real NVIDIA API key** — none was
       available while building this. `NVIDIA_MODEL`/`NVIDIA_VISION_MODEL`'s
       defaults are best-effort picks from NIM's published catalog naming,
@@ -1551,4 +1576,7 @@ discovery a second provider to fail over to.
       confirm the model IDs actually resolve.
 
 Tests: 8 new (`NvidiaNimClient` x2, `FallbackLLMClient` x4, `_build_llm_client`
-x2), plus `test_config.py` extended for the new settings. 116/116 passing.
+x2) plus `test_config.py` extended for the new settings, plus 3 more for the
+`MODEL_PROVIDER` follow-up (`_build_llm_client` x2, `test_config.py`
+validation x1 — `test_config.py`'s existing `test_defaults`/`test_env_override`
+were also extended in place rather than duplicated). 121/121 passing.

@@ -1,10 +1,15 @@
 import os
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Settings(BaseModel):
+    # model_provider is a deliberate field name (not a Pydantic internal) - silence
+    # the "protected namespace" warning rather than rename around it.
+    model_config = ConfigDict(protected_namespaces=())
+
     allowed_url_prefixes: list[str] = Field(
         default_factory=lambda: ["http://localhost:5000"]
     )
@@ -28,6 +33,11 @@ class Settings(BaseModel):
             r"\bCONF-\d+\b",
         ]
     )
+    # Which provider decide_next_action()/diagnose_drift() go to first. The
+    # OTHER provider is still used as an automatic fallback if its own API key
+    # is configured (see _build_llm_client in comp_use/cli.py) - this only
+    # picks which one goes first, not whether fallback is available at all.
+    model_provider: Literal["openrouter", "nvidia"] = "openrouter"
     openrouter_api_key: str = ""
     openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
     # Used only as a vision fallback, when the accessibility tree alone hasn't been
@@ -47,6 +57,7 @@ class Settings(BaseModel):
 
 def load_settings() -> Settings:
     return Settings(
+        model_provider=os.environ.get("MODEL_PROVIDER", "openrouter").strip().lower(),
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         openrouter_model=os.environ.get(
             "OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free"
