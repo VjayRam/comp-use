@@ -17,6 +17,7 @@
 - `Artifact.status` defaults to `"approved"` so all 7 already-committed artifact files parse unchanged with zero migration.
 - Existing tests in `tests/test_cli.py`, `tests/test_drift.py`, `tests/test_transport.py` must keep passing unmodified in their assertions about current CLI behavior (only new tests are added, alongside minimal fixture adjustments if a test's own fixtures now need `status` set explicitly).
 - New server-layer unit tests use fakes (no real Chromium, no real LLM) — consistent with `test_replay_engine.py`/`test_discovery_agent.py`. Exactly one live, real end-to-end pass (Task 10) produces new `/evidence/`.
+- Every route that takes a `capability_name`/`{name}` path parameter validates it against `^[a-z0-9_]+$` (`_validate_capability_name`, added in Task 6, called from every route added in Tasks 6-8) before it's used to build any filesystem path — closes a path-traversal gap (e.g. `name=".."`) found during design review, on a system that stores regulated financial artifacts on disk.
 
 ---
 
@@ -1003,6 +1004,12 @@ def test_get_capability_404s_when_none_approved(tmp_path):
     assert response.status_code == 404
 
 
+def test_get_capability_400s_on_a_path_traversal_attempt(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.get("/capabilities/..")
+    assert response.status_code == 400
+
+
 def test_list_versions_reports_status_for_every_version(tmp_path):
     client, settings = _client(tmp_path)
     save_artifact(_artifact(version=1, status="approved"), settings.artifacts_dir)
@@ -1028,9 +1035,26 @@ Create `comp_use/server/app.py`:
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
+import re
+
 from comp_use.cli import load_artifact
 from comp_use.config import Settings, load_settings
 from comp_use.server.run_manager import RunManager
+
+_CAPABILITY_NAME_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def _validate_capability_name(name: str) -> None:
+    """`name` is used to build a filesystem path (`artifacts_dir / name`) in
+    every route below - reject anything that isn't a plain lowercase/digits/
+    underscore token before it ever reaches Path(), so a value like ".." can't
+    resolve outside artifacts_dir. Path traversal on a regulated financial
+    artifact store is a live vulnerability, not just a missing feature."""
+    if not _CAPABILITY_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid capability name {name!r}: must match {_CAPABILITY_NAME_RE.pattern}",
+        )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -1071,6 +1095,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/capabilities/{name}")
     def get_capability(name: str):
+        _validate_capability_name(name)
         try:
             artifact = load_artifact(name, settings.artifacts_dir)
         except FileNotFoundError as exc:
@@ -1079,6 +1104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/capabilities/{name}/versions")
     def list_versions(name: str):
+        _validate_capability_name(name)
         capability_dir = settings.artifacts_dir / name
         if not capability_dir.exists():
             raise HTTPException(status_code=404, detail=f"no capability '{name}'")
@@ -1094,7 +1120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_server.py -v`
-Expected: PASS, all 5 tests.
+Expected: PASS, all 6 tests.
 
 - [ ] **Step 6: Run the full suite**
 
@@ -1105,7 +1131,7 @@ Expected: no regressions.
 
 ```bash
 git add comp_use/server/app.py requirements.txt tests/test_server.py
-git commit -m "feat: FastAPI capability server skeleton with read-only catalog endpoints"
+git commit -m "feat: FastAPI capability server skeleton with read-only catalog endpoints + capability-name validation"
 ```
 
 ---
@@ -1301,6 +1327,7 @@ Inside `create_app`, after the existing three routes:
 ```python
     @app.post("/capabilities/{name}/invoke", status_code=202)
     def invoke_capability(name: str, body: InvokeRequest):
+        _validate_capability_name(name)
         try:
             artifact = load_artifact(name, settings.artifacts_dir)
         except FileNotFoundError as exc:
@@ -1317,6 +1344,8 @@ Inside `create_app`, after the existing three routes:
 
     @app.post("/capabilities/{name}/discover", status_code=202)
     def discover_capability(name: str, body: DiscoverRequest):
+        _validate_capability_name(name)
+
         def target(transport):
             artifact = run_discover(body.goal, body.start_url, name, False, transport, False)
             if artifact is None:
@@ -1464,6 +1493,7 @@ from comp_use.cli import approve_artifact, load_artifact, reject_artifact, retir
 ```python
     @app.post("/capabilities/{name}/versions/{version}/approve")
     def approve(name: str, version: int):
+        _validate_capability_name(name)
         try:
             artifact = approve_artifact(name, version, settings.artifacts_dir)
         except FileNotFoundError as exc:
@@ -1474,6 +1504,7 @@ from comp_use.cli import approve_artifact, load_artifact, reject_artifact, retir
 
     @app.post("/capabilities/{name}/versions/{version}/reject")
     def reject(name: str, version: int):
+        _validate_capability_name(name)
         try:
             artifact = reject_artifact(name, version, settings.artifacts_dir)
         except FileNotFoundError as exc:
@@ -1484,6 +1515,7 @@ from comp_use.cli import approve_artifact, load_artifact, reject_artifact, retir
 
     @app.post("/capabilities/{name}/versions/{version}/retire")
     def retire(name: str, version: int):
+        _validate_capability_name(name)
         try:
             artifact = retire_artifact(name, version, settings.artifacts_dir)
         except FileNotFoundError as exc:

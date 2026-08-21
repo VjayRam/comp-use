@@ -174,6 +174,12 @@ launches it (`uvicorn.run(app, ...)`) — everything else in `cli.py` is unchang
 No `DELETE` endpoint exists in this pass — see §9 for why, and the deferred design for
 when one is added.
 
+**Input validation:** every route above taking a `{name}` path parameter validates it
+against `^[a-z0-9_]+$` before using it in `artifacts_dir / name` — a value like `".."`
+is a valid single path segment and, unvalidated, would resolve outside `artifacts_dir`.
+Rejected with `400`. `{version}` is typed `int` by FastAPI's own routing, which already
+rejects non-numeric values before a handler runs.
+
 `screenshot_url` in `GET /runs/{run_id}`'s escalation payload: the escalation screenshot
 already saved to `evidence/<run_id>/...png` by `EscalationController`/`_run_discover`/
 `_run_replay`; the server mounts `evidence_dir` as static files so this is a servable
@@ -241,9 +247,13 @@ narrow, named admin permission, not "anyone who can reach the internal tool."
   Stated limitation; see §7 for the deferred admin-role design and why hard delete
   specifically waits on it rather than shipping unauthenticated.
 - No hard delete — see §7.
-- In-memory run store only — a server restart loses all run history/status. Stated;
-  production would persist run state (ties to the already-documented "production
-  artifact/evidence storage — not built" cut).
+- In-memory run store only — a server restart loses all run history/status, and if a
+  run happens to be `"escalated"` at restart time, its background thread (and the real
+  browser it was driving) is orphaned: nobody holds a `run_id` that still resolves to it,
+  so it can never be `resume`d and the browser process is simply left running until it's
+  killed externally. Not just "lost history" — a real stuck-process trap. Production
+  would persist run state and re-attach or fail these runs on startup (ties to the
+  already-documented "production artifact/evidence storage — not built" cut).
 - No worker pool — N concurrent runs is N real headed Chromium instances on N threads.
   Fine for a demo; explicitly not scaling infrastructure per the assignment's own
   guidance not to prematurely build that.
