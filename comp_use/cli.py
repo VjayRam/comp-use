@@ -47,16 +47,53 @@ def load_artifact(capability_name: str, artifacts_dir: Path, version: int | None
     capability_dir = Path(artifacts_dir) / capability_name
     if version is None:
         versions = sorted(
-            int(p.stem[1:]) for p in capability_dir.glob("v*.json")
+            (int(p.stem[1:]) for p in capability_dir.glob("v*.json")), reverse=True
         )
         if not versions:
             raise FileNotFoundError(
                 f"no artifact found for capability '{capability_name}' in {capability_dir} "
                 "(check --capability-name for a typo, or run 'discover' first)"
             )
-        version = versions[-1]
+        for candidate_version in versions:
+            candidate = Artifact.model_validate_json(
+                (capability_dir / f"v{candidate_version}.json").read_text()
+            )
+            if candidate.status == "approved":
+                return candidate
+        raise FileNotFoundError(
+            f"capability '{capability_name}' has {len(versions)} version(s) in {capability_dir} "
+            "but none are approved (approve one via `comp-use approve --capability-name "
+            f"{capability_name} --version N`, or pass --version explicitly to load a draft)"
+        )
     path = capability_dir / f"v{version}.json"
     return Artifact.model_validate_json(path.read_text())
+
+
+def approve_artifact(capability_name: str, version: int, artifacts_dir: Path) -> Artifact:
+    artifact = load_artifact(capability_name, artifacts_dir, version=version)
+    if artifact.status != "draft":
+        raise ValueError(f"version {version} is '{artifact.status}', not 'draft' - only a draft can be approved")
+    artifact.status = "approved"
+    save_artifact(artifact, artifacts_dir)
+    return artifact
+
+
+def reject_artifact(capability_name: str, version: int, artifacts_dir: Path) -> Artifact:
+    artifact = load_artifact(capability_name, artifacts_dir, version=version)
+    if artifact.status != "draft":
+        raise ValueError(f"version {version} is '{artifact.status}', not 'draft' - only a draft can be rejected")
+    artifact.status = "rejected"
+    save_artifact(artifact, artifacts_dir)
+    return artifact
+
+
+def retire_artifact(capability_name: str, version: int, artifacts_dir: Path) -> Artifact:
+    artifact = load_artifact(capability_name, artifacts_dir, version=version)
+    if artifact.status != "approved":
+        raise ValueError(f"version {version} is '{artifact.status}', not 'approved' - only an approved version can be retired")
+    artifact.status = "rejected"
+    save_artifact(artifact, artifacts_dir)
+    return artifact
 
 
 def next_artifact_version(capability_name: str, artifacts_dir: Path) -> int:

@@ -105,6 +105,19 @@ def test_propose_drift_patch_skips_llm_call_when_step_has_no_locator():
     assert diagnosis.patched_artifact is None
 
 
+def test_propose_drift_patch_marks_the_patched_artifact_as_draft():
+    artifact = _make_artifact()
+    assert artifact.status == "approved"  # base artifact is a normal approved one
+    llm = FakeLLMClient(
+        scripted_actions=[],
+        scripted_drift_diagnoses=[
+            {"found": True, "locator": {"strategy": "role", "value": {"role": "button", "name": "Confirm Transfer"}}, "reasoning": "renamed"},
+        ],
+    )
+    diagnosis = propose_drift_patch(llm, FakeSurfaceForDrift(), artifact, failed_step_index=1)
+    assert diagnosis.patched_artifact.status == "draft"
+
+
 def test_propose_drift_patch_returns_no_patch_when_screenshot_capture_fails():
     # Same live crash as everywhere else - diagnosis fundamentally needs a
     # screenshot, so a capture failure here means "can't diagnose," not a crash.

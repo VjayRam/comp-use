@@ -8,7 +8,10 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 import comp_use.cli as cli
-from comp_use.cli import _build_llm_client, _derive_success_checkpoint, load_artifact, next_artifact_version, save_artifact
+from comp_use.cli import (
+    _build_llm_client, _derive_success_checkpoint, approve_artifact, load_artifact,
+    next_artifact_version, reject_artifact, retire_artifact, save_artifact,
+)
 from comp_use.config import Settings
 from comp_use.escalation.transport import ControlTransport
 from comp_use.llm_client import FakeLLMClient, FallbackLLMClient, NvidiaNimClient, OpenRouterClient
@@ -20,10 +23,11 @@ from comp_use.surface import PlaywrightSurface
 from mock_app.app import create_app
 
 
-def _artifact(version=1):
+def _artifact(version=1, status="approved"):
     return Artifact(
         capability_name="lookup_member",
         version=version,
+        status=status,
         target={"app": "mock_bank", "base_url": "http://localhost:5000"},
         steps=[Step(action=ActionType.NAVIGATE, target="/member/search", risk_tier=RiskTier.SAFE)],
         success_checkpoint=Checkpoint(
@@ -67,6 +71,65 @@ def test_next_artifact_version_increments_past_existing_versions(tmp_path):
     save_artifact(_artifact(version=1), tmp_path)
     save_artifact(_artifact(version=2), tmp_path)
     assert next_artifact_version("lookup_member", tmp_path) == 3
+
+
+def test_load_artifact_skips_draft_versions_when_unspecified(tmp_path):
+    save_artifact(_artifact(version=1), tmp_path)
+    save_artifact(_artifact(version=2, status="draft"), tmp_path)
+    loaded = load_artifact("lookup_member", tmp_path)
+    assert loaded.version == 1
+
+
+def test_load_artifact_raises_a_clear_error_when_all_versions_are_drafts(tmp_path):
+    save_artifact(_artifact(version=1, status="draft"), tmp_path)
+    with pytest.raises(FileNotFoundError, match="none are approved"):
+        load_artifact("lookup_member", tmp_path)
+
+
+def test_load_artifact_with_explicit_version_bypasses_the_draft_filter(tmp_path):
+    save_artifact(_artifact(version=1, status="draft"), tmp_path)
+    loaded = load_artifact("lookup_member", tmp_path, version=1)
+    assert loaded.version == 1
+    assert loaded.status == "draft"
+
+
+def test_approve_artifact_flips_draft_to_approved(tmp_path):
+    save_artifact(_artifact(version=1, status="draft"), tmp_path)
+    approved = approve_artifact("lookup_member", 1, tmp_path)
+    assert approved.status == "approved"
+    reloaded = load_artifact("lookup_member", tmp_path, version=1)
+    assert reloaded.status == "approved"
+
+
+def test_approve_artifact_rejects_a_version_that_is_not_a_draft(tmp_path):
+    save_artifact(_artifact(version=1), tmp_path)  # default status="approved"
+    with pytest.raises(ValueError, match="not 'draft'"):
+        approve_artifact("lookup_member", 1, tmp_path)
+
+
+def test_reject_artifact_flips_draft_to_rejected_without_deleting_the_file(tmp_path):
+    path = save_artifact(_artifact(version=1, status="draft"), tmp_path)
+    rejected = reject_artifact("lookup_member", 1, tmp_path)
+    assert rejected.status == "rejected"
+    assert path.exists()
+
+
+def test_reject_artifact_rejects_a_version_that_is_not_a_draft(tmp_path):
+    save_artifact(_artifact(version=1), tmp_path)
+    with pytest.raises(ValueError, match="not 'draft'"):
+        reject_artifact("lookup_member", 1, tmp_path)
+
+
+def test_retire_artifact_flips_approved_to_rejected(tmp_path):
+    save_artifact(_artifact(version=1), tmp_path)  # approved
+    retired = retire_artifact("lookup_member", 1, tmp_path)
+    assert retired.status == "rejected"
+
+
+def test_retire_artifact_rejects_a_version_that_is_not_approved(tmp_path):
+    save_artifact(_artifact(version=1, status="draft"), tmp_path)
+    with pytest.raises(ValueError, match="not 'approved'"):
+        retire_artifact("lookup_member", 1, tmp_path)
 
 
 @pytest.fixture(scope="module")

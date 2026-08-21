@@ -54,5 +54,6 @@ def propose_drift_patch(
         return DriftDiagnosis(patched_artifact=None, reasoning=reasoning or "model returned an invalid locator")
 
     patched = artifact.model_copy(deep=True)
+    patched.status = "draft"
     patched.steps[failed_step_index].locator = new_locator
     return DriftDiagnosis(patched_artifact=patched, reasoning=reasoning)
