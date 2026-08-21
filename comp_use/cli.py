@@ -149,7 +149,10 @@ def _derive_success_checkpoint(surface: PlaywrightSurface, fallback_url: str) ->
     )
 
 
-def _run_discover(args) -> None:
+def run_discover(
+    goal: str, start_url: str, capability_name: str, confirm_risky: bool,
+    transport, interactive: bool = True,
+) -> Artifact | None:
     import time
     from playwright.sync_api import sync_playwright
 
@@ -158,7 +161,6 @@ def _run_discover(args) -> None:
     run_id = f"discover_{int(time.time())}"
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
     llm = _build_llm_client(settings)
-    transport = LocalSharedBrowserTransport()
     if settings.model_provider == "nvidia" and settings.nvidia_api_key:
         primary_label, primary_model = "NVIDIA NIM", settings.nvidia_model
         fallback_label, fallback_model, fallback_key = "OpenRouter", settings.openrouter_model, settings.openrouter_api_key
@@ -178,9 +180,9 @@ def _run_discover(args) -> None:
         escalation = EscalationController(evidence, transport, surface=surface)
         agent = DiscoveryAgent(
             surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps,
-            escalation=escalation, confirm_risky=args.confirm_risky,
+            escalation=escalation, confirm_risky=confirm_risky,
         )
-        trace = agent.run(goal=args.goal, start_url=args.start_url)
+        trace = agent.run(goal=goal, start_url=start_url)
         if not trace.succeeded:
             evidence.save_screenshot(safe_screenshot(surface), "final")
             browser.close()
@@ -190,24 +192,25 @@ def _run_discover(args) -> None:
 
     if not trace.succeeded:
         print(f"Discovery did not reach 'finish' within {settings.max_discovery_steps} steps.")
-        return
+        return None
 
     artifact = compile_artifact(
         trace,
-        capability_name=args.capability_name,
-        target={"app": "mock_bank", "base_url": args.start_url.split("/member")[0]},
+        capability_name=capability_name,
+        target={"app": "mock_bank", "base_url": start_url.split("/member")[0]},
         success_checkpoint=success_checkpoint,
         output_schema=[],
     )
     if not any(step.action == ActionType.NAVIGATE for step in artifact.steps):
         artifact.steps.insert(
             0,
-            Step(action=ActionType.NAVIGATE, target=args.start_url, risk_tier=RiskTier.SAFE),
+            Step(action=ActionType.NAVIGATE, target=start_url, risk_tier=RiskTier.SAFE),
         )
+    artifact.status = "draft"
     # Never silently overwrite a previous discovery run's artifact - bump the
     # version instead, so an existing (possibly still-working) artifact isn't
     # destroyed by re-running discovery for the same capability name.
-    artifact.version = next_artifact_version(args.capability_name, settings.artifacts_dir)
+    artifact.version = next_artifact_version(capability_name, settings.artifacts_dir)
     # A fresh discovery run has no way to observe outcome_patterns - they're
     # hand-authored from watching real business/recoverable outcomes, not
     # something the agent infers from a single successful trace. Without this,
@@ -215,7 +218,7 @@ def _run_discover(args) -> None:
     # previous version, since replay always loads the latest version.
     if artifact.version > 1:
         try:
-            prev_artifact = load_artifact(args.capability_name, settings.artifacts_dir, version=artifact.version - 1)
+            prev_artifact = load_artifact(capability_name, settings.artifacts_dir, version=artifact.version - 1)
             if prev_artifact.outcome_patterns:
                 artifact.outcome_patterns = prev_artifact.outcome_patterns
                 print(
@@ -225,8 +228,29 @@ def _run_discover(args) -> None:
                 )
         except (FileNotFoundError, ValueError):
             pass
+
+    if interactive:
+        try:
+            answer = input("Approve as new default? [y/N]: ").strip().lower()
+        except (EOFError, OSError):
+            # OSError covers pytest's captured-stdin guard (and any other
+            # environment where stdin isn't readable) - treat it the same as
+            # EOFError: no answer given, artifact stays a draft.
+            answer = ""
+        if answer == "y":
+            artifact.status = "approved"
+
     path = save_artifact(artifact, settings.artifacts_dir)
-    print(f"Saved artifact to {path}")
+    print(f"Saved artifact to {path} (status={artifact.status})")
+    return artifact
+
+
+def _run_discover(args) -> None:
+    transport = LocalSharedBrowserTransport()
+    run_discover(
+        goal=args.goal, start_url=args.start_url, capability_name=args.capability_name,
+        confirm_risky=args.confirm_risky, transport=transport, interactive=True,
+    )
 
 
 def _is_action_locator_failure(artifact: Artifact, result: ReplayResult) -> bool:
@@ -291,7 +315,10 @@ def _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifac
     result.proposed_patch_version = patched.version
 
 
-def _run_replay(args) -> None:
+def run_replay(
+    capability_name: str, params: dict, confirm_risky: bool,
+    diagnose_drift_on_failure: bool, transport,
+) -> ReplayResult:
     import time
     from playwright.sync_api import sync_playwright
 
@@ -299,17 +326,13 @@ def _run_replay(args) -> None:
     guardrail = Guardrail(settings)
     run_id = f"replay_{int(time.time())}"
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
-    transport = LocalSharedBrowserTransport()
 
-    artifact = load_artifact(args.capability_name, settings.artifacts_dir)
-    params = json.loads(args.params) if args.params else {}
+    artifact = load_artifact(capability_name, settings.artifacts_dir)
 
     validation_error = validate_required_params(artifact, params)
     if validation_error:
         evidence.log_event("validation_error", {"detail": validation_error})
-        result = ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=validation_error)
-        print(result.model_dump_json(indent=2))
-        return
+        return ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=validation_error)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=_headless())
@@ -317,13 +340,23 @@ def _run_replay(args) -> None:
         surface = PlaywrightSurface(page)
         escalation = EscalationController(evidence, transport, surface=surface)
         engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
-        result = engine.run(artifact, params, confirm_risky=args.confirm_risky)
+        result = engine.run(artifact, params, confirm_risky=confirm_risky)
         if result.outcome != OutcomeType.SUCCESS:
             evidence.save_screenshot(safe_screenshot(surface), "final")
-        if args.diagnose_drift_on_failure and result.outcome == OutcomeType.HARD_FAILURE:
+        if diagnose_drift_on_failure and result.outcome == OutcomeType.HARD_FAILURE:
             _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifact, result)
         browser.close()
 
+    return result
+
+
+def _run_replay(args) -> None:
+    transport = LocalSharedBrowserTransport()
+    params = json.loads(args.params) if args.params else {}
+    result = run_replay(
+        capability_name=args.capability_name, params=params, confirm_risky=args.confirm_risky,
+        diagnose_drift_on_failure=args.diagnose_drift_on_failure, transport=transport,
+    )
     print(result.model_dump_json(indent=2))
 
 

@@ -201,14 +201,16 @@ def test_run_discover_produces_a_reusable_checkpoint_end_to_end(tmp_path, live_s
             goal="Look up member 12345", start_url=f"{live_server}/member/search",
             capability_name="lookup_member_cli_integration_test", confirm_risky=False,
         )
-        cli._run_discover(discover_args)
+        with patch("builtins.input", return_value="y"):
+            cli._run_discover(discover_args)
 
         artifact = load_artifact("lookup_member_cli_integration_test", settings.artifacts_dir)
         assert artifact.success_checkpoint.type == CheckpointType.ELEMENT_VISIBLE
         assert artifact.success_checkpoint.locator.value["name"] == "Member Detail"
 
         # a second discover run for the same capability must not overwrite v1
-        with patch.object(cli, "OpenRouterClient", return_value=_scripted_lookup_member()):
+        with patch.object(cli, "OpenRouterClient", return_value=_scripted_lookup_member()), \
+             patch("builtins.input", return_value="y"):
             cli._run_discover(discover_args)
         assert (settings.artifacts_dir / "lookup_member_cli_integration_test" / "v1.json").exists()
         assert (settings.artifacts_dir / "lookup_member_cli_integration_test" / "v2.json").exists()
@@ -367,6 +369,77 @@ def test_run_replay_with_diagnose_drift_proposes_a_patched_version_not_active(tm
     assert len(transport.notified) == 1
     assert "drift" in transport.notified[0].reason.lower()
     assert "v2" in transport.notified[0].reason
+
+
+class FakeTransport(ControlTransport):
+    def notify(self, request):
+        pass
+
+    def wait_for_resume(self):
+        return "handled it"
+
+
+def _scripted_lookup_member():
+    return FakeLLMClient(scripted_actions=[
+        {"action": "type_text", "locator": {"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}},
+         "text": "12345", "value_source": {"type": "goal_parameter", "param_name": "member_id", "param_type": "string"}, "done": False},
+        {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}}, "done": False},
+        {"action": "finish", "done": True},
+    ])
+
+
+def test_run_discover_produces_a_draft_artifact_by_default(tmp_path, live_server, monkeypatch):
+    monkeypatch.setenv("COMP_USE_HEADLESS", "1")
+    settings = _settings_for(tmp_path, live_server)
+    transport = FakeTransport()  # existing fake from test_escalation.py-style tests; reuse comp_use.escalation.transport.ControlTransport
+    with patch.object(cli, "load_settings", return_value=settings), \
+         patch.object(cli, "OpenRouterClient", return_value=_scripted_lookup_member()), \
+         patch("builtins.input", side_effect=EOFError):  # non-interactive stdin: must NOT auto-approve
+        artifact = cli.run_discover(
+            goal="look up member 12345",
+            start_url=f"{live_server}/member/search",
+            capability_name="lookup_member_draft_test",
+            confirm_risky=False,
+            transport=transport,
+            interactive=True,
+        )
+    assert artifact.status == "draft"
+
+
+def test_run_discover_approves_when_the_operator_confirms_interactively(tmp_path, live_server, monkeypatch):
+    monkeypatch.setenv("COMP_USE_HEADLESS", "1")
+    settings = _settings_for(tmp_path, live_server)
+    transport = FakeTransport()
+    with patch.object(cli, "load_settings", return_value=settings), \
+         patch.object(cli, "OpenRouterClient", return_value=_scripted_lookup_member()), \
+         patch("builtins.input", return_value="y"):
+        artifact = cli.run_discover(
+            goal="look up member 12345",
+            start_url=f"{live_server}/member/search",
+            capability_name="lookup_member_approve_test",
+            confirm_risky=False,
+            transport=transport,
+            interactive=True,
+        )
+    assert artifact.status == "approved"
+
+
+def test_run_discover_non_interactive_never_prompts_and_stays_draft(tmp_path, live_server, monkeypatch):
+    monkeypatch.setenv("COMP_USE_HEADLESS", "1")
+    settings = _settings_for(tmp_path, live_server)
+    transport = FakeTransport()
+    with patch.object(cli, "load_settings", return_value=settings), \
+         patch.object(cli, "OpenRouterClient", return_value=_scripted_lookup_member()), \
+         patch("builtins.input", side_effect=AssertionError("must not prompt when interactive=False")):
+        artifact = cli.run_discover(
+            goal="look up member 12345",
+            start_url=f"{live_server}/member/search",
+            capability_name="lookup_member_api_test",
+            confirm_risky=False,
+            transport=transport,
+            interactive=False,
+        )
+    assert artifact.status == "draft"
 
 
 def test_build_llm_client_is_openrouter_only_without_an_nvidia_key():
