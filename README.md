@@ -6,13 +6,9 @@ and replays that artifact deterministically (no LLM in the decision loop) with t
 inputs/outputs, safety guardrails, and human-in-the-loop escalation.
 
 Built for the interface.ai take-home assignment
-(`Assignment A — Computer-Use Automation System.pdf`). Full design rationale is in
-[REPORT.md](REPORT.md) and the design spec:
-[docs/design/specs/computer-use-automation-design.md](docs/design/specs/computer-use-automation-design.md).
-
-> **Status: implementation complete.** Setup and demo commands below. Design rationale
-> is in [REPORT.md](REPORT.md) and the spec:
-> [docs/design/specs/computer-use-automation-design.md](docs/design/specs/computer-use-automation-design.md).
+(`Assignment A — Computer-Use Automation System.pdf`). **Status: implementation
+complete.** Setup and demo commands below; full design rationale is in
+[REPORT.md](REPORT.md) and the [design specs](docs/design/specs/).
 
 ## What this will do
 
@@ -32,9 +28,8 @@ Built for the interface.ai take-home assignment
    before it's sent to the LLM or persisted anywhere.
 7. **Optional:** on a replay failure, diagnose whether the target control just
    drifted (moved/renamed) rather than genuinely broke, and propose a patched
-   artifact version for human review — never auto-applied. See
-   [Drift-aware self-healing replay](REPORT.md#drift-aware-self-healing-replay---diagnose-drift-on-failure-optional)
-   in REPORT.md.
+   artifact version for human review — never auto-applied. See "Drift-aware
+   self-healing replay" in [REPORT.md](REPORT.md#determinism--error-handling).
 8. **Optional:** expose saved capabilities to an AI agent over a REST API —
    discover/invoke/approve/reject/retire, with the same human-escalation model
    signaled over HTTP instead of a terminal prompt. See
@@ -71,9 +66,9 @@ but are omitted here for readability; see the design spec for the full picture.)
 
 ## Production-scale design (not built — see [Cuts](docs/design/specs/computer-use-automation-design.md#11-cuts-explicit-for-reportmd-7))
 
-This repo implements a single-tenant, single-process version. At the scale described
-in the assignment (hundreds of tenants, ~20 apps each, many sharing the same vendor
-product), the same core components would be pulled out into services:
+This repo is single-tenant, single-process. At the assignment's described scale
+(hundreds of tenants, ~20 apps each, many sharing the same vendor product), the same
+components would become services:
 
 ```mermaid
 flowchart LR
@@ -96,68 +91,62 @@ flowchart LR
 
 Key differences from the built version:
 
-- **Discovery becomes rare, replay becomes the hot path.** Most traffic is capability
-  *invocation* (replay) triggered by the AI agent product through a capability API;
-  discovery only runs when a capability is first created or flagged as drifted.
-- **One base artifact per vendor app, with per-tenant overrides** — not one recording
-  per tenant. The artifact store holds a base artifact plus a sparse
-  `variant_overrides` diff per tenant (see spec §9), so onboarding a new tenant on an
-  already-known vendor product doesn't require re-recording from scratch.
-- **On-prem/local LLM for discovery** — since discovery is the only path that talks to
-  an LLM at all, and this is regulated financial data, discovery would run against a
-  locally-hosted model rather than a third-party API in production (see spec §8).
-- **A real operator console** replaces the local shared-browser handoff — a streamed
-  session (the `ServerStreamingTransport` designed in spec §7) so an operator can be
-  anywhere, not sitting at the machine running the browser.
-- **A drift detector** periodically samples replays per tenant/variant and flags an
-  artifact for re-discovery when its checkpoints stop resolving, rather than someone
-  finding out via a production failure.
+- **Discovery becomes rare, replay becomes the hot path** — most traffic is capability
+  *invocation*, triggered by the AI agent product; discovery only runs on a new or
+  drifted capability.
+- **One base artifact per vendor app, with per-tenant overrides**, not one recording
+  per tenant — a sparse `variant_overrides` diff (spec §9), so onboarding a tenant on
+  an already-known vendor product doesn't mean re-recording from scratch.
+- **On-prem/local LLM for discovery** — the only LLM-touching path, on regulated
+  financial data, so it'd run against a locally-hosted model in production (spec §8).
+- **A real operator console** — a streamed session (`ServerStreamingTransport`,
+  spec §7) instead of the local shared-browser handoff, so an operator can be anywhere.
+- **A drift detector** — samples replays per tenant/variant and flags stale checkpoints
+  before a production failure surfaces them.
 
 Per the assignment's own guidance, none of this is built — designing the abstractions
-so they *could* scale this way (the `Surface` interface, canonicalized locators,
-`ControlTransport`, the four-bucket outcome taxonomy) is the actual deliverable; the
-services/queues/pooling above are not.
+so they *could* scale this way (`Surface`, canonicalized locators, `ControlTransport`,
+the outcome taxonomy) is the deliverable; the services/queues/pooling above are not.
 
 ## Setup
 
 Use **Python 3.11 or 3.12** (Playwright 1.47's `greenlet` pin fails on 3.13). From the
-repo root:
+repo root, with `pip`:
 
 ```bash
 python -m venv .venv
-# Windows: .venv\Scripts\python -m pip install -r requirements.txt
-# Unix:    .venv/bin/python -m pip install -r requirements.txt
+# activate it: Windows: .venv\Scripts\activate    Unix: source .venv/bin/activate
 pip install -r requirements.txt && playwright install chromium
 copy .env.example .env   # Windows; on Unix: cp .env.example .env
 ```
 
+Or with [`uv`](https://docs.astral.sh/uv/):
+
+```bash
+uv venv
+uv pip install -r requirements.txt
+uv run playwright install chromium
+copy .env.example .env   # Windows; on Unix: cp .env.example .env
+```
+
+Every command later in this README (`python -m pytest`, `python -m comp_use.cli ...`,
+`python run_mock_app.py`) works the same way under `uv` — just prefix it with `uv run`
+(e.g. `uv run python -m pytest -v`), or activate `.venv` first
+(`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on Unix) and drop
+the prefix entirely.
+
 Edit `.env` and set `OPENROUTER_API_KEY` (required only for `discover`; replay never
-calls the LLM). The CLI loads `.env` via `python-dotenv`. `OPENROUTER_VISION_MODEL`
-has a working default and rarely needs changing — it's only used as a fallback when
-the accessibility tree alone isn't enough for the model to locate an element (see
-REPORT.md's Heterogeneity & multi-tenant section).
+calls the LLM). `OPENROUTER_VISION_MODEL` has a working default and rarely needs
+changing — it's a fallback for when the accessibility tree alone isn't enough for
+the model to locate an element (see REPORT.md's Heterogeneity section).
 
-**Optional second provider — NVIDIA NIM, to tolerate OpenRouter's free-tier rate
-limits.** Set `NVIDIA_API_KEY` (get one at [build.nvidia.com](https://build.nvidia.com))
-and every LLM call automatically falls back to NIM if the primary provider fails for
-any reason (rate limit, timeout, a malformed response). Leave it blank to disable the
-fallback entirely — behavior is then identical to a single provider, as before. See
-`FallbackLLMClient` in `comp_use/llm_client.py`.
-
-**`MODEL_PROVIDER`** (`openrouter` default, or `nvidia`) picks which provider is tried
-*first*; the other is still used as the automatic fallback above if its key is
-configured. Set `MODEL_PROVIDER=nvidia` to make NIM primary and OpenRouter the
-fallback — useful once OpenRouter's free tier is rate-limited for the session. If the
-chosen primary has no key configured, `_build_llm_client` falls back to whichever
-provider does have a key rather than build a client guaranteed to fail immediately.
-
-> **Not yet live-verified against a real NVIDIA key** (none was available while
-> building this) — `NVIDIA_MODEL`/`NVIDIA_VISION_MODEL`'s defaults are best-effort
-> picks from NIM's published model catalog naming, not confirmed working the way
-> `OPENROUTER_VISION_MODEL`'s default was (an earlier candidate there 404'd and had
-> to be corrected live — the same could turn out to be true here). If discovery logs
-> `[discover] primary provider failed (...); falling back...` followed by a second
-> failure, check NIM's current catalog for valid model IDs and update `.env`.
+**Optional second provider.** Set `NVIDIA_API_KEY` ([build.nvidia.com](https://build.nvidia.com))
+to add NVIDIA NIM as an automatic fallback on any LLM-call failure (rate limit,
+timeout, malformed response). Leave it blank to disable — behavior is then identical
+to OpenRouter-only. `MODEL_PROVIDER` (`openrouter` default, or `nvidia`) picks which
+provider is tried first; if the chosen primary has no key, it falls back to whichever
+provider does rather than build a client guaranteed to fail. Live-verified both
+directions — see `FallbackLLMClient` in `comp_use/llm_client.py`.
 
 Run tests:
 
@@ -170,17 +159,14 @@ On Windows with the project venv: `.venv\Scripts\python -m pytest -v`
 Optional: `COMP_USE_HEADLESS=1` (or PowerShell `$env:COMP_USE_HEADLESS="1"`) launches
 Chromium headless instead of a visible window.
 
-**Running without live services.** The test suite needs no API key and no manually-started
-mock app — it starts its own throwaway Flask instance per test (via a `live_server`
-fixture) and uses `FakeLLMClient` (a scripted, deterministic stand-in) everywhere a real
-LLM call would otherwise happen, so `python -m pytest -v` is fully self-contained.
-Outside of tests, `replay` never calls an LLM at all — no key needed, ever, for that
-path — and the checked-in example artifacts (`artifacts/lookup_member/v1.json` and
-friends) mean you can run the Demo path's replay commands below with nothing but the
-mock app running, skipping `discover` entirely. Only `discover` (and the optional
-`--diagnose-drift-on-failure` drift diagnosis) needs a live `OPENROUTER_API_KEY`/
-`NVIDIA_API_KEY` and a live mock app — that's the one path the assignment requires be
-genuinely real (§4: "the discovery run has to be real").
+**Running without live services.** `python -m pytest -v` is fully self-contained — no
+API key, no manually-started mock app (each test spins up its own throwaway Flask
+instance and uses `FakeLLMClient`, a scripted stand-in, wherever a real LLM call would
+happen). `replay` also never calls an LLM, so the checked-in example artifacts let you
+run the Demo path's replay commands below with only the mock app running, skipping
+`discover` entirely. Only `discover` (and `--diagnose-drift-on-failure`) needs a live
+key and a live mock app — the one path the assignment requires be genuinely real
+(§4: "the discovery run has to be real").
 
 ## Demo path
 
@@ -252,12 +238,11 @@ python -m comp_use.cli replay --capability-name transfer_funds \
 ## Capability server (optional, agent-facing API)
 
 Beyond the CLI: a REST API that lets an AI agent discover and invoke saved
-capabilities by name with typed args — the assignment's §8 "agent-facing capability
-interface" stretch goal — plus a `draft`/`approved`/`rejected` status on every
-artifact version so an unreviewed one (a fresh `discover`, or a proposed drift patch)
-can never silently become what unattended `invoke` picks up. Full design and the
-reasoning behind what's deliberately *not* built (auth, hard delete) is in
-[docs/design/specs/agent-facing-capability-server-design.md](docs/design/specs/agent-facing-capability-server-design.md).
+capabilities by name with typed args (the assignment's §8 "agent-facing capability
+interface" stretch goal), plus a `draft`/`approved`/`rejected` status so an unreviewed
+version can never silently become what unattended `invoke` picks up. Full design,
+including what's deliberately *not* built (auth, hard delete):
+[agent-facing-capability-server-design.md](docs/design/specs/agent-facing-capability-server-design.md).
 
 **Terminal 1 — mock bank app** (as above): `python run_mock_app.py`
 
@@ -312,11 +297,10 @@ signaling instead of blocking on a terminal `input()`) and the run proceeds to
 `"done"` with its real outputs, exactly like the CLI's escalation path.
 
 **No auth exists yet** — anyone who can reach the server can invoke/discover/approve.
-This is a stated, deliberate limitation (see the spec's §7 and REPORT.md's Safety
-section) — in particular, there is **no hard-delete endpoint** at all in this pass,
-specifically because an unauthenticated destructive endpoint on a system storing
-regulated financial artifacts is a materially different risk than a missing feature.
-The deferred design (per-API-key `admin`/`operator` roles) is documented, not built.
+Deliberate, stated (spec §7, REPORT.md Safety) — and there's **no hard-delete
+endpoint** at all, since an unauthenticated destructive endpoint on regulated
+financial artifacts is a materially different risk than a missing feature. The
+deferred design (per-API-key `admin`/`operator` roles) is documented, not built.
 
 ## Exercising every outcome (full command reference)
 
@@ -487,3 +471,10 @@ python -m pytest -v
 run_mock_app.py     start the mock bank app on :5000
 REPORT.md           design write-up (architecture, schema, determinism, etc.)
 ```
+
+## Contact
+
+- Email: vijayram.enag2002@gmail.com
+- Portfolio: [vijay-ram.vercel.app](https://vijay-ram.vercel.app)
+- GitHub: [@VjayRam](https://github.com/VjayRam)
+- LinkedIn: [vijay-ram-enaganti](https://www.linkedin.com/in/vijay-ram-enaganti)
