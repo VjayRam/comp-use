@@ -360,6 +360,20 @@ def _run_replay(args) -> None:
     print(result.model_dump_json(indent=2))
 
 
+def _run_approve(args) -> None:
+    settings = load_settings()
+    artifact = approve_artifact(args.capability_name, args.version, settings.artifacts_dir)
+    print(f"Approved {args.capability_name} v{artifact.version}")
+
+
+def _run_serve(args) -> None:
+    import uvicorn
+    from comp_use.server.app import create_app
+
+    app = create_app()
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="comp-use")
@@ -383,6 +397,16 @@ def main() -> None:
         "Never applied automatically; this run's own outcome is unaffected.",
     )
     replay_parser.set_defaults(func=_run_replay)
+
+    approve_parser = subparsers.add_parser("approve")
+    approve_parser.add_argument("--capability-name", required=True)
+    approve_parser.add_argument("--version", type=int, required=True)
+    approve_parser.set_defaults(func=_run_approve)
+
+    serve_parser = subparsers.add_parser("serve")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.set_defaults(func=_run_serve)
 
     args = parser.parse_args()
     args.func(args)

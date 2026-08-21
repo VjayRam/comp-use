@@ -477,3 +477,32 @@ def test_build_llm_client_nvidia_provider_with_no_nvidia_key_still_falls_back_to
     settings = Settings(model_provider="nvidia", nvidia_api_key="", openrouter_api_key="or-test-key")
     client = _build_llm_client(settings)
     assert isinstance(client, OpenRouterClient)
+
+
+def test_main_dispatches_approve_subcommand_with_parsed_args(tmp_path, monkeypatch):
+    save_artifact(_artifact(version=1, status="draft"), tmp_path)
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(artifacts_dir=tmp_path, evidence_dir=tmp_path / "evidence"))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["comp-use", "approve", "--capability-name", "lookup_member", "--version", "1"],
+    )
+
+    cli.main()
+
+    reloaded = load_artifact("lookup_member", tmp_path, version=1)
+    assert reloaded.status == "approved"
+
+
+def test_run_serve_launches_uvicorn_with_the_app(monkeypatch):
+    calls = {}
+
+    def fake_run(app, host, port):
+        calls["host"] = host
+        calls["port"] = port
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    args = argparse.Namespace(host="0.0.0.0", port=9000)
+    cli._run_serve(args)
+
+    assert calls == {"host": "0.0.0.0", "port": 9000}
