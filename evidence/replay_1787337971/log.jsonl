@@ -1,0 +1,21 @@
+{"event_type": "replay_step", "data": {"index": 0, "action": "navigate"}}
+{"event_type": "replay_step", "data": {"index": 1, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 2, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 3, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 4, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 5, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 6, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 7, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 8, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 9, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 10, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 11, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 12, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 13, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 14, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 15, "action": "click"}}
+{"event_type": "escalation_requested", "data": {"run_id": "replay_1787337971", "capability_or_goal": "transfer_funds", "current_step": 16, "screenshot_path": "evidence\\replay_1787337971\\escalation_step16.png", "reason": "step 16 is risk_tier=risky and confirm_risky is False"}}
+{"event_type": "escalation_resumed", "data": {"run_id": "replay_1787337971"}}
+{"event_type": "escalation_human_action", "data": {"run_id": "replay_1787337971", "note": "confirmed transfer manually via API demo", "tree_diff": "", "before_screenshot_path": "evidence\\replay_1787337971\\escalation_before_step16.png", "after_screenshot_path": "evidence\\replay_1787337971\\escalation_after_step16.png"}}
+{"event_type": "replay_step", "data": {"index": 16, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 17, "action": "extract"}}

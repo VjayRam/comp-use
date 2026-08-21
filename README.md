@@ -35,6 +35,10 @@ Built for the interface.ai take-home assignment
    artifact version for human review — never auto-applied. See
    [Drift-aware self-healing replay](REPORT.md#drift-aware-self-healing-replay---diagnose-drift-on-failure-optional)
    in REPORT.md.
+8. **Optional:** expose saved capabilities to an AI agent over a REST API —
+   discover/invoke/approve/reject/retire, with the same human-escalation model
+   signaled over HTTP instead of a terminal prompt. See
+   [Capability server](#capability-server-optional-agent-facing-api) below.
 
 ## System design
 
@@ -232,6 +236,75 @@ python -m comp_use.cli replay --capability-name transfer_funds \
   --params "{\"member_id\": \"12345\", \"from_account\": \"ACC-001\", \"to_account\": \"ACC-002\", \"amount\": \"25\"}" \
   --confirm-risky --diagnose-drift-on-failure
 ```
+
+## Capability server (optional, agent-facing API)
+
+Beyond the CLI: a REST API that lets an AI agent discover and invoke saved
+capabilities by name with typed args — the assignment's §8 "agent-facing capability
+interface" stretch goal — plus a `draft`/`approved`/`rejected` status on every
+artifact version so an unreviewed one (a fresh `discover`, or a proposed drift patch)
+can never silently become what unattended `invoke` picks up. Full design and the
+reasoning behind what's deliberately *not* built (auth, hard delete) is in
+[docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md](docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md).
+
+**Terminal 1 — mock bank app** (as above): `python run_mock_app.py`
+
+**Terminal 2 — capability server:**
+
+```bash
+COMP_USE_HEADLESS=1 python -m comp_use.cli serve --port 8000
+```
+
+**Terminal 3 — drive it over HTTP.** `discover`/`invoke` return immediately with a
+`run_id`; poll `GET /runs/{run_id}` for status (`running` → `escalated` → `done`, or
+straight to `done`). This mirrors the CLI's `discover`/`replay`, just over HTTP with
+the browser running on the server's machine (headed there, not on the caller's):
+
+```bash
+# 1. Discover a new capability - lands as a DRAFT, not immediately usable
+curl -s -X POST http://localhost:8000/capabilities/lookup_member_api_demo/discover \
+  -H "Content-Type: application/json" \
+  -d '{"goal": "look up member 12345 and read their current savings balance", "start_url": "http://localhost:5000/member/search"}'
+# -> {"run_id": "discover_1787337829532", "status": "running"}
+
+curl -s http://localhost:8000/runs/discover_1787337829532   # poll until "done"
+# -> {"status": "done", "discover_result": {"succeeded": true, "artifact_version": 1}, ...}
+
+# 2. A draft isn't live yet - the catalog 404s until it's approved
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/capabilities/lookup_member_api_demo
+# -> 404
+
+curl -s -X POST http://localhost:8000/capabilities/lookup_member_api_demo/versions/1/approve
+
+# 3. Now invoke it like any AI agent would - typed params in, typed outputs out
+curl -s -X POST http://localhost:8000/capabilities/lookup_member_api_demo/invoke \
+  -H "Content-Type: application/json" -d '{"params": {"member_id": "12345"}}'
+# -> {"run_id": "invoke_1787337949337", "status": "running"}
+
+curl -s http://localhost:8000/runs/invoke_1787337949337   # poll until "done"
+# -> {"status": "done", "result": {"outcome": "success", "outputs": {"savings_balance": "8200.50"}}}
+```
+
+**Escalation over HTTP** (a risky step, e.g. `transfer_funds`, always pauses — the
+API never passes `--confirm-risky`): `POST .../invoke` returns a `run_id` whose
+status becomes `"escalated"`, carrying a `reason`, `current_step`, and a
+`screenshot_url` served from `/evidence/...`. A human reviews it, then:
+
+```bash
+curl -s -X POST http://localhost:8000/runs/<run_id>/resume \
+  -H "Content-Type: application/json" -d '{"note": "confirmed the transfer manually"}'
+```
+
+...which unblocks the same background thread mid-replay (via `QueueTransport`,
+signaling instead of blocking on a terminal `input()`) and the run proceeds to
+`"done"` with its real outputs, exactly like the CLI's escalation path.
+
+**No auth exists yet** — anyone who can reach the server can invoke/discover/approve.
+This is a stated, deliberate limitation (see the spec's §7 and REPORT.md's Safety
+section) — in particular, there is **no hard-delete endpoint** at all in this pass,
+specifically because an unauthenticated destructive endpoint on a system storing
+regulated financial artifacts is a materially different risk than a missing feature.
+The deferred design (per-API-key `admin`/`operator` roles) is documented, not built.
 
 ## Exercising every outcome (full command reference)
 

@@ -29,6 +29,18 @@ silently produce false positives against a different app that hides matching tex
 via CSS/JS instead of omitting it from the response entirely — a real constraint on
 how portable `TEXT_PRESENT` checkpoints are, worth stating rather than assuming away.
 
+**Second entrypoint: the capability server (optional, §8).** `comp_use/server/app.py`
+is a FastAPI app that wraps the exact same `run_discover`/`run_replay` core functions
+(extracted from `cli.py`) the CLI calls — `ReplayEngine`, `DiscoveryAgent`, `Guardrail`,
+and `EscalationController` are untouched by it. The one new seam is escalation
+transport: `QueueTransport` (`comp_use/escalation/transport.py`) blocks on a
+thread-safe queue instead of `input()`, so `POST /capabilities/{name}/invoke` can
+return immediately with a `run_id` while `RunManager` (`comp_use/server/run_manager.py`)
+runs the real Playwright browser on a background thread, and `POST /runs/{id}/resume`
+unblocks it from a different (HTTP) thread the same way a human's `resume` keystroke
+does locally. Full design, including what's deliberately deferred (auth, hard delete):
+[docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md](docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md).
+
 **The mock app is deliberately hostile, per §4's "intentionally hostile surface"
 option.** `mock_app/templates/` has no test IDs anywhere; every page nests a layout
 table inside a content table plus an unrelated decoy "Recent Activity" table and a
@@ -91,6 +103,13 @@ Typed Pydantic models in `comp_use/schemas.py`. A capability is versioned JSON a
   generated confirmation number). Re-running `discover` for an existing
   capability name bumps the artifact version (`next_artifact_version()`) rather
   than overwriting `v1.json` in place.
+- `status: "draft" | "approved" | "rejected"` (default `"approved"`, so all
+  already-committed artifacts parse unchanged). Closes a real gap surfaced building
+  the optional capability server (see Architecture, Safety): an unreviewed version —
+  freshly discovered, or a proposed drift patch — must never silently become what
+  unattended replay's "pick the latest version" default loads. Only `approve`/
+  `reject`/`retire` (CLI or the capability server's endpoints) change it; nothing
+  auto-approves except a human explicitly confirming the CLI's interactive prompt.
 
 ## Determinism & error handling
 

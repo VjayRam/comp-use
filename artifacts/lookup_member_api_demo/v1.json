@@ -1,0 +1,108 @@
+{
+  "capability_name": "lookup_member_api_demo",
+  "version": 1,
+  "target": {
+    "app": "mock_bank",
+    "base_url": "http://localhost:5000"
+  },
+  "description": "look up member 12345 and read their current savings balance",
+  "input_schema": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "required": true,
+      "description": "",
+      "example": null
+    }
+  ],
+  "output_schema": [
+    {
+      "name": "savings_balance",
+      "type": "string",
+      "description": ""
+    }
+  ],
+  "steps": [
+    {
+      "action": "navigate",
+      "target": "http://localhost:5000/member/search",
+      "locator": null,
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "type_text",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "Member ID"
+        },
+        "fallback": null
+      },
+      "value_source": {
+        "type": "goal_parameter",
+        "param_name": "member_id",
+        "param_type": "string",
+        "reason": null
+      },
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "button",
+          "name": "Search"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "extract",
+      "target": null,
+      "locator": {
+        "strategy": "css",
+        "value": {
+          "css": "td:text-is('8200.50')"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": "savings_balance",
+      "risk_tier": "safe",
+      "checkpoint": null
+    }
+  ],
+  "success_checkpoint": {
+    "type": "element_visible",
+    "locator": {
+      "strategy": "role",
+      "value": {
+        "role": "heading",
+        "name": "Member Detail"
+      },
+      "fallback": null
+    },
+    "text": null,
+    "url_pattern": null
+  },
+  "outcome_patterns": [],
+  "status": "approved",
+  "created_from_run_id": "discover_1787337829"
+}
