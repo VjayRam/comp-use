@@ -1,8 +1,11 @@
 import builtins
+import threading
+import time
 
 import pytest
 
-from comp_use.escalation.transport import LocalSharedBrowserTransport
+from comp_use.escalation.transport import LocalSharedBrowserTransport, QueueTransport
+from comp_use.schemas import InterventionRequest
 
 
 def test_wait_for_resume_raises_clear_error_on_closed_stdin(monkeypatch):
@@ -44,3 +47,31 @@ def test_wait_for_resume_returns_the_typed_note_normally(monkeypatch):
     note = transport.wait_for_resume()
 
     assert note == "reviewed and approved"
+
+
+def test_queue_transport_notify_invokes_the_callback_with_the_exact_request():
+    received = []
+    transport = QueueTransport(on_notify=received.append)
+    request = InterventionRequest(run_id="r1", capability_or_goal="lookup_member", reason="stuck")
+
+    transport.notify(request)
+
+    assert received == [request]
+
+
+def test_queue_transport_wait_for_resume_blocks_until_resume_is_called():
+    transport = QueueTransport(on_notify=lambda r: None)
+    result = {}
+
+    def waiter():
+        result["note"] = transport.wait_for_resume()
+
+    waiter_thread = threading.Thread(target=waiter)
+    waiter_thread.start()
+    time.sleep(0.05)
+    assert "note" not in result  # still blocked - nobody has called resume() yet
+
+    transport.resume("handled it via the API")
+    waiter_thread.join(timeout=1)
+
+    assert result["note"] == "handled it via the API"
