@@ -104,6 +104,7 @@ class Artifact(BaseModel):
     steps: list[Step]
     success_checkpoint: Checkpoint
     outcome_patterns: list[OutcomePattern] = Field(default_factory=list)
+    status: Literal["draft", "approved", "rejected"] = "approved"
     created_from_run_id: str
 
 

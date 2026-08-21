@@ -68,3 +68,40 @@ def test_replay_result_valid_outcome():
     result = ReplayResult(outcome=OutcomeType.SUCCESS, outputs={"sub_account_id": "9"})
     assert result.outcome == OutcomeType.SUCCESS
     assert result.outputs["sub_account_id"] == "9"
+
+
+def test_artifact_status_defaults_to_approved():
+    artifact = Artifact(
+        capability_name="lookup_member",
+        target={"app": "mock_bank", "base_url": "http://localhost:5000"},
+        steps=[],
+        success_checkpoint=Checkpoint(type=CheckpointType.URL_MATCHES, url_pattern="member"),
+        created_from_run_id="run_1",
+    )
+    assert artifact.status == "approved"
+
+
+def test_artifact_status_rejects_invalid_value():
+    with pytest.raises(ValidationError):
+        Artifact(
+            capability_name="lookup_member",
+            target={"app": "mock_bank", "base_url": "http://localhost:5000"},
+            steps=[],
+            success_checkpoint=Checkpoint(type=CheckpointType.URL_MATCHES, url_pattern="member"),
+            created_from_run_id="run_1",
+            status="not_a_real_status",
+        )
+
+
+def test_old_artifact_json_without_status_field_parses_as_approved():
+    # Simulates the 7 already-committed artifact files, none of which have a
+    # "status" key - they must keep loading exactly as before.
+    old_json = Artifact(
+        capability_name="lookup_member",
+        target={"app": "mock_bank", "base_url": "http://localhost:5000"},
+        steps=[],
+        success_checkpoint=Checkpoint(type=CheckpointType.URL_MATCHES, url_pattern="member"),
+        created_from_run_id="run_1",
+    ).model_dump_json(exclude={"status"})
+    restored = Artifact.model_validate_json(old_json)
+    assert restored.status == "approved"
