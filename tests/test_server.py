@@ -237,3 +237,54 @@ def test_get_run_404s_for_unknown_run_id(tmp_path):
     client, _ = _client(tmp_path)
     response = client.get("/runs/does_not_exist")
     assert response.status_code == 404
+
+
+def test_approve_endpoint_flips_draft_to_approved_and_is_visible_in_catalog(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="draft"), settings.artifacts_dir)
+
+    response = client.post("/capabilities/lookup_member/versions/1/approve")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "approved"
+    assert client.get("/capabilities/lookup_member").status_code == 200
+
+
+def test_approve_endpoint_409s_on_a_version_that_is_not_a_draft(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="approved"), settings.artifacts_dir)
+
+    response = client.post("/capabilities/lookup_member/versions/1/approve")
+
+    assert response.status_code == 409
+
+
+def test_approve_endpoint_404s_on_an_unknown_version(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="draft"), settings.artifacts_dir)
+
+    response = client.post("/capabilities/lookup_member/versions/99/approve")
+
+    assert response.status_code == 404
+
+
+def test_reject_endpoint_flips_draft_to_rejected(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="draft"), settings.artifacts_dir)
+
+    response = client.post("/capabilities/lookup_member/versions/1/reject")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+
+
+def test_retire_endpoint_flips_approved_to_rejected(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="approved"), settings.artifacts_dir)
+
+    response = client.post("/capabilities/lookup_member/versions/1/retire")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+    # retired means no longer picked up as the default
+    assert client.get("/capabilities/lookup_member").status_code == 404

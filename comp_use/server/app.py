@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 import re
 
-from comp_use.cli import load_artifact, run_discover, run_replay
+from comp_use.cli import approve_artifact, load_artifact, reject_artifact, retire_artifact, run_discover, run_replay
 from comp_use.config import Settings, load_settings
 from comp_use.replay.engine import validate_required_params
 from comp_use.server.run_manager import RunManager
@@ -162,5 +162,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail=f"unknown run_id '{run_id}'")
             raise HTTPException(status_code=409, detail=f"run is '{record.status}', not 'escalated'")
         return {"status": "running"}
+
+    @app.post("/capabilities/{name}/versions/{version}/approve")
+    def approve(name: str, version: int):
+        _validate_capability_name(name)
+        try:
+            artifact = approve_artifact(name, version, settings.artifacts_dir)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return artifact.model_dump(mode="json")
+
+    @app.post("/capabilities/{name}/versions/{version}/reject")
+    def reject(name: str, version: int):
+        _validate_capability_name(name)
+        try:
+            artifact = reject_artifact(name, version, settings.artifacts_dir)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return artifact.model_dump(mode="json")
+
+    @app.post("/capabilities/{name}/versions/{version}/retire")
+    def retire(name: str, version: int):
+        _validate_capability_name(name)
+        try:
+            artifact = retire_artifact(name, version, settings.artifacts_dir)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return artifact.model_dump(mode="json")
 
     return app
