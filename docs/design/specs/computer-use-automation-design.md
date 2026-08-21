@@ -1,7 +1,7 @@
 # Computer-Use Automation System — Design Spec
 
 Date: 2026-08-17
-Status: Approved for implementation planning
+Status: Implemented (see REPORT.md for the as-built write-up)
 
 ## 1. Context & Goal
 

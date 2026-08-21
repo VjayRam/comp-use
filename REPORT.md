@@ -1,7 +1,7 @@
 # REPORT — Computer-Use Automation System
 
 This report maps the implemented system to
-[docs/superpowers/specs/2026-08-17-computer-use-automation-design.md](docs/superpowers/specs/2026-08-17-computer-use-automation-design.md).
+[docs/design/specs/computer-use-automation-design.md](docs/design/specs/computer-use-automation-design.md).
 Concrete files are named under each heading.
 
 ## Architecture
@@ -28,6 +28,13 @@ either renders or doesn't server-side, with no client-side JS involved. It would
 silently produce false positives against a different app that hides matching text
 via CSS/JS instead of omitting it from the response entirely — a real constraint on
 how portable `TEXT_PRESENT` checkpoints are, worth stating rather than assuming away.
+**Also worth stating:** the mock app's own ID counters (`next_sub_account_id`,
+`next_confirmation_number`, `next_txn_id`, in `mock_app/data.py`) are module-level
+globals shared across every `create_app()` call in a process, not scoped per app
+instance. Not causing any test flakiness today (nothing hardcodes an exact counter
+value), but a latent footgun if a future test ever creates two mock-app instances
+in the same process and expects independent ID sequences — noted rather than left
+for someone to rediscover the hard way.
 
 **Second entrypoint: the capability server (optional, §8).** `comp_use/server/app.py`
 is a FastAPI app that wraps the exact same `run_discover`/`run_replay` core functions
@@ -39,7 +46,7 @@ return immediately with a `run_id` while `RunManager` (`comp_use/server/run_mana
 runs the real Playwright browser on a background thread, and `POST /runs/{id}/resume`
 unblocks it from a different (HTTP) thread the same way a human's `resume` keystroke
 does locally. Full design, including what's deliberately deferred (auth, hard delete):
-[docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md](docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md).
+[docs/design/specs/agent-facing-capability-server-design.md](docs/design/specs/agent-facing-capability-server-design.md).
 
 **The mock app is deliberately hostile, per §4's "intentionally hostile surface"
 option.** `mock_app/templates/` has no test IDs anywhere; every page nests a layout
@@ -135,7 +142,16 @@ attempt the same actions in the same order. Outcomes (`OutcomeType` in
    inside the discovery loop as built, so every `outcome_patterns` entry in
    the committed artifacts (`no_such_member`, `insufficient_funds`) was
    hand-authored after discovery, not discovered automatically. Stated here
-   rather than left implicit.
+   rather than left implicit. **What is fixed:** re-discovering an existing
+   capability used to silently drop those hand-authored patterns the moment a
+   new version was saved (replay always loads the latest version, and a fresh
+   discovery run had nothing to put in the field) — a real regression hit live
+   while running this project's own README run sheet. `_run_discover` now
+   carries the previous version's `outcome_patterns` forward onto the newly
+   discovered version whenever the previous version has any, so re-running
+   `discover` no longer requires re-authoring them by hand. The *authoring*
+   limitation above is unchanged; only the *durability-across-re-discovery*
+   half of the problem is solved.
 4. **`recoverable`** — same `outcome_patterns` mechanism, for a transient
    condition that isn't a permanent business state (unlike `business_outcome`)
    and isn't an automation bug (unlike `hard_failure`) — a dismiss-and-retry
@@ -528,7 +544,7 @@ allows this ("a full real-time co-browsing operator console is out of scope") �
   feature — a materially different risk than the other stated cuts. It's designed (a
   per-API-key `admin`/`operator` role, `DELETE` checked against `admin` specifically) but
   deliberately not built until that auth layer exists — see
-  `docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md` §7.
+  `docs/design/specs/agent-facing-capability-server-design.md` §7.
 
 Hosted OpenRouter still means redacted UI text leaves the machine on **discover**.
 Point `LLMClient` at a local model for production locality; `FakeLLMClient` is the
@@ -661,6 +677,19 @@ isn't spelled out again elsewhere.
 
 ## Cuts
 
+**Which §8 optional stretch goals, and why not more.** §8 says to pick "at most one
+or two — depth over breadth." Two were built, both grown from primitives that
+already existed rather than new subsystems: **Assisted fallback** (drift-aware
+self-healing replay, above — a bounded, single-step, human-gated LLM recovery on
+replay failure) and **Agent-facing capability interface** (the capability server —
+discover/invoke by name over HTTP, plus the narrow "gate unattended replay on an
+approval state" slice of Confidence & approval, taken on specifically because
+exposing `discover` over HTTP without it would have left a real, unreviewed-artifact
+safety gap open, not for breadth's own sake — see the capability server spec's own
+§1). Deliberately not attempted: code generation, canonicalization/cross-tenant
+reuse, multi-run stability — each would have meant building a third, unrelated
+subsystem rather than deepening the two above.
+
 Unchanged from spec §11:
 
 - `ServerStreamingTransport` — designed, not built.
@@ -678,7 +707,20 @@ Unchanged from spec §11:
   Heterogeneity & multi-tenant.
 - Auth on the capability server (see below), and hard delete of an artifact version —
   designed, deliberately not built until the auth layer exists (see Safety above and
-  `docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md` §7).
+  `docs/design/specs/agent-facing-capability-server-design.md` §7).
+
+**What we'd build next, in order.** (1) The capability server's per-API-key
+`admin`/`operator` auth (already designed, see above) — the highest-leverage single
+addition, since it's the one thing standing between the current design and safely
+turning on `discover`/`approve` for more than a single trusted operator. (2)
+`variant_overrides` on `Artifact` plus one real second tenant executing against it —
+the concrete proof the Heterogeneity design actually holds, not just describes. (3)
+Structured logging (the system uses `print()`/JSONL today, not a queryable log
+pipeline) — matters more once there's more than one operator watching a run. (4)
+`ServerStreamingTransport` — lets a human resolve an escalation without being at the
+same machine the browser is running on, which the capability server's HTTP surface
+makes newly relevant (today `resume` unblocks the run over HTTP, but *seeing and
+controlling* the browser itself still requires local access).
 
 ## Evidence walkthrough (captured 2026-08-18, against the hardened mock app)
 

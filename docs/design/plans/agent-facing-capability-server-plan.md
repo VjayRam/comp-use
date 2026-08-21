@@ -1,6 +1,12 @@
 # Agent-Facing Capability Server Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: complete.** All 10 tasks below were implemented test-first (write the
+> failing test, watch it fail, implement, watch it pass, commit), individually
+> reviewed, and re-verified together in a final whole-branch review before merge —
+> including one real bug (a concurrent-`discover` version-clobbering race) the final
+> review caught and a follow-up fix closed. Kept as a record of how the server was
+> designed and built. See REPORT.md for the as-built write-up and the
+> [task index](#task-index) below to jump to any task.
 
 **Goal:** Add a REST API over the existing `discover`/`invoke` operations (the assignment's §8 "agent-facing capability interface" stretch goal), plus a minimal `draft`/`approved`/`rejected` artifact status that closes a real gap: an unreviewed artifact version must never silently become what unattended replay picks up.
 
@@ -8,7 +14,7 @@
 
 **Tech Stack:** FastAPI + uvicorn (new deps), Python `threading`/`queue` (stdlib), existing Pydantic schemas, existing pytest conventions (fakes over real browsers in unit tests; one live pass for `/evidence/`).
 
-**Spec:** `docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md`
+**Spec:** `docs/design/specs/agent-facing-capability-server-design.md`
 
 ## Global Constraints
 
@@ -18,6 +24,21 @@
 - Existing tests in `tests/test_cli.py`, `tests/test_drift.py`, `tests/test_transport.py` must keep passing unmodified in their assertions about current CLI behavior (only new tests are added, alongside minimal fixture adjustments if a test's own fixtures now need `status` set explicitly).
 - New server-layer unit tests use fakes (no real Chromium, no real LLM) — consistent with `test_replay_engine.py`/`test_discovery_agent.py`. Exactly one live, real end-to-end pass (Task 10) produces new `/evidence/`.
 - Every route that takes a `capability_name`/`{name}` path parameter validates it against `^[a-z0-9_]+$` (`_validate_capability_name`, added in Task 6, called from every route added in Tasks 6-8) before it's used to build any filesystem path — closes a path-traversal gap (e.g. `name=".."`) found during design review, on a system that stores regulated financial artifacts on disk.
+
+## Task Index
+
+| # | Task | What it builds |
+|---|---|---|
+| 1 | [`Artifact.status` field](#task-1-artifactstatus-field) | Adds `draft`/`approved`/`rejected` to the artifact schema |
+| 2 | [Artifact lifecycle helpers](#task-2-artifact-lifecycle-helpers--approved-only-load_artifact-approve_artifact-reject_artifact-retire_artifact) | `load_artifact` becomes approved-only by default; `approve_artifact`/`reject_artifact`/`retire_artifact` |
+| 3 | [`QueueTransport`](#task-3-queuetransport) | Signals an escalation's resume over a thread-safe queue instead of a terminal prompt |
+| 4 | [Extract `run_discover`/`run_replay` cores](#task-4-extract-run_discoverrun_replay-cores--cli-approval-prompt) | Callable, transport-injectable core functions + a CLI approval prompt |
+| 5 | [`RunManager`](#task-5-runmanager) | Background-thread run tracking (`running`/`escalated`/`done`/`error`) |
+| 6 | [FastAPI skeleton + catalog endpoints](#task-6-fastapi-app-skeleton--read-only-catalog-endpoints) | Read-only capability catalog + a path-traversal guard |
+| 7 | [`invoke`/`discover`/`resume` endpoints](#task-7-invokediscoverresume-endpoints) | The routes that actually run a capability or start a discovery |
+| 8 | [`approve`/`reject`/`retire` endpoints](#task-8-approverejectretire-endpoints) | Version lifecycle management over HTTP |
+| 9 | [CLI subcommands](#task-9-comp-use-serve-and-comp-use-approve-cli-subcommands) | `comp-use serve` and `comp-use approve` |
+| 10 | [Live evidence + docs](#task-10-live-evidence--readmereport-updates) | A real discover → approve → invoke and escalate → resume cycle over HTTP |
 
 ---
 
@@ -1649,7 +1670,7 @@ git commit -m "feat: comp-use serve and comp-use approve CLI subcommands"
 
 ### Task 10: Live evidence + README/REPORT updates
 
-This task is **not subagent-delegated** — it requires the real mock app, a real LLM key, and the real server running simultaneously, plus judgment calls about what's demo-worthy. Run this task directly in the main session once Tasks 1-9 are merged.
+This task is done by hand, not delegated to an automated worker — it requires the real mock app, a real LLM key, and the real server running simultaneously, plus judgment calls about what's demo-worthy. Run it once Tasks 1-9 are merged.
 
 **Files:**
 - Modify: `README.md` (new "Capability server" section with exact commands)

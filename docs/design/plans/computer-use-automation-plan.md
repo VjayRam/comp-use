@@ -1,6 +1,10 @@
 # Computer-Use Automation System Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: complete.** All 14 tasks below were implemented test-first (write the
+> failing test, watch it fail, implement, watch it pass, commit) and reviewed before
+> being merged. Kept as a record of how the system was designed and built, in the
+> order it was built in — not a forward-looking plan. See REPORT.md for the as-built
+> write-up and the [task index](#task-index) below to jump to any task.
 
 **Goal:** Build a working computer-use automation system: an LLM-driven discovery
 agent that operates a mock legacy bank web app, records successful runs as versioned
@@ -15,7 +19,7 @@ discovery talks to an LLM.
 **Tech Stack:** Python 3.11+, Flask (mock app), Playwright (browser automation),
 Pydantic v2 (schemas/config), pytest (tests), `requests` (OpenRouter HTTP calls).
 
-**Spec:** [docs/superpowers/specs/2026-08-17-computer-use-automation-design.md](../specs/2026-08-17-computer-use-automation-design.md)
+**Spec:** [docs/design/specs/computer-use-automation-design.md](../specs/computer-use-automation-design.md)
 
 ## Global Constraints
 
@@ -30,6 +34,25 @@ Pydantic v2 (schemas/config), pytest (tests), `requests` (OpenRouter HTTP calls)
 - Target app allowlist defaults to `http://localhost:5000` only (spec §8).
 - Artifacts are versioned JSON on disk under `/artifacts/<capability_name>/v<N>.json`
   (spec §3, §5). Evidence is JSONL + screenshots under `/evidence/<run_id>/` (spec §3).
+
+## Task Index
+
+| # | Task | What it builds |
+|---|---|---|
+| 1 | [Project scaffolding & config](#task-1-project-scaffolding--config) | Repo layout, `pyproject.toml`, settings/env loading |
+| 2 | [Core schemas](#task-2-core-schemas) | Pydantic models — `Artifact`, `Step`, `Locator`, `Checkpoint`, `ReplayResult` |
+| 3 | [Mock app — member search/detail](#task-3-mock-app--member-data--searchdetail-read-flow) | The target app's read-only capability |
+| 4 | [Mock app — open sub-account](#task-4-mock-app--open-sub-account-flow-write-moderate-risk) | A multi-step write flow with a confirm step |
+| 5 | [Mock app — funds transfer](#task-5-mock-app--funds-transfer-flow-write-risky-business-outcomes) | A write flow with validation errors and business-outcome pages |
+| 6 | [Guardrail layer](#task-6-guardrail-layer) | Allowlist enforcement, risk-tier confirmation, redaction |
+| 7 | [Evidence logger](#task-7-evidence-logger) | Structured JSONL logging + redacted screenshot capture |
+| 8 | [Surface abstraction](#task-8-surface-abstraction-playwright-wrapper) | Perception (`observe`) and action (`act`) over a real browser |
+| 9 | [LLM client abstraction](#task-9-llm-client-abstraction) | OpenRouter-backed tool-calling client + a scripted test double |
+| 10 | [Discovery agent + artifact compiler](#task-10-discovery-agent--artifact-compiler) | The observe → decide → act loop; compiles a run into an `Artifact` |
+| 11 | [Replay engine](#task-11-replay-engine) | Deterministic, LLM-free execution of a saved artifact |
+| 12 | [Escalation controller + local transport](#task-12-escalation-controller--local-transport) | Human-in-the-loop handoff over a shared local browser session |
+| 13 | [CLI entrypoints](#task-13-cli-entrypoints) | `comp-use discover` / `comp-use replay` |
+| 14 | [End-to-end evidence + docs](#task-14-end-to-end-evidence-capture--readmereport-fill-in) | First real, live discovery + replay runs and their evidence |
 
 ---
 
@@ -2569,7 +2592,7 @@ run_mock_app.py`, the two `comp-use` CLI invocations), plus the note that
 Create `REPORT.md` with the seven headings from the assignment (Architecture,
 Artifact schema, Determinism & error handling, Heterogeneity & multi-tenant,
 Escalation & handoff, Safety, Cuts), each summarizing the corresponding section of
-`docs/superpowers/specs/2026-08-17-computer-use-automation-design.md` and pointing at
+`docs/design/specs/computer-use-automation-design.md` and pointing at
 the concrete files that implement it (e.g. "Artifact schema — see
 `comp_use/schemas.py`; example at `artifacts/lookup_member/v1.json`"), plus the two
 evidence runs captured in Steps 4–6 as a walkthrough with actual outcomes observed.

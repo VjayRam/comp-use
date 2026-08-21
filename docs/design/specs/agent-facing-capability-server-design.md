@@ -1,8 +1,8 @@
 # Agent-Facing Capability Server — Design Spec
 
 Date: 2026-08-21
-Status: Approved for implementation planning
-Builds on: `docs/superpowers/specs/2026-08-17-computer-use-automation-design.md`
+Status: Implemented (see REPORT.md for the as-built write-up)
+Builds on: `docs/design/specs/computer-use-automation-design.md`
 
 ## 1. Context & goal
 

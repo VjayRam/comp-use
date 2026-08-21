@@ -8,11 +8,11 @@ inputs/outputs, safety guardrails, and human-in-the-loop escalation.
 Built for the interface.ai take-home assignment
 (`Assignment A — Computer-Use Automation System.pdf`). Full design rationale is in
 [REPORT.md](REPORT.md) and the design spec:
-[docs/superpowers/specs/2026-08-17-computer-use-automation-design.md](docs/superpowers/specs/2026-08-17-computer-use-automation-design.md).
+[docs/design/specs/computer-use-automation-design.md](docs/design/specs/computer-use-automation-design.md).
 
 > **Status: implementation complete.** Setup and demo commands below. Design rationale
 > is in [REPORT.md](REPORT.md) and the spec:
-> [docs/superpowers/specs/2026-08-17-computer-use-automation-design.md](docs/superpowers/specs/2026-08-17-computer-use-automation-design.md).
+> [docs/design/specs/computer-use-automation-design.md](docs/design/specs/computer-use-automation-design.md).
 
 ## What this will do
 
@@ -69,7 +69,7 @@ live session to a **human operator** if it gets stuck, and both leave an evidenc
 trail behind. (Guardrails — allowlisting, risk tiers, redaction — apply throughout
 but are omitted here for readability; see the design spec for the full picture.)
 
-## Production-scale design (not built — see [Cuts](docs/superpowers/specs/2026-08-17-computer-use-automation-design.md#11-cuts-explicit-for-reportmd-7))
+## Production-scale design (not built — see [Cuts](docs/design/specs/computer-use-automation-design.md#11-cuts-explicit-for-reportmd-7))
 
 This repo implements a single-tenant, single-process version. At the scale described
 in the assignment (hundreds of tenants, ~20 apps each, many sharing the same vendor
@@ -170,6 +170,18 @@ On Windows with the project venv: `.venv\Scripts\python -m pytest -v`
 Optional: `COMP_USE_HEADLESS=1` (or PowerShell `$env:COMP_USE_HEADLESS="1"`) launches
 Chromium headless instead of a visible window.
 
+**Running without live services.** The test suite needs no API key and no manually-started
+mock app — it starts its own throwaway Flask instance per test (via a `live_server`
+fixture) and uses `FakeLLMClient` (a scripted, deterministic stand-in) everywhere a real
+LLM call would otherwise happen, so `python -m pytest -v` is fully self-contained.
+Outside of tests, `replay` never calls an LLM at all — no key needed, ever, for that
+path — and the checked-in example artifacts (`artifacts/lookup_member/v1.json` and
+friends) mean you can run the Demo path's replay commands below with nothing but the
+mock app running, skipping `discover` entirely. Only `discover` (and the optional
+`--diagnose-drift-on-failure` drift diagnosis) needs a live `OPENROUTER_API_KEY`/
+`NVIDIA_API_KEY` and a live mock app — that's the one path the assignment requires be
+genuinely real (§4: "the discovery run has to be real").
+
 ## Demo path
 
 Leave the mock app running in one terminal, then discover / replay in another.
@@ -245,7 +257,7 @@ interface" stretch goal — plus a `draft`/`approved`/`rejected` status on every
 artifact version so an unreviewed one (a fresh `discover`, or a proposed drift patch)
 can never silently become what unattended `invoke` picks up. Full design and the
 reasoning behind what's deliberately *not* built (auth, hard delete) is in
-[docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md](docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md).
+[docs/design/specs/agent-facing-capability-server-design.md](docs/design/specs/agent-facing-capability-server-design.md).
 
 **Terminal 1 — mock bank app** (as above): `python run_mock_app.py`
 
@@ -468,9 +480,10 @@ python -m pytest -v
 ```
 /mock_app/          legacy-styled Flask target application
 /comp_use/          discovery, replay, guardrails, CLI
+/comp_use/server/   optional FastAPI capability server (discover/invoke over HTTP)
 /artifacts/         saved capability artifacts (JSON)
 /evidence/          logs + screenshots from discovery and replay runs
-/docs/              design spec and implementation plan
+/docs/              design specs and implementation plans
 run_mock_app.py     start the mock bank app on :5000
 REPORT.md           design write-up (architecture, schema, determinism, etc.)
 ```
