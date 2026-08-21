@@ -236,16 +236,15 @@ also fails, its exception propagates into the same `llm_call_failed` skip path
 above — trying a second provider doesn't need its own separate crash-proofing,
 it inherits the existing one for free.
 
-**Honestly unverified against a real NVIDIA key**, unlike everything else in
-this report — no key was available while building this. `NVIDIA_MODEL`/
-`NVIDIA_VISION_MODEL`'s defaults (`meta/llama-3.1-8b-instruct`,
-`meta/llama-3.2-11b-vision-instruct`) are best-effort picks from NIM's
-published catalog naming, not confirmed live the way `OPENROUTER_VISION_MODEL`
-was (a wrong first guess there 404'd and had to be corrected against the real
-API — see the Heterogeneity & multi-tenant section below). The mechanism
-itself (the shared base class, `FallbackLLMClient`'s try/except-and-retry,
-the wiring in `_build_llm_client`) is tested with mocked HTTP responses; only
-the specific model IDs are unverified.
+**Now live-verified against a real NVIDIA key.** `MODEL_PROVIDER=nvidia` with a
+real `NVIDIA_API_KEY` ran real `discover` flows end-to-end against
+`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` on NVIDIA NIM. The fallback
+chain was also observed for real, not just in mocked tests: an NVIDIA
+`ReadTimeout` mid-run triggered a fallback to OpenRouter, which immediately
+hit a `429 Too Many Requests`, followed by a successful retry back on NVIDIA —
+confirming `FallbackLLMClient`'s try/except-and-retry behaves correctly under
+genuine transient failures on both providers, not just the mocked-HTTP test
+suite.
 
 ## Drift-aware self-healing replay (`--diagnose-drift-on-failure`, optional)
 
@@ -500,6 +499,18 @@ allows this ("a full real-time co-browsing operator console is out of scope") �
   name, an SSN in a different format, or an email address would pass through
   unredacted, and nothing in the design claims otherwise.
 
+- **No destructive operations, anywhere — including the capability server (see Cuts).**
+  Every versioning-adjacent operation in this system (artifact versions, drift patches,
+  and the capability server's `reject`/`retire`) is deliberately non-destructive; nothing
+  ever removes a file from disk. A hard delete would be the first operation in the whole
+  system that erases part of the audit trail of what this automation was ever able to do
+  against a real financial back-office surface, and shipping it on a network-reachable,
+  currently-unauthenticated endpoint would be a live vulnerability, not just a missing
+  feature — a materially different risk than the other stated cuts. It's designed (a
+  per-API-key `admin`/`operator` role, `DELETE` checked against `admin` specifically) but
+  deliberately not built until that auth layer exists — see
+  `docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md` §7.
+
 Hosted OpenRouter still means redacted UI text leaves the machine on **discover**.
 Point `LLMClient` at a local model for production locality; `FakeLLMClient` is the
 test double.
@@ -646,6 +657,9 @@ Unchanged from spec §11:
   every decision. A full desktop `Surface` (OS-level clicks + a vision model as the
   *only* perception channel, no accessibility tree at all) is still not built — see
   Heterogeneity & multi-tenant.
+- Auth on the capability server (see below), and hard delete of an artifact version —
+  designed, deliberately not built until the auth layer exists (see Safety above and
+  `docs/superpowers/specs/2026-08-21-agent-facing-capability-server-design.md` §7).
 
 ## Evidence walkthrough (captured 2026-08-18, against the hardened mock app)
 

@@ -40,7 +40,7 @@ original spec; this system assumes the human and the server share a machine, sam
 ```python
 class Artifact(BaseModel):
     ...
-    status: Literal["draft", "approved"] = "approved"
+    status: Literal["draft", "approved", "rejected"] = "approved"
 ```
 
 Default `"approved"` keeps all 7 already-committed artifact files valid with no
@@ -51,13 +51,13 @@ migration. Two producers set `status="draft"` explicitly going forward:
 - `discover` (both CLI and API) — see §4.
 
 `comp_use/cli.py`'s `load_artifact(capability_name, artifacts_dir, version=None)`:
-when `version` is `None` ("give me the latest"), skip `draft` versions. Walk version
-numbers descending, load each, return the first with `status == "approved"`. If none are
-approved (including "no artifact exists at all"), raise `FileNotFoundError` with a
-message distinguishing the two cases: no versions at all vs. versions exist but are all
-drafts pending approval (actionable: "approve one via `comp-use approve` or pass
-`--version` explicitly"). Passing an explicit `version=N` bypasses the filter — how you
-test a draft before approving it.
+when `version` is `None` ("give me the latest"), skip non-`"approved"` versions (`draft`
+and `rejected` alike). Walk version numbers descending, load each, return the first with
+`status == "approved"`. If none are approved (including "no artifact exists at all"),
+raise `FileNotFoundError` with a message distinguishing the two cases: no versions at all
+vs. versions exist but none are approved (actionable: "approve one via `comp-use approve`
+or pass `--version` explicitly"). Passing an explicit `version=N` bypasses the filter —
+how you test a draft before approving it.
 
 New helper, `comp_use/cli.py`:
 
@@ -167,14 +167,47 @@ launches it (`uvicorn.run(app, ...)`) — everything else in `cli.py` is unchang
 | `POST` | `/capabilities/{name}/invoke` | Body: `{params}`. Pre-flight: `load_artifact(name, artifacts_dir)` (approved-only) then `validate_required_params` — on failure, return `400` immediately, no thread spawned (mirrors `_run_replay`'s existing pre-browser validation-error fast path). Otherwise starts `run_replay(...)` via `RunManager`. Returns `202 {run_id, status: "running"}`. |
 | `GET` | `/runs/{run_id}` | `{status, kind, escalation: {reason, current_step, screenshot_url} \| null, result: ReplayResult \| null, discover_result: {...} \| null, error: str \| null}`. `404` if unknown `run_id`. |
 | `POST` | `/runs/{run_id}/resume` | Body: `{note}`. `409` if `status != "escalated"`. Otherwise calls the record's `transport.resume(note)`, returns `202 {status: "running"}` (client polls `GET /runs/{run_id}` again for the next state). |
-| `POST` | `/capabilities/{name}/versions/{version}/approve` | Calls `approve_artifact`. Returns the updated artifact metadata. `404` if that version doesn't exist. |
+| `POST` | `/capabilities/{name}/versions/{version}/approve` | Calls `approve_artifact` (`draft → approved`). Returns the updated artifact metadata. `404` if that version doesn't exist, `409` if it's already `approved` or `rejected`. |
+| `POST` | `/capabilities/{name}/versions/{version}/reject` | Draft-only. `status → "rejected"`. The file is never deleted (same "never destroy history" reasoning as `next_artifact_version` always bumping instead of overwriting) — it's excluded from both "latest approved" and future draft-review listings, but stays on disk as a record of what was proposed and turned down. `409` if the version isn't currently `draft`. |
+| `POST` | `/capabilities/{name}/versions/{version}/retire` | Approved-only. `status → "rejected"`. The "take a capability out of service" operation — e.g. a version turns out to be broken or unsafe after being approved. Same non-destructive reasoning as `reject`. `409` if the version isn't currently `approved`. |
+
+No `DELETE` endpoint exists in this pass — see §9 for why, and the deferred design for
+when one is added.
 
 `screenshot_url` in `GET /runs/{run_id}`'s escalation payload: the escalation screenshot
 already saved to `evidence/<run_id>/...png` by `EscalationController`/`_run_discover`/
 `_run_replay`; the server mounts `evidence_dir` as static files so this is a servable
 path, not a new mechanism.
 
-## 7. Testing plan
+## 7. Designed but deferred: hard delete + admin-only auth
+
+**Why delete is excluded now, not just "not gotten to yet."** Every destructive-looking
+operation this system already has (artifact versioning, drift patches, reject/retire
+above) is deliberately *non-destructive* — nothing already built ever removes a file from
+disk. A hard `DELETE` would be the first operation in the entire system that permanently
+erases part of the audit trail of what this automation was ever able to do against a real
+financial back-office surface. Shipping that on a network-reachable endpoint with **no
+authentication at all** (this slice's own stated Cut, §8) is a materially different risk
+than every other cut in this project: the others are missing *capabilities* (multi-tenant,
+desktop surface); an unauthenticated delete on a regulated-data system would be a standing
+*vulnerability* the moment the server is reachable by more than one trusted person. That
+asymmetry — "missing feature" vs. "live foot-gun" — is why this pass ships `reject`/
+`retire` (fully covers every real "stop using this version" need, reversibly) and
+deliberately stops short of delete, rather than shipping delete "for completeness" and
+noting the auth gap as an afterthought.
+
+**The deferred design, so it's a real seam and not just a TODO:** a simple per-key role
+model — each API key configured server-side carries a `role: "admin" | "operator"`
+(`{"key": "...", "role": "admin"}` entries in server config, checked via an
+`X-API-Key` header). `approve`/`reject`/`retire`/`discover`/`invoke` are available to
+either role; a new `DELETE /capabilities/{name}/versions/{version}` — hard removal, files
+included — is checked against `role == "admin"` specifically, returning `403` for an
+`operator` key (or for any request without a valid key at all, once auth exists — today,
+with no auth layer, delete simply isn't exposed rather than being exposed-but-unchecked).
+This mirrors how real banks/credit unions actually scope destructive back-office actions:
+narrow, named admin permission, not "anyone who can reach the internal tool."
+
+## 8. Testing plan
 
 - `tests/test_transport.py` (extend): `QueueTransport` unit tests — `notify()` invokes
   the callback with the exact `InterventionRequest`; `wait_for_resume()` blocks until
@@ -202,11 +235,12 @@ path, not a new mechanism.
   Captured under `/evidence/` the same as existing discover/replay runs, demonstrating
   the API path is genuinely real, not just unit-tested.
 
-## 8. Cuts (this slice)
+## 9. Cuts (this slice)
 
-- No auth — anyone who can reach the server can invoke/discover/approve. Stated
-  limitation; a real deployment would gate `approve` (and probably `discover`) behind
-  an operator role.
+- No auth — anyone who can reach the server can invoke/discover/approve/reject/retire.
+  Stated limitation; see §7 for the deferred admin-role design and why hard delete
+  specifically waits on it rather than shipping unauthenticated.
+- No hard delete — see §7.
 - In-memory run store only — a server restart loses all run history/status. Stated;
   production would persist run state (ties to the already-documented "production
   artifact/evidence storage — not built" cut).
