@@ -1,0 +1,6 @@
+{"event_type": "replay_step", "data": {"index": 0, "action": "navigate"}}
+{"event_type": "replay_step", "data": {"index": 1, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 2, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 3, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 4, "action": "click"}}
+{"event_type": "escalation_requested", "data": {"run_id": "replay_1787268652", "capability_or_goal": "transfer_funds_drift_demo", "current_step": 5, "screenshot_path": "evidence\\replay_1787268652\\escalation_step5.png", "reason": "step 5 is risk_tier=risky and confirm_risky is False"}}

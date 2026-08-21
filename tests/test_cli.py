@@ -58,6 +58,11 @@ def test_next_artifact_version_is_1_for_a_new_capability(tmp_path):
     assert next_artifact_version("lookup_member", tmp_path) == 1
 
 
+def test_load_artifact_raises_a_clear_error_for_unknown_capability(tmp_path):
+    with pytest.raises(FileNotFoundError, match="does_not_exist"):
+        load_artifact("does_not_exist", tmp_path)
+
+
 def test_next_artifact_version_increments_past_existing_versions(tmp_path):
     save_artifact(_artifact(version=1), tmp_path)
     save_artifact(_artifact(version=2), tmp_path)

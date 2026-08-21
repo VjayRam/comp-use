@@ -271,6 +271,44 @@ def test_disallowed_url_step_returns_hard_failure_instead_of_crashing(tmp_path):
     assert len(surface.acted) == 0  # the disallowed action must never actually run
 
 
+def test_disallowed_url_step_is_not_mistaken_for_a_drifted_locator(tmp_path):
+    # cli.py's _is_action_locator_failure() only compares result.expected against
+    # f"{action} to succeed" to decide whether --diagnose-drift-on-failure should
+    # spend an LLM/vision call proposing a patch. An allowlist rejection is a policy
+    # decision, not a UI control that moved - it must produce a distinct `expected`
+    # string so it's never mistaken for one.
+    from comp_use.cli import _is_action_locator_failure
+
+    artifact = _make_artifact()
+    artifact.steps[0].target = "http://evil.example.com/x"
+    surface = FakeSurface()
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.expected != f"{artifact.steps[0].action.value} to succeed"
+    assert _is_action_locator_failure(artifact, result) is False
+
+
+def test_goal_parameter_step_with_unprovided_param_is_validation_error_not_crash(tmp_path):
+    # validate_required_params only checks input_schema entries marked required=True;
+    # a step can still reference a param name that's missing from `params` (an
+    # optional-and-omitted param, or a stale/typo'd artifact). This must be reported
+    # as a controlled ReplayResult, not an unhandled KeyError.
+    artifact = _make_artifact()
+    artifact.steps[1].value_source = ValueSource(
+        type="goal_parameter", param_name="deposit_amount", param_type="string"
+    )
+    surface = FakeSurface()
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.VALIDATION_ERROR
+    assert "deposit_amount" in result.detail
+    assert len(surface.acted) == 1  # only the earlier NAVIGATE step ran
+
+
 def test_goal_parameter_step_still_prefers_caller_param_over_recorded_value(tmp_path):
     artifact = _make_artifact()
     artifact.steps[1].value = "12345"  # value recorded at discovery time

@@ -1,0 +1,3 @@
+{"event_type": "replay_step", "data": {"index": 0, "action": "navigate"}}
+{"event_type": "replay_step", "data": {"index": 1, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 2, "action": "click"}}

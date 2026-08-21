@@ -16,8 +16,20 @@ class LocalSharedBrowserTransport(ControlTransport):
 
     def wait_for_resume(self) -> str:
         while True:
-            typed = input("> ").strip().lower()
+            try:
+                typed = input("> ").strip().lower()
+            except EOFError:
+                raise RuntimeError(
+                    "Escalation requires a human to type 'resume' in an interactive "
+                    "terminal, but stdin is closed/non-interactive. Re-run in an "
+                    "interactive shell, or avoid triggering escalation (e.g. pass "
+                    "--confirm-risky, or use params/artifacts that don't hit a risky "
+                    "step or a drift-diagnosis review)."
+                ) from None
             if typed == "resume":
                 break
-        note = input("Briefly, what did you do? (one line, optional): ").strip()
+        try:
+            note = input("Briefly, what did you do? (one line, optional): ").strip()
+        except EOFError:
+            note = ""
         return note

@@ -1,6 +1,6 @@
 {
   "capability_name": "lookup_member",
-  "version": 4,
+  "version": 6,
   "target": {
     "app": "mock_bank",
     "base_url": "http://localhost:5000"
@@ -92,5 +92,5 @@
       "detail": "no_such_member"
     }
   ],
-  "created_from_run_id": "discover_1787177181"
+  "created_from_run_id": "discover_1787268687"
 }

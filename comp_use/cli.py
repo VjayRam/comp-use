@@ -49,6 +49,11 @@ def load_artifact(capability_name: str, artifacts_dir: Path, version: int | None
         versions = sorted(
             int(p.stem[1:]) for p in capability_dir.glob("v*.json")
         )
+        if not versions:
+            raise FileNotFoundError(
+                f"no artifact found for capability '{capability_name}' in {capability_dir} "
+                "(check --capability-name for a typo, or run 'discover' first)"
+            )
         version = versions[-1]
     path = capability_dir / f"v{version}.json"
     return Artifact.model_validate_json(path.read_text())
@@ -166,6 +171,23 @@ def _run_discover(args) -> None:
     # version instead, so an existing (possibly still-working) artifact isn't
     # destroyed by re-running discovery for the same capability name.
     artifact.version = next_artifact_version(args.capability_name, settings.artifacts_dir)
+    # A fresh discovery run has no way to observe outcome_patterns - they're
+    # hand-authored from watching real business/recoverable outcomes, not
+    # something the agent infers from a single successful trace. Without this,
+    # every re-discovery silently drops any hand-authored patterns from the
+    # previous version, since replay always loads the latest version.
+    if artifact.version > 1:
+        try:
+            prev_artifact = load_artifact(args.capability_name, settings.artifacts_dir, version=artifact.version - 1)
+            if prev_artifact.outcome_patterns:
+                artifact.outcome_patterns = prev_artifact.outcome_patterns
+                print(
+                    f"[discover] carried forward {len(prev_artifact.outcome_patterns)} "
+                    f"outcome_patterns(s) from v{prev_artifact.version}",
+                    flush=True,
+                )
+        except (FileNotFoundError, ValueError):
+            pass
     path = save_artifact(artifact, settings.artifacts_dir)
     print(f"Saved artifact to {path}")
 

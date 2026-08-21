@@ -1,6 +1,6 @@
 {
   "capability_name": "lookup_member",
-  "version": 4,
+  "version": 5,
   "target": {
     "app": "mock_bank",
     "base_url": "http://localhost:5000"
@@ -80,17 +80,6 @@
     "text": null,
     "url_pattern": null
   },
-  "outcome_patterns": [
-    {
-      "outcome": "business_outcome",
-      "checkpoint": {
-        "type": "text_present",
-        "locator": null,
-        "text": "No member found with that ID.",
-        "url_pattern": null
-      },
-      "detail": "no_such_member"
-    }
-  ],
-  "created_from_run_id": "discover_1787177181"
+  "outcome_patterns": [],
+  "created_from_run_id": "discover_1787267826"
 }

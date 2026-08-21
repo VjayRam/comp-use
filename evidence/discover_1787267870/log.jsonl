@@ -1,0 +1,8 @@
+{"event_type": "decision", "data": {"value_source": "{\"type\": \"goal_parameter\", \"param_name\": \"member_id\", \"param_type\": \"string\"}", "done": false, "text": "12345", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"Member ID\"}}", "action": "type_text"}}
+{"event_type": "decision", "data": {"done": false, "action": "click", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Search\"}}"}}
+{"event_type": "decision", "data": {"locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"link\", \"name\": \"Open Sub-Account\"}}", "action": "click", "done": false}}
+{"event_type": "decision", "data": {"done": false, "text": "500", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"Deposit Amount\"}}", "value_source": null, "action": "type_text"}}
+{"event_type": "decision", "data": {"done": false, "action": "click", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Open Account\"}}"}}
+{"event_type": "decision", "data": {"action": "click", "done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Confirm Sub-Account\"}}"}}
+{"event_type": "decision", "data": {"done": false, "action": "extract", "locator": "{\"strategy\": \"css\", \"value\": {\"css\": \"td:text-is('Confirmation Number') + td\"}}", "extract_as": "confirmation_number"}}
+{"event_type": "decision", "data": {"done": true, "action": "finish"}}

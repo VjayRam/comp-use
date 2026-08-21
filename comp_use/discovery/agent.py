@@ -170,8 +170,29 @@ class DiscoveryAgent:
             locator = _locator_from_decision(decision.get("locator"))
             target = _optional_str(decision.get("target"))
             text = _optional_str(decision.get("text"))
-            value_source = _value_source_from_decision(decision.get("value_source"))
+            raw_value_source = decision.get("value_source")
+            value_source = _value_source_from_decision(raw_value_source)
             extract_as = _optional_str(decision.get("extract_as"))
+
+            if raw_value_source and value_source is None:
+                # The model sent SOMETHING for value_source, but it didn't parse into a
+                # valid ValueSource (typo'd type, missing param_name, ...). Treating this
+                # as "no value_source" would silently bake this turn's literal discovery-time
+                # text (e.g. a real member ID or dollar amount) into the artifact instead of
+                # binding it to a replay-time parameter - skip and let the model retry instead.
+                self._print(
+                    f"[discover] skipped {action.value}: value_source was present but invalid "
+                    f"(model sent {raw_value_source!r})"
+                )
+                history.append({
+                    **decision,
+                    "error": "value_source, if present, must look like "
+                    '{"type": "goal_parameter", "param_name": "member_id", "param_type": "string"} '
+                    'or {"type": "fixed", "reason": "..."}.',
+                })
+                self.evidence_logger.log_event("skipped_decision", {"reason": "invalid_value_source", "decision": decision})
+                consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
+                continue
 
             if action in _LOCATOR_ACTIONS and locator is None:
                 self._print(

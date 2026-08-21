@@ -79,6 +79,35 @@ def test_agent_runs_until_finish_and_records_steps(tmp_path):
     assert trace.steps[1].value_source.param_name == "member_id"
 
 
+def test_agent_skips_step_instead_of_baking_in_literal_when_value_source_is_malformed(tmp_path):
+    # A value_source that fails Pydantic validation (e.g. a typo'd "type") must not
+    # be silently treated as "no value_source" - that would bake this turn's literal
+    # discovery-time text (a real member ID here) into the artifact instead of
+    # binding it to a replay-time parameter. It must be skipped and retried instead.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "type_text", "locator": {"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}},
+             "target": None, "text": "12345", "value_source": {"type": "goal_param", "param_name": "member_id"}, "done": False},
+            {"action": "type_text", "locator": {"strategy": "role", "value": {"role": "textbox", "name": "Member ID"}},
+             "target": None, "text": "12345", "value_source": {"type": "goal_parameter", "param_name": "member_id", "param_type": "string"}, "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_bad_value_source")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is True
+    assert len(trace.steps) == 1  # the malformed first attempt was skipped, not recorded
+    assert trace.steps[0].value_source.param_name == "member_id"
+    assert trace.steps[0].value is None  # bound to the param, not baked in as a literal
+
+
 def test_agent_stops_at_max_steps_without_finish():
     settings = load_settings()
     surface = FakeSurface()

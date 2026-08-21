@@ -1,0 +1,7 @@
+{"event_type": "replay_step", "data": {"index": 0, "action": "navigate"}}
+{"event_type": "replay_step", "data": {"index": 1, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 2, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 3, "action": "click"}}
+{"event_type": "replay_step", "data": {"index": 4, "action": "type_text"}}
+{"event_type": "replay_step", "data": {"index": 5, "action": "click"}}
+{"event_type": "escalation_requested", "data": {"run_id": "replay_1787286474", "capability_or_goal": "open_sub_account", "current_step": 6, "screenshot_path": "evidence\\replay_1787286474\\escalation_step6.png", "reason": "step 6 is risk_tier=risky and confirm_risky is False"}}

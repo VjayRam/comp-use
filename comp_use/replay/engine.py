@@ -1,6 +1,6 @@
 from comp_use.escalation.controller import EscalationController
 from comp_use.evidence import EvidenceLogger
-from comp_use.guardrail import Guardrail
+from comp_use.guardrail import AllowlistViolation, Guardrail
 from comp_use.schemas import Artifact, InterventionRequest, OutcomeType, ReplayResult
 from comp_use.surface import safe_screenshot
 
@@ -60,12 +60,35 @@ class ReplayEngine:
 
             text = step.value
             if step.value_source is not None and step.value_source.type == "goal_parameter":
-                text = str(params[step.value_source.param_name])
+                param_name = step.value_source.param_name
+                if param_name not in params:
+                    # validate_required_params only checks input_schema entries marked
+                    # required=True - a step can still reference an optional-and-omitted
+                    # or mismatched param name and reach here. Report it the same way as
+                    # any other "caller didn't supply what this artifact needs" case,
+                    # rather than letting a raw KeyError crash the whole replay.
+                    detail = f"step {index} references param '{param_name}' which was not provided"
+                    self.evidence_logger.log_event("validation_error", {"detail": detail})
+                    return ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=detail, step_index=index)
+                text = str(params[param_name])
 
             target_url = step.target
 
             try:
                 self.guardrail.check_allowlist(target_url or self.surface.current_url(), step.action.value)
+            except AllowlistViolation as exc:
+                # Kept distinct from the locator/action-failure except block below - this is
+                # a policy rejection, not a UI drift, and must not look like one to
+                # cli.py's _is_action_locator_failure (which drives --diagnose-drift-on-failure).
+                return ReplayResult(
+                    outcome=OutcomeType.HARD_FAILURE,
+                    step_index=index,
+                    detail=f"{type(exc).__name__}: {exc}",
+                    expected=f"{step.action.value} to pass the URL/action allowlist",
+                    observed=self.surface.current_url(),
+                )
+
+            try:
                 extracted = self.surface.act(step.action, locator=step.locator, target=target_url, text=text)
                 if step.extract_as:
                     outputs[step.extract_as] = extracted

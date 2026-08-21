@@ -289,7 +289,7 @@ python -m comp_use.cli replay --capability-name open_sub_account --params "{\"me
 python -m comp_use.cli replay --capability-name transfer_funds --params "{\"member_id\": \"12345\", \"from_account\": \"ACC-001\", \"to_account\": \"ACC-002\", \"amount\": \"50\"}" --confirm-risky
 ```
 Expected: `{"outcome": "success", ...}` each time; the last two include real
-`outputs` (`confirmation_number` / `txn_id`).
+`outputs` (`confirmation_number` / `transaction_id`).
 
 **4. Replay — `business_outcome`**
 
@@ -305,11 +305,15 @@ Expected: `"outcome": "business_outcome"`, detail `"no_such_member"` /
 **6. Replay — `hard_failure`**
 
 ```bash
-python -m comp_use.cli replay --capability-name open_sub_account --params "{\"member_id\": \"00000\", \"deposit_amount\": \"250\"}" --confirm-risky
+python -m comp_use.cli replay --capability-name open_sub_account_escalation_demo --params "{\"member_id\": \"00000\", \"deposit_amount\": \"250\"}" --confirm-risky
 ```
 Expected: `"outcome": "hard_failure"` with a `TimeoutError: ...` detail (no
 `outcome_pattern` declared for this capability) — also produces
-`evidence/replay_<ts>/final.png`.
+`evidence/replay_<ts>/final.png`. (Uses `open_sub_account_escalation_demo`
+rather than `open_sub_account` here specifically because it has no
+`outcome_patterns`; `open_sub_account` now declares a `no_such_member`
+pattern from step 1, so the same params against it correctly return
+`business_outcome` instead — see step 4.)
 
 **7. Replay — `recoverable`** (triggered at the HTTP layer directly — a normal
 single replay always gets a fresh review token, so this needs a manual double-submit)
@@ -358,7 +362,18 @@ Expected: `"outcome": "hard_failure"` (unchanged — this run genuinely failed) 
 `"proposed_patch_version": 2`; an `[ESCALATION]` prompt to review the patch (type
 `resume` + a note); `artifacts/transfer_funds_drift_demo/v2.json` has the
 corrected locator, `v1.json` untouched. Re-running the same replay command
-afterward (no flags needed) should now succeed, using v2 automatically.
+afterward (`--confirm-risky` is still required — the healed step is still
+`risk_tier: risky` — but `--diagnose-drift-on-failure` can be dropped) should
+now succeed, using v2 automatically:
+
+```bash
+python -m comp_use.cli replay --capability-name transfer_funds_drift_demo --confirm-risky
+```
+
+If you run it *without* `--confirm-risky`, it escalates for risky-step
+confirmation like any other risky replay; make sure you're in an interactive
+terminal (a non-interactive stdin makes the CLI raise a clear error instead of
+hanging) or just pass `--confirm-risky`.
 
 **9. Artifact versioning** (re-run discover for an existing capability)
 

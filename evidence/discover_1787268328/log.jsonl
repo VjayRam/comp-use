@@ -1,0 +1,10 @@
+{"event_type": "decision", "data": {"locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"Member ID\"}}", "target": null, "action": "type_text", "done": false, "text": "12345", "value_source": "{\"type\": \"goal_parameter\", \"param_name\": \"member_id\", \"param_type\": \"string\"}"}}
+{"event_type": "decision", "data": {"action": "click", "done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Search\"}}"}}
+{"event_type": "decision", "data": {"done": false, "action": "click", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"link\", \"name\": \"Open Sub-Account\"}}"}}
+{"event_type": "decision", "data": {"target": null, "text": "500", "action": "type_text", "value_source": "{\"type\": \"goal_parameter\", \"param_name\": \"deposit_amount\", \"param_type\": \"string\"}", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"Deposit Amount\"}}", "done": false}}
+{"event_type": "decision", "data": {"locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Open Account\"}}", "action": "click", "done": false}}
+{"event_type": "decision", "data": {"done": false, "action": "click", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Confirm Sub-Account\"}}"}}
+{"event_type": "escalation_requested", "data": {"run_id": "discover_1787268328", "capability_or_goal": "Open a new sub-account for member 12345 with a 500 dollar deposit", "current_step": 5, "screenshot_path": "evidence\\discover_1787268328\\escalation_step5.png", "reason": "step 5 is risk_tier=risky and confirm_risky is False"}}
+{"event_type": "escalation_resumed", "data": {"run_id": "discover_1787268328"}}
+{"event_type": "escalation_human_action", "data": {"run_id": "discover_1787268328", "note": "reviewed and approved via automated test run", "tree_diff": "", "before_screenshot_path": "evidence\\discover_1787268328\\escalation_before_step5.png", "after_screenshot_path": "evidence\\discover_1787268328\\escalation_after_step5.png"}}
+{"event_type": "decision", "data": {"done": true, "action": "finish"}}

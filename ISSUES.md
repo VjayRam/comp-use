@@ -1063,6 +1063,109 @@ failed red if it had been wrong.
   was never in this checklist to begin with; noted as a latent footgun, not
   an active problem, and left as-is.)
 
+**Follow-up (2026-08-20, live user testing surfaced the cost of this gap):**
+Live `replay` runs against genuine edge-case inputs —
+`transfer_funds` with `transfer_amount=999999` (exceeds `from_account`'s
+balance) and `open_sub_account` / `lookup_member` with `member_id=00000`
+(no such member) — came back as generic `hard_failure` with a raw
+Playwright `TimeoutError` detail, even though `mock_app/app.py` handles
+both cases as legitimate, named business outcomes
+(`transfer.html`'s `insufficient_funds` flag, `search.html`'s `not_found`
+flag) rather than crashing. User feedback: "the steps were executed but
+the end result were not captured appropriately" — correctly identifying
+that reporting a raw timeout for a *known, named* app-level outcome is an
+inadequate capture, not that the replay itself was wrong to stop.
+`ReplayEngine._match_outcome_pattern` (`comp_use/replay/engine.py`) and
+its matching logic were already fully implemented and unit-tested
+(`tests/test_replay_engine.py`) — so the gap was purely data, not code.
+Digging further turned up a sharper root cause than "never populated":
+`artifacts/transfer_funds/v1.json` and `artifacts/lookup_member/v1.json`
+*did* have hand-authored `outcome_patterns` (`insufficient_funds`,
+`no_such_member`, `session_expired`) — but every subsequent re-discovery
+run for the same capability (`_run_discover` hardcodes `outcome_patterns:
+[]` on whatever it produces) created a new latest version with the field
+empty again, and since `replay` always uses the latest version
+(`load_artifact`'s `version=None` path), the hand-authored patterns were
+silently shadowed the moment `v2` existed. This is the same "latest
+version wins silently" property already documented in the mislabeled-`v5`
+incident above, applied to data loss instead of a wrong flow. Fixed by
+re-hand-authoring the same patterns (matching v1's exact `detail` strings
+for consistency: `insufficient_funds`, `no_such_member`, `session_expired`)
+onto the current latest versions — `artifacts/transfer_funds/v2.json`,
+`artifacts/open_sub_account/v5.json`, `artifacts/lookup_member/v4.json` —
+using a `TEXT_PRESENT` checkpoint against the exact strings the templates
+render. No engine code changed — only artifact data. Verified live against
+a running mock app: all three scenarios (`transfer_amount=999999`,
+`member_id=00000` against both `open_sub_account` and `lookup_member`) now
+return `"outcome": "business_outcome"` with a human-readable `detail`
+instead of `hard_failure`/`TimeoutError`. Full suite re-run: 121/121
+passing. This does not fix the underlying limitation this bullet
+describes (`_run_discover` still never populates `outcome_patterns`
+automatically, so it will silently drop hand-authored patterns again on
+the *next* re-discovery of any of these three capabilities) — it only
+closes the gap for now. A durable fix would need `_run_discover` to either
+carry forward the previous version's `outcome_patterns` by default or
+refuse to silently drop a non-empty field it can't populate itself;
+neither is implemented.
+
+**Follow-up 2 (2026-08-20, full README run-through, durable fix applied):**
+Ran every command in `README.md`'s "Exercising every outcome" run sheet
+(steps 0–10) top to bottom, exactly as documented. This reproduced the
+regression above *self-inflicted by the README's own step ordering*: step
+1's three re-discovery runs created `lookup_member/v5.json` (then `v6.json`
+via step 9's own re-discovery demo), `open_sub_account/v6.json`, and
+`transfer_funds/v3.json`, all with `outcome_patterns: []` again, which broke
+step 4's `business_outcome` demos (both returned `hard_failure` instead).
+This time the "closes the gap for now" caveat above was fixed for real:
+`_run_discover` (`comp_use/cli.py`) now carries forward the previous
+version's `outcome_patterns` onto the freshly discovered artifact whenever
+the previous version has any (best-effort — only on the "bump version"
+path, silently skipped if the previous version file is missing or
+unreadable). Re-applied the same hand-authored patterns to the new latest
+versions (`lookup_member/v6.json`, `open_sub_account/v6.json`,
+`transfer_funds/v3.json`) as a one-time repair; future re-discoveries of
+these three capabilities will now carry them forward automatically instead
+of dropping them. Verified live: step 4's two `business_outcome` demos both
+pass again, full suite 121/121.
+
+Two more, previously-unknown issues surfaced during the same run-through
+and were fixed:
+- **`README.md` step 6** (`hard_failure` demo) used
+  `open_sub_account`/`member_id=00000`, relying on that capability having no
+  `outcome_patterns`. Once the fix above restores `open_sub_account`'s
+  `no_such_member` pattern, that exact command now correctly returns
+  `business_outcome` instead — which is *correct new behavior*, but breaks
+  step 6 as documented. Fixed by pointing step 6 at
+  `open_sub_account_escalation_demo` instead (a real artifact already in the
+  repo with no `outcome_patterns` declared), verified live to reproduce the
+  original `hard_failure`/`TimeoutError` the step is meant to demonstrate.
+- **`README.md` step 3** claimed replay outputs are keyed `txn_id`; the real
+  key `transaction_id` was never updated in the doc. Fixed.
+- **`README.md` step 8** claimed re-running the healed
+  `transfer_funds_drift_demo` artifact afterward needs "no flags" — false,
+  since the healed step is still `risk_tier: risky` and still needs
+  `--confirm-risky`, confirmed live. Fixed the doc, and separately fixed a
+  real robustness gap found while verifying this: triggering an escalation
+  with non-interactive stdin (e.g. a scripted/non-piped invocation) crashed
+  with an unhandled `EOFError` from `input()` in
+  `comp_use/escalation/transport.py`'s `wait_for_resume`. Now raises a clear
+  `RuntimeError` explaining that escalation needs an interactive terminal,
+  instead of an opaque traceback.
+- `REPORT.md`'s "Honestly unverified against a real NVIDIA key" caveat
+  (issue 19 above) is now stale — this run-through's step 1 discoveries ran
+  live end-to-end against NVIDIA NIM (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`),
+  including a real fallback-to-OpenRouter-and-back sequence triggered by a
+  genuine NVIDIA `ReadTimeout` + OpenRouter `429`. `REPORT.md` updated to
+  describe this as live-verified.
+
+Separately (not a code bug, just a live-reliability note, not fixed since
+there's nothing wrong to fix): the `transfer_funds` discovery run in step 1
+wandered noticeably before completing — several repeated clicks on
+ambiguous `cell`-role elements, one failed `iframe` click, and the
+timeout/rate-limit/retry sequence mentioned above — all before self-
+correcting and finishing the flow correctly. Worth keeping an eye on if
+`transfer_funds` re-discovery becomes flaky in CI or scripted use.
+
 ---
 
 # Third audit pass (2026-08-19, same day)

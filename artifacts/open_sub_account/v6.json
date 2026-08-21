@@ -1,11 +1,11 @@
 {
   "capability_name": "open_sub_account",
-  "version": 5,
+  "version": 6,
   "target": {
     "app": "mock_bank",
     "base_url": "http://localhost:5000"
   },
-  "description": "Open a new sub-account for a member with a deposit and report the confirmation number",
+  "description": "Open a new sub-account for member 12345 with a 500 dollar deposit and report the confirmation number",
   "input_schema": [
     {
       "name": "member_id",
@@ -17,7 +17,7 @@
   ],
   "output_schema": [
     {
-      "name": "account_balance",
+      "name": "confirmation_number",
       "type": "string",
       "description": ""
     }
@@ -100,13 +100,8 @@
         },
         "fallback": null
       },
-      "value_source": {
-        "type": "goal_parameter",
-        "param_name": "member_id",
-        "param_type": "string",
-        "reason": null
-      },
-      "value": null,
+      "value_source": null,
+      "value": "500",
       "extract_as": null,
       "risk_tier": "safe",
       "checkpoint": null
@@ -129,19 +124,20 @@
       "checkpoint": null
     },
     {
-      "action": "extract",
+      "action": "click",
       "target": null,
       "locator": {
-        "strategy": "css",
+        "strategy": "role",
         "value": {
-          "css": "td:text('Deposit Amount') + td"
+          "role": "button",
+          "name": "Confirm Sub-Account"
         },
         "fallback": null
       },
       "value_source": null,
       "value": null,
-      "extract_as": "account_balance",
-      "risk_tier": "safe",
+      "extract_as": null,
+      "risk_tier": "risky",
       "checkpoint": null
     },
     {
@@ -150,13 +146,13 @@
       "locator": {
         "strategy": "css",
         "value": {
-          "css": "td:text('Deposit Amount') + td"
+          "css": "td:text-is('Confirmation Number') + td"
         },
         "fallback": null
       },
       "value_source": null,
       "value": null,
-      "extract_as": "account_balance",
+      "extract_as": "confirmation_number",
       "risk_tier": "safe",
       "checkpoint": null
     }
@@ -196,5 +192,5 @@
       "detail": "session_expired"
     }
   ],
-  "created_from_run_id": "discover_1787180195"
+  "created_from_run_id": "discover_1787267870"
 }

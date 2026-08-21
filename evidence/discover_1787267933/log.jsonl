@@ -1,0 +1,21 @@
+{"event_type": "decision", "data": {"locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"Member ID\"}}", "done": false, "action": "type_text", "text": "12345", "value_source": "{\"type\": \"goal_parameter\", \"param_name\": \"member_id\", \"param_type\": \"string\"}"}}
+{"event_type": "decision", "data": {"done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"cell\", \"name\": \"[REDACTED]\"}}", "action": "click"}}
+{"event_type": "decision", "data": {"done": false, "action": "click", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"cell\", \"name\": \"[REDACTED]\"}}"}}
+{"event_type": "decision", "data": {"done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"cell\", \"name\": \"[REDACTED]\"}}", "action": "click"}}
+{"event_type": "decision", "data": {"action": "click", "done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"cell\", \"name\": \"[REDACTED]\"}}"}}
+{"event_type": "decision", "data": {"action": "click", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"iframe\"}}", "done": false}}
+{"event_type": "skipped_decision", "data": {"reason": "action_failed", "decision": {"action": "click", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"iframe\"}}", "done": false}, "error": "TimeoutError: Locator.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for get_by_role(\"iframe\")\n"}}
+{"event_type": "decision", "data": {"action": "click", "done": false, "locator": "{\"strategy\": \"css\", \"value\": {\"css\": \"td:text('[REDACTED]')\"}}"}}
+{"event_type": "decision", "data": {"done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"cell\", \"name\": \"[REDACTED]\"}}", "action": "click"}}
+{"event_type": "decision", "data": {"locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Search\"}}", "done": false, "action": "click"}}
+{"event_type": "decision", "data": {"action": "click", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"link\", \"name\": \"Transfer Funds\"}}", "done": false}}
+{"event_type": "decision", "data": {"action": "click", "done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"From Account\"}}"}}
+{"event_type": "decision", "data": {"target": null, "text": "[REDACTED]", "action": "type_text", "value_source": "{\"type\": \"goal_parameter\", \"param_name\": \"from_account\", \"param_type\": \"string\"}", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"From Account\"}}", "done": false}}
+{"event_type": "decision", "data": {"locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"To Account\"}}", "action": "click", "done": false}}
+{"event_type": "decision", "data": {"action": "type_text", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"To Account\"}}", "text": "[REDACTED]", "done": false, "value_source": "{\"type\": \"goal_parameter\", \"param_name\": \"to_account\", \"param_type\": \"string\"}"}}
+{"event_type": "skipped_decision", "data": {"reason": "llm_call_failed", "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://openrouter.ai/api/v1/chat/completions"}}
+{"event_type": "decision", "data": {"target": null, "done": false, "extract_as": null, "text": "100", "value_source": "{\"type\": \"goal_parameter\", \"param_name\": \"amount\", \"param_type\": \"string\"}", "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"textbox\", \"name\": \"Amount\"}}", "action": "type_text"}}
+{"event_type": "decision", "data": {"action": "click", "done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Transfer\"}}"}}
+{"event_type": "decision", "data": {"action": "click", "done": false, "locator": "{\"strategy\": \"role\", \"value\": {\"role\": \"button\", \"name\": \"Confirm Transfer\"}}"}}
+{"event_type": "decision", "data": {"locator": "{\"strategy\": \"css\", \"value\": {\"css\": \"td:text('Transaction ID') + td\"}}", "action": "extract", "done": false, "extract_as": "transaction_id"}}
+{"event_type": "decision", "data": {"done": true, "action": "finish"}}

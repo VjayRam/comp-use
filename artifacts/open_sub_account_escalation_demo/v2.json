@@ -1,11 +1,11 @@
 {
-  "capability_name": "open_sub_account",
-  "version": 5,
+  "capability_name": "open_sub_account_escalation_demo",
+  "version": 2,
   "target": {
     "app": "mock_bank",
     "base_url": "http://localhost:5000"
   },
-  "description": "Open a new sub-account for a member with a deposit and report the confirmation number",
+  "description": "Open a new sub-account for member 12345 with a 500 dollar deposit",
   "input_schema": [
     {
       "name": "member_id",
@@ -13,15 +13,16 @@
       "required": true,
       "description": "",
       "example": null
-    }
-  ],
-  "output_schema": [
+    },
     {
-      "name": "account_balance",
+      "name": "deposit_amount",
       "type": "string",
-      "description": ""
+      "required": true,
+      "description": "",
+      "example": null
     }
   ],
+  "output_schema": [],
   "steps": [
     {
       "action": "navigate",
@@ -102,7 +103,7 @@
       },
       "value_source": {
         "type": "goal_parameter",
-        "param_name": "member_id",
+        "param_name": "deposit_amount",
         "param_type": "string",
         "reason": null
       },
@@ -129,35 +130,20 @@
       "checkpoint": null
     },
     {
-      "action": "extract",
+      "action": "click",
       "target": null,
       "locator": {
-        "strategy": "css",
+        "strategy": "role",
         "value": {
-          "css": "td:text('Deposit Amount') + td"
+          "role": "button",
+          "name": "Confirm Sub-Account"
         },
         "fallback": null
       },
       "value_source": null,
       "value": null,
-      "extract_as": "account_balance",
-      "risk_tier": "safe",
-      "checkpoint": null
-    },
-    {
-      "action": "extract",
-      "target": null,
-      "locator": {
-        "strategy": "css",
-        "value": {
-          "css": "td:text('Deposit Amount') + td"
-        },
-        "fallback": null
-      },
-      "value_source": null,
-      "value": null,
-      "extract_as": "account_balance",
-      "risk_tier": "safe",
+      "extract_as": null,
+      "risk_tier": "risky",
       "checkpoint": null
     }
   ],
@@ -174,27 +160,6 @@
     "text": null,
     "url_pattern": null
   },
-  "outcome_patterns": [
-    {
-      "outcome": "business_outcome",
-      "checkpoint": {
-        "type": "text_present",
-        "locator": null,
-        "text": "No member found with that ID.",
-        "url_pattern": null
-      },
-      "detail": "no_such_member"
-    },
-    {
-      "outcome": "recoverable",
-      "checkpoint": {
-        "type": "text_present",
-        "locator": null,
-        "text": "This review session has expired or was already submitted.",
-        "url_pattern": null
-      },
-      "detail": "session_expired"
-    }
-  ],
-  "created_from_run_id": "discover_1787180195"
+  "outcome_patterns": [],
+  "created_from_run_id": "discover_1787268328"
 }

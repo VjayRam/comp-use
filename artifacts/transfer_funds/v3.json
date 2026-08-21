@@ -1,6 +1,6 @@
 {
   "capability_name": "transfer_funds",
-  "version": 2,
+  "version": 3,
   "target": {
     "app": "mock_bank",
     "base_url": "http://localhost:5000"
@@ -29,14 +29,20 @@
       "example": null
     },
     {
-      "name": "transfer_amount",
+      "name": "amount",
       "type": "string",
       "required": true,
       "description": "",
       "example": null
     }
   ],
-  "output_schema": [],
+  "output_schema": [
+    {
+      "name": "transaction_id",
+      "type": "string",
+      "description": ""
+    }
+  ],
   "steps": [
     {
       "action": "navigate",
@@ -65,6 +71,107 @@
         "param_type": "string",
         "reason": null
       },
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "cell",
+          "name": "ACC-001"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "cell",
+          "name": "ACC-001"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "cell",
+          "name": "ACC-001"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "cell",
+          "name": "ACC-001"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "css",
+        "value": {
+          "css": "td:text('ACC-001')"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "cell",
+          "name": "ACC-001"
+        },
+        "fallback": null
+      },
+      "value_source": null,
       "value": null,
       "extract_as": null,
       "risk_tier": "safe",
@@ -144,6 +251,23 @@
       "checkpoint": null
     },
     {
+      "action": "click",
+      "target": null,
+      "locator": {
+        "strategy": "role",
+        "value": {
+          "role": "textbox",
+          "name": "To Account"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": null,
+      "risk_tier": "safe",
+      "checkpoint": null
+    },
+    {
       "action": "type_text",
       "target": null,
       "locator": {
@@ -178,7 +302,7 @@
       },
       "value_source": {
         "type": "goal_parameter",
-        "param_name": "transfer_amount",
+        "param_name": "amount",
         "param_type": "string",
         "reason": null
       },
@@ -220,6 +344,22 @@
       "extract_as": null,
       "risk_tier": "risky",
       "checkpoint": null
+    },
+    {
+      "action": "extract",
+      "target": null,
+      "locator": {
+        "strategy": "css",
+        "value": {
+          "css": "td:text('Transaction ID') + td"
+        },
+        "fallback": null
+      },
+      "value_source": null,
+      "value": null,
+      "extract_as": "transaction_id",
+      "risk_tier": "safe",
+      "checkpoint": null
     }
   ],
   "success_checkpoint": {
@@ -257,5 +397,5 @@
       "detail": "session_expired"
     }
   ],
-  "created_from_run_id": "discover_1787180782"
+  "created_from_run_id": "discover_1787267933"
 }
