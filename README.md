@@ -1,5 +1,7 @@
 # Computer-Use Automation System
 
+[![Tests](https://github.com/VjayRam/comp-use/actions/workflows/tests.yml/badge.svg)](https://github.com/VjayRam/comp-use/actions/workflows/tests.yml)
+
 A system that uses an LLM to discover how to accomplish a goal by driving a live web
 UI, records the successful run as a typed, versioned, reusable capability artifact,
 and replays that artifact deterministically (no LLM in the decision loop) with typed
