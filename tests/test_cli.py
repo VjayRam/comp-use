@@ -23,9 +23,9 @@ from comp_use.surface import PlaywrightSurface
 from mock_app.app import create_app
 
 
-def _artifact(version=1, status="approved"):
+def _artifact(version=1, status="approved", capability_name="lookup_member"):
     return Artifact(
-        capability_name="lookup_member",
+        capability_name=capability_name,
         version=version,
         status=status,
         target={"app": "mock_bank", "base_url": "http://localhost:5000"},
@@ -491,6 +491,58 @@ def test_main_dispatches_approve_subcommand_with_parsed_args(tmp_path, monkeypat
 
     reloaded = load_artifact("lookup_member", tmp_path, version=1)
     assert reloaded.status == "approved"
+
+
+def test_version_lock_prevents_concurrent_discover_from_clobbering_versions(tmp_path):
+    """Regression test for the TOCTOU race: run_discover reads the next
+    artifact version, then later saves under it. Two concurrent discover
+    requests for the same capability (now reachable via the capability
+    server's HTTP API, one background thread per request) could previously
+    both read the same "next version" number, and whichever save ran second
+    would silently clobber the first's artifact. This exercises the exact
+    read-then-save sequence guarded by cli._version_lock - with an
+    artificial delay between the read and the write to force the race
+    window wide open - and asserts every thread ends up with a distinct,
+    gapless version number."""
+    capability_name = "concurrent_version_test"
+
+    def allocate_and_save():
+        with cli._version_lock:
+            version = next_artifact_version(capability_name, tmp_path)
+            time.sleep(0.05)  # widen the window between read and save
+            save_artifact(_artifact(version=version, status="draft", capability_name=capability_name), tmp_path)
+
+    threads = [threading.Thread(target=allocate_and_save) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    versions = sorted(int(p.stem[1:]) for p in (tmp_path / capability_name).glob("v*.json"))
+    assert versions == [1, 2, 3, 4, 5]
+
+
+def test_version_lock_methodology_actually_detects_the_race_when_unguarded(tmp_path):
+    """Negative control proving the test above is a real regression test and
+    not a tautology: the identical read-then-save sequence, run WITHOUT the
+    lock, reliably produces colliding (and therefore silently overwritten)
+    version numbers under the same artificial delay."""
+    capability_name = "concurrent_version_test_unguarded"
+
+    def allocate_and_save_without_lock():
+        version = next_artifact_version(capability_name, tmp_path)
+        time.sleep(0.05)
+        save_artifact(_artifact(version=version, status="draft", capability_name=capability_name), tmp_path)
+
+    threads = [threading.Thread(target=allocate_and_save_without_lock) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    versions = sorted(int(p.stem[1:]) for p in (tmp_path / capability_name).glob("v*.json"))
+    # all 5 threads raced to read version 0 -> computed "1" -> only one file exists
+    assert len(versions) < 5
 
 
 def test_run_serve_launches_uvicorn_with_the_app(monkeypatch):

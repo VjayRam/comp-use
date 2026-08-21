@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -100,6 +101,22 @@ def next_artifact_version(capability_name: str, artifacts_dir: Path) -> int:
     capability_dir = Path(artifacts_dir) / capability_name
     versions = [int(p.stem[1:]) for p in capability_dir.glob("v*.json")]
     return max(versions, default=0) + 1
+
+
+# Guards the read-next-version-then-save sequence used by run_discover() and
+# _diagnose_and_propose_patch(). A single process-wide lock (rather than a
+# per-capability-name registry) is deliberate: discover/drift-diagnosis runs
+# are slow, infrequent, LLM-driven browser sessions, so serializing their
+# version bumps process-wide costs nothing meaningful, and it avoids the
+# added complexity of a per-name lock registry. Without this, two concurrent
+# discover requests for the same capability name (now reachable via the
+# capability server's HTTP API, one thread per request) could both read the
+# same "next version" number and one save would silently clobber the
+# other's artifact. NEVER hold this lock across a blocking call (e.g. the
+# interactive approval `input()` prompt in run_discover) - that would let
+# one stuck human input block all other discover/version-allocation
+# activity process-wide.
+_version_lock = threading.Lock()
 
 
 def _build_llm_client(settings: Settings) -> LLMClient:
@@ -207,28 +224,10 @@ def run_discover(
             Step(action=ActionType.NAVIGATE, target=start_url, risk_tier=RiskTier.SAFE),
         )
     artifact.status = "draft"
-    # Never silently overwrite a previous discovery run's artifact - bump the
-    # version instead, so an existing (possibly still-working) artifact isn't
-    # destroyed by re-running discovery for the same capability name.
-    artifact.version = next_artifact_version(capability_name, settings.artifacts_dir)
-    # A fresh discovery run has no way to observe outcome_patterns - they're
-    # hand-authored from watching real business/recoverable outcomes, not
-    # something the agent infers from a single successful trace. Without this,
-    # every re-discovery silently drops any hand-authored patterns from the
-    # previous version, since replay always loads the latest version.
-    if artifact.version > 1:
-        try:
-            prev_artifact = load_artifact(capability_name, settings.artifacts_dir, version=artifact.version - 1)
-            if prev_artifact.outcome_patterns:
-                artifact.outcome_patterns = prev_artifact.outcome_patterns
-                print(
-                    f"[discover] carried forward {len(prev_artifact.outcome_patterns)} "
-                    f"outcome_patterns(s) from v{prev_artifact.version}",
-                    flush=True,
-                )
-        except (FileNotFoundError, ValueError):
-            pass
 
+    # Ask for approval *before* touching version numbers so the version-lock
+    # below never has to be held across this blocking call - see the comment
+    # on _version_lock.
     if interactive:
         try:
             answer = input("Approve as new default? [y/N]: ").strip().lower()
@@ -240,7 +239,36 @@ def run_discover(
         if answer == "y":
             artifact.status = "approved"
 
-    path = save_artifact(artifact, settings.artifacts_dir)
+    # Never silently overwrite a previous discovery run's artifact - bump the
+    # version instead, so an existing (possibly still-working) artifact isn't
+    # destroyed by re-running discovery for the same capability name. The
+    # version read and the save must happen atomically with respect to other
+    # threads (e.g. concurrent HTTP discover requests for the same capability
+    # via the capability server), otherwise two threads can compute the same
+    # "next version" and the second save silently clobbers the first's
+    # artifact - see _version_lock.
+    with _version_lock:
+        artifact.version = next_artifact_version(capability_name, settings.artifacts_dir)
+        # A fresh discovery run has no way to observe outcome_patterns - they're
+        # hand-authored from watching real business/recoverable outcomes, not
+        # something the agent infers from a single successful trace. Without this,
+        # every re-discovery silently drops any hand-authored patterns from the
+        # previous version, since replay always loads the latest version.
+        if artifact.version > 1:
+            try:
+                prev_artifact = load_artifact(capability_name, settings.artifacts_dir, version=artifact.version - 1)
+                if prev_artifact.outcome_patterns:
+                    artifact.outcome_patterns = prev_artifact.outcome_patterns
+                    print(
+                        f"[discover] carried forward {len(prev_artifact.outcome_patterns)} "
+                        f"outcome_patterns(s) from v{prev_artifact.version}",
+                        flush=True,
+                    )
+            except (FileNotFoundError, ValueError):
+                pass
+
+        path = save_artifact(artifact, settings.artifacts_dir)
+
     print(f"Saved artifact to {path} (status={artifact.status})")
     return artifact
 
@@ -291,8 +319,13 @@ def _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifac
         return
 
     patched = diagnosis.patched_artifact
-    patched.version = next_artifact_version(artifact.capability_name, settings.artifacts_dir)
-    path = save_artifact(patched, settings.artifacts_dir)
+    # Same version-clobbering race as run_discover() - see _version_lock.
+    # Currently unreachable concurrently via the HTTP API (invoke always
+    # passes diagnose_drift_on_failure=False), but guarding it costs nothing
+    # and keeps this path consistent if that ever changes.
+    with _version_lock:
+        patched.version = next_artifact_version(artifact.capability_name, settings.artifacts_dir)
+        path = save_artifact(patched, settings.artifacts_dir)
     proposed_locator = patched.steps[result.step_index].locator.model_dump(mode="json")
     evidence.log_event(
         "drift_diagnosis",
