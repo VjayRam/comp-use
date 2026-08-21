@@ -1,10 +1,15 @@
+from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 import re
 
-from comp_use.cli import load_artifact
+from comp_use.cli import load_artifact, run_discover, run_replay
 from comp_use.config import Settings, load_settings
+from comp_use.replay.engine import validate_required_params
 from comp_use.server.run_manager import RunManager
 
 _CAPABILITY_NAME_RE = re.compile(r"^[a-z0-9_]+$")
@@ -21,6 +26,19 @@ def _validate_capability_name(name: str) -> None:
             status_code=400,
             detail=f"invalid capability name {name!r}: must match {_CAPABILITY_NAME_RE.pattern}",
         )
+
+
+class InvokeRequest(BaseModel):
+    params: dict[str, Any] = {}
+
+
+class DiscoverRequest(BaseModel):
+    goal: str
+    start_url: str
+
+
+class ResumeRequest(BaseModel):
+    note: str = ""
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -79,5 +97,70 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             artifact = load_artifact(name, settings.artifacts_dir, version=v)
             out.append({"version": v, "status": artifact.status, "created_from_run_id": artifact.created_from_run_id})
         return out
+
+    @app.post("/capabilities/{name}/invoke", status_code=202)
+    def invoke_capability(name: str, body: InvokeRequest):
+        _validate_capability_name(name)
+        try:
+            artifact = load_artifact(name, settings.artifacts_dir)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        validation_error = validate_required_params(artifact, body.params)
+        if validation_error:
+            raise HTTPException(status_code=400, detail=validation_error)
+
+        def target(transport):
+            return run_replay(name, body.params, False, False, transport)
+
+        run_id = app.state.run_manager.start("invoke", name, target)
+        return {"run_id": run_id, "status": "running"}
+
+    @app.post("/capabilities/{name}/discover", status_code=202)
+    def discover_capability(name: str, body: DiscoverRequest):
+        _validate_capability_name(name)
+
+        def target(transport):
+            artifact = run_discover(body.goal, body.start_url, name, False, transport, False)
+            if artifact is None:
+                return {"succeeded": False, "artifact_version": None}
+            return {"succeeded": True, "artifact_version": artifact.version}
+
+        run_id = app.state.run_manager.start("discover", name, target)
+        return {"run_id": run_id, "status": "running"}
+
+    @app.get("/runs/{run_id}")
+    def get_run(run_id: str):
+        record = app.state.run_manager.get(run_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"unknown run_id '{run_id}'")
+        escalation = None
+        if record.escalation is not None:
+            screenshot_url = None
+            if record.escalation.screenshot_path:
+                screenshot_url = f"/evidence/{record.escalation.run_id}/{Path(record.escalation.screenshot_path).name}"
+            escalation = {
+                "reason": record.escalation.reason,
+                "current_step": record.escalation.current_step,
+                "screenshot_url": screenshot_url,
+            }
+        return {
+            "run_id": record.run_id,
+            "kind": record.kind,
+            "status": record.status,
+            "escalation": escalation,
+            "result": record.result.model_dump(mode="json") if record.result else None,
+            "discover_result": record.discover_result,
+            "error": record.error,
+        }
+
+    @app.post("/runs/{run_id}/resume", status_code=202)
+    def resume_run(run_id: str, body: ResumeRequest):
+        resumed = app.state.run_manager.resume(run_id, body.note)
+        if not resumed:
+            record = app.state.run_manager.get(run_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail=f"unknown run_id '{run_id}'")
+            raise HTTPException(status_code=409, detail=f"run is '{record.status}', not 'escalated'")
+        return {"status": "running"}
 
     return app

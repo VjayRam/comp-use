@@ -1,9 +1,21 @@
+import time
+
 from fastapi.testclient import TestClient
 
 from comp_use.cli import save_artifact
 from comp_use.config import Settings
-from comp_use.schemas import Artifact, Checkpoint, CheckpointType, InputParam, OutputParam
+from comp_use.schemas import (
+    Artifact,
+    Checkpoint,
+    CheckpointType,
+    InputParam,
+    InterventionRequest,
+    OutcomeType,
+    OutputParam,
+    ReplayResult,
+)
 from comp_use.server.app import create_app
+import comp_use.server.app as app_module
 
 
 def _artifact(capability_name="lookup_member", version=1, status="approved", description="Looks up a member."):
@@ -92,3 +104,136 @@ def test_list_versions_reports_status_for_every_version(tmp_path):
     assert response.status_code == 200
     versions = {v["version"]: v["status"] for v in response.json()}
     assert versions == {1: "approved", 2: "draft"}
+
+
+def _wait_for_status(client, run_id, status, timeout=1.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        body = client.get(f"/runs/{run_id}").json()
+        if body["status"] == status:
+            return body
+        time.sleep(0.01)
+    raise AssertionError(f"run {run_id} never reached status={status!r}, last body: {body}")
+
+
+def test_invoke_400s_on_missing_required_params_without_starting_a_run(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+
+    called = []
+    monkeypatch.setattr(app_module, "run_replay", lambda *a, **k: called.append(1))
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {}})
+
+    assert response.status_code == 400
+    assert called == []
+
+
+def test_invoke_404s_when_no_approved_version_exists(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="draft"), settings.artifacts_dir)
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+
+    assert response.status_code == 404
+
+
+def test_invoke_runs_in_the_background_and_reports_success(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+    monkeypatch.setattr(
+        app_module, "run_replay",
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport:
+            ReplayResult(outcome=OutcomeType.SUCCESS, outputs={"balance": "100"}),
+    )
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+
+    body = _wait_for_status(client, run_id, "done")
+    assert body["result"]["outcome"] == "success"
+    assert body["result"]["outputs"]["balance"] == "100"
+
+
+def test_discover_runs_in_the_background_and_reports_the_new_draft_version(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    monkeypatch.setattr(
+        app_module, "run_discover",
+        lambda goal, start_url, capability_name, confirm_risky, transport, interactive:
+            _artifact(capability_name=capability_name, version=1, status="draft"),
+    )
+
+    response = client.post(
+        "/capabilities/new_capability/discover",
+        json={"goal": "look up a member", "start_url": "http://localhost:5000/member/search"},
+    )
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+
+    body = _wait_for_status(client, run_id, "done")
+    assert body["discover_result"] == {"succeeded": True, "artifact_version": 1}
+
+
+def test_discover_reports_failure_when_run_discover_returns_none(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    monkeypatch.setattr(
+        app_module, "run_discover",
+        lambda goal, start_url, capability_name, confirm_risky, transport, interactive: None,
+    )
+
+    response = client.post(
+        "/capabilities/new_capability/discover",
+        json={"goal": "an impossible goal", "start_url": "http://localhost:5000/member/search"},
+    )
+    run_id = response.json()["run_id"]
+
+    body = _wait_for_status(client, run_id, "done")
+    assert body["discover_result"] == {"succeeded": False, "artifact_version": None}
+
+
+def test_run_escalates_and_resumes_over_http(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport):
+        transport.notify(InterventionRequest(run_id="ignored", capability_or_goal=capability_name, reason="risky step"))
+        note = transport.wait_for_resume()
+        return ReplayResult(outcome=OutcomeType.SUCCESS, detail=note)
+
+    monkeypatch.setattr(app_module, "run_replay", fake_run_replay)
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+
+    escalated = _wait_for_status(client, run_id, "escalated")
+    assert escalated["escalation"]["reason"] == "risky step"
+
+    resume_response = client.post(f"/runs/{run_id}/resume", json={"note": "confirmed manually"})
+    assert resume_response.status_code == 202
+
+    done = _wait_for_status(client, run_id, "done")
+    assert done["result"]["detail"] == "confirmed manually"
+
+
+def test_resume_409s_when_run_is_not_escalated(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+    monkeypatch.setattr(
+        app_module, "run_replay",
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport:
+            ReplayResult(outcome=OutcomeType.SUCCESS),
+    )
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+    _wait_for_status(client, run_id, "done")
+
+    resume_response = client.post(f"/runs/{run_id}/resume", json={"note": "too late"})
+    assert resume_response.status_code == 409
+
+
+def test_get_run_404s_for_unknown_run_id(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.get("/runs/does_not_exist")
+    assert response.status_code == 404
