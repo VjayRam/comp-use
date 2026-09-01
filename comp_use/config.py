@@ -18,6 +18,11 @@ class Settings(BaseModel):
             "navigate", "click", "type_text", "select_option", "extract",
         ]
     )
+    # Single source of truth for "what counts as sensitive" - both Guardrail.redact()
+    # (one-way, for logs/console) and SensitiveValueTokenizer (two-way, for the LLM
+    # call in discovery) read this same list. Neither has any field-specific logic
+    # hardcoded; covering a new sensitive field (SSN, email, phone, ...) is adding
+    # one regex here, not a code change to either consumer.
     redaction_patterns: list[str] = Field(
         default_factory=lambda: [
             r"\b\d{9,12}\b",

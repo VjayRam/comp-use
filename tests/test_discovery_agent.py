@@ -609,3 +609,58 @@ def test_agent_treats_string_none_target_as_missing(tmp_path):
     assert trace.succeeded is True
     assert len(trace.steps) == 1
     assert trace.steps[0].action == ActionType.CLICK
+
+
+class RecordingLLMClient:
+    """Records every observed_tree it was handed, so a test can assert the raw
+    sensitive value never appeared in what the LLM actually received."""
+
+    def __init__(self, actions):
+        self._actions = list(actions)
+        self._index = 0
+        self.received_trees = []
+
+    def decide_next_action(self, goal, observed_tree, screenshot_b64, history):
+        self.received_trees.append(observed_tree)
+        action = self._actions[self._index]
+        self._index += 1
+        return action
+
+
+def test_sensitive_values_are_tokenized_to_the_llm_but_real_to_the_browser(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+
+    class AccountRowSurface(FakeSurface):
+        def observe(self):
+            from comp_use.surface import ObservedState
+            return ObservedState(
+                accessibility_tree='link "ACC-000123" row  link "ACC-000456" row',
+                url=self.url,
+            )
+
+    surface = AccountRowSurface()
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_tok")
+    llm = RecordingLLMClient(actions=[])
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=5)
+
+    # Simulate the model doing exactly what a real one would: copying a literal
+    # name verbatim out of the (tokenized) tree it was shown, to select that row.
+    token = agent.tokenizer.tokenize("ACC-000123")
+    llm._actions = [
+        {"action": "click", "locator": {"strategy": "text", "value": {"text": token}},
+         "target": None, "text": None, "done": False},
+        {"action": "finish", "done": True},
+    ]
+
+    trace = agent.run(goal="Look up member 12345", start_url="http://localhost:5000/member/search")
+
+    # The LLM never saw the raw account number - only the placeholder token.
+    assert all("ACC-000123" not in tree for tree in llm.received_trees)
+    assert any(token in tree for tree in llm.received_trees)
+
+    # But the real browser action, and the persisted artifact step, used the real value.
+    # actions[0] is the agent's initial navigate; actions[1] is the click under test.
+    assert surface.actions[1][1].value["text"] == "ACC-000123"
+    assert trace.steps[0].locator.value["text"] == "ACC-000123"

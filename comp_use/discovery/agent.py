@@ -10,6 +10,7 @@ from comp_use.guardrail import AllowlistViolation, Guardrail
 from comp_use.llm_client import LLMClient
 from comp_use.schemas import ActionType, InterventionRequest, Locator, RiskTier, Step, ValueSource
 from comp_use.surface import safe_screenshot
+from comp_use.tokenizer import SensitiveValueTokenizer
 
 def _optional_str(raw) -> str | None:
     if raw is None:
@@ -95,6 +96,11 @@ class DiscoveryAgent:
         self.max_steps = max_steps
         self.escalation = escalation
         self.confirm_risky = confirm_risky
+        # Tokenized independently of Guardrail.redact() (one-way, log/console only):
+        # this is two-way so the LLM only ever reasons over placeholder tokens for
+        # account/transaction/confirmation IDs and dollar amounts, while everything
+        # that actually touches the browser or gets persisted uses real values.
+        self.tokenizer = SensitiveValueTokenizer(guardrail.settings.redaction_patterns)
 
     def _escalate(self, goal: str, current_step: int, reason: str) -> None:
         if self.escalation is None:
@@ -141,9 +147,14 @@ class DiscoveryAgent:
                 else:
                     self._print("[discover] WARNING: screenshot capture failed; falling back to a text-only decision this turn.")
                 needs_vision_fallback = False
+            # The LLM only ever sees a tokenized tree - real account/transaction/
+            # confirmation IDs and dollar amounts never leave the machine on this path.
+            # Screenshots (vision fallback) are NOT covered by this - a raw screenshot
+            # sent to a vision model remains a documented, separate exposure.
+            tokenized_tree = self.tokenizer.tokenize(observed.accessibility_tree)
             try:
                 decision = self.llm_client.decide_next_action(
-                    goal=goal, observed_tree=observed.accessibility_tree, screenshot_b64=screenshot_b64, history=history
+                    goal=goal, observed_tree=tokenized_tree, screenshot_b64=screenshot_b64, history=history
                 )
             except Exception as exc:
                 error_detail = f"{type(exc).__name__}: {exc}"
@@ -167,9 +178,13 @@ class DiscoveryAgent:
                 consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
                 continue
 
-            locator = _locator_from_decision(decision.get("locator"))
-            target = _optional_str(decision.get("target"))
-            text = _optional_str(decision.get("text"))
+            # Detokenize here, at the single boundary between "what the LLM decided"
+            # and "what actually drives the browser" - everything downstream of this
+            # point (surface.act, risk classification, the persisted artifact) sees
+            # real values again, same as if tokenization never happened.
+            locator = _locator_from_decision(self.tokenizer.detokenize_value(decision.get("locator")))
+            target = _optional_str(self.tokenizer.detokenize(_optional_str(decision.get("target"))))
+            text = _optional_str(self.tokenizer.detokenize(_optional_str(decision.get("text"))))
             raw_value_source = decision.get("value_source")
             value_source = _value_source_from_decision(raw_value_source)
             extract_as = _optional_str(decision.get("extract_as"))
