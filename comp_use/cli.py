@@ -350,7 +350,7 @@ def _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifac
 
 def run_replay(
     capability_name: str, params: dict, confirm_risky: bool,
-    diagnose_drift_on_failure: bool, transport,
+    diagnose_drift_on_failure: bool, transport, version: int | None = None,
 ) -> ReplayResult:
     import time
     from playwright.sync_api import sync_playwright
@@ -360,7 +360,18 @@ def run_replay(
     run_id = f"replay_{int(time.time())}"
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
 
-    artifact = load_artifact(capability_name, settings.artifacts_dir)
+    artifact = load_artifact(capability_name, settings.artifacts_dir, version=version)
+    # load_artifact(version=None) already guarantees "approved" (it walks versions
+    # newest-first and returns the first approved one). An explicitly-pinned version
+    # gets no such guarantee - it loads that exact file regardless of status - so a
+    # pinned draft/rejected version must be rejected here, before any browser opens.
+    if version is not None and artifact.status != "approved":
+        detail = (
+            f"version {version} of '{capability_name}' is '{artifact.status}', not "
+            "'approved' - only an approved version can be replayed/invoked"
+        )
+        evidence.log_event("version_not_approved", {"detail": detail})
+        raise ValueError(detail)
 
     validation_error = validate_required_params(artifact, params)
     if validation_error:
@@ -389,6 +400,7 @@ def _run_replay(args) -> None:
     result = run_replay(
         capability_name=args.capability_name, params=params, confirm_risky=args.confirm_risky,
         diagnose_drift_on_failure=args.diagnose_drift_on_failure, transport=transport,
+        version=args.version,
     )
     print(result.model_dump_json(indent=2))
 
@@ -423,6 +435,12 @@ def main() -> None:
     replay_parser.add_argument("--capability-name", required=True)
     replay_parser.add_argument("--params", default="{}")
     replay_parser.add_argument("--confirm-risky", action="store_true")
+    replay_parser.add_argument(
+        "--version", type=int, default=None,
+        help="Replay this specific artifact version instead of the latest approved one. "
+        "Must itself be 'approved' - a draft or rejected version raises an error and no "
+        "replay is attempted.",
+    )
     replay_parser.add_argument(
         "--diagnose-drift-on-failure", action="store_true",
         help="On hard_failure, ask a vision model whether the target control just moved/renamed "

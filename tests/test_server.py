@@ -138,12 +138,77 @@ def test_invoke_404s_when_no_approved_version_exists(tmp_path):
     assert response.status_code == 404
 
 
+def test_invoke_409s_when_pinned_version_is_not_approved_and_never_starts_a_run(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(version=1, status="approved"), settings.artifacts_dir)
+    save_artifact(_artifact(version=2, status="draft"), settings.artifacts_dir)
+
+    called = []
+    monkeypatch.setattr(app_module, "run_replay", lambda *a, **k: called.append(1))
+
+    response = client.post(
+        "/capabilities/lookup_member/invoke",
+        json={"params": {"member_id": "12345"}, "version": 2},
+    )
+
+    assert response.status_code == 409
+    assert "version 2" in response.json()["detail"]
+    assert "draft" in response.json()["detail"]
+    assert called == []  # no background run was ever started
+
+
+def test_invoke_accepts_a_pinned_version_that_is_approved(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(version=1, status="approved"), settings.artifacts_dir)
+    save_artifact(_artifact(version=2, status="approved"), settings.artifacts_dir)
+
+    seen_versions = []
+
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None):
+        seen_versions.append(version)
+        return ReplayResult(outcome=OutcomeType.SUCCESS, outputs={"balance": "100"})
+
+    monkeypatch.setattr(app_module, "run_replay", fake_run_replay)
+
+    response = client.post(
+        "/capabilities/lookup_member/invoke",
+        json={"params": {"member_id": "12345"}, "version": 1},
+    )
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+
+    body = _wait_for_status(client, run_id, "done")
+    assert body["result"]["outcome"] == "success"
+    assert seen_versions == [1]  # the pin was honored end to end, all the way to run_replay
+
+
+def test_invoke_defaults_to_latest_approved_version_when_unpinned(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(version=1, status="approved"), settings.artifacts_dir)
+    save_artifact(_artifact(version=2, status="draft"), settings.artifacts_dir)
+
+    seen_versions = []
+
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None):
+        seen_versions.append(version)
+        return ReplayResult(outcome=OutcomeType.SUCCESS)
+
+    monkeypatch.setattr(app_module, "run_replay", fake_run_replay)
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+
+    _wait_for_status(client, run_id, "done")
+    assert seen_versions == [None]  # unpinned - run_replay itself resolves "latest approved"
+
+
 def test_invoke_runs_in_the_background_and_reports_success(tmp_path, monkeypatch):
     client, settings = _client(tmp_path)
     save_artifact(_artifact(), settings.artifacts_dir)
     monkeypatch.setattr(
         app_module, "run_replay",
-        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport:
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None:
             ReplayResult(outcome=OutcomeType.SUCCESS, outputs={"balance": "100"}),
     )
 
@@ -196,7 +261,7 @@ def test_run_escalates_and_resumes_over_http(tmp_path, monkeypatch):
     client, settings = _client(tmp_path)
     save_artifact(_artifact(), settings.artifacts_dir)
 
-    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport):
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None):
         transport.notify(InterventionRequest(run_id="ignored", capability_or_goal=capability_name, reason="risky step"))
         note = transport.wait_for_resume()
         return ReplayResult(outcome=OutcomeType.SUCCESS, detail=note)
@@ -221,7 +286,7 @@ def test_resume_409s_when_run_is_not_escalated(tmp_path, monkeypatch):
     save_artifact(_artifact(), settings.artifacts_dir)
     monkeypatch.setattr(
         app_module, "run_replay",
-        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport:
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None:
             ReplayResult(outcome=OutcomeType.SUCCESS),
     )
 

@@ -30,6 +30,7 @@ def _validate_capability_name(name: str) -> None:
 
 class InvokeRequest(BaseModel):
     params: dict[str, Any] = {}
+    version: int | None = None
 
 
 class DiscoverRequest(BaseModel):
@@ -102,15 +103,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def invoke_capability(name: str, body: InvokeRequest):
         _validate_capability_name(name)
         try:
-            artifact = load_artifact(name, settings.artifacts_dir)
+            artifact = load_artifact(name, settings.artifacts_dir, version=body.version)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+        # load_artifact(version=None) already guarantees "approved". A pinned version
+        # gets no such guarantee (it loads that exact file regardless of status), so
+        # reject it here - fast, before a background run is even started - rather than
+        # only inside run_replay once the run is already underway.
+        if body.version is not None and artifact.status != "approved":
+            raise HTTPException(
+                status_code=409,
+                detail=f"version {body.version} of '{name}' is '{artifact.status}', not "
+                "'approved' - only an approved version can be invoked",
+            )
         validation_error = validate_required_params(artifact, body.params)
         if validation_error:
             raise HTTPException(status_code=400, detail=validation_error)
 
         def target(transport):
-            return run_replay(name, body.params, False, False, transport)
+            return run_replay(name, body.params, False, False, transport, version=body.version)
 
         run_id = app.state.run_manager.start("invoke", name, target)
         return {"run_id": run_id, "status": "running"}

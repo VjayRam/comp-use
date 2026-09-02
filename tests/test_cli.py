@@ -10,7 +10,7 @@ from playwright.sync_api import sync_playwright
 import comp_use.cli as cli
 from comp_use.cli import (
     _build_llm_client, _derive_success_checkpoint, approve_artifact, load_artifact,
-    next_artifact_version, reject_artifact, retire_artifact, save_artifact,
+    next_artifact_version, reject_artifact, retire_artifact, run_replay, save_artifact,
 )
 from comp_use.config import Settings
 from comp_use.escalation.transport import ControlTransport
@@ -56,6 +56,67 @@ def test_load_artifact_loads_specific_version(tmp_path):
     save_artifact(_artifact(version=2), tmp_path)
     loaded = load_artifact("lookup_member", tmp_path, version=1)
     assert loaded.version == 1
+
+
+def _artifact_requiring_member_id(version=1, status="approved"):
+    """Same shape as `_artifact()`, plus a required input param - forces
+    `run_replay` to return VALIDATION_ERROR (before ever opening a browser) when
+    called with empty params, which is enough to exercise the version-resolution
+    and approval-gating logic in isolation, without needing a live mock app."""
+    artifact = _artifact(version=version, status=status)
+    artifact.input_schema = [InputParam(name="member_id", type="string", required=True)]
+    return artifact
+
+
+def test_run_replay_defaults_to_latest_approved_version_when_unpinned(tmp_path, monkeypatch):
+    settings = Settings(artifacts_dir=tmp_path, evidence_dir=tmp_path / "evidence")
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    save_artifact(_artifact_requiring_member_id(version=1, status="approved"), tmp_path)
+    save_artifact(_artifact_requiring_member_id(version=2, status="draft"), tmp_path)
+
+    # v2 is a draft, so the unpinned call must fall back to v1 (the latest approved),
+    # never silently pick up the newer draft - same guarantee load_artifact(version=None)
+    # already gives every other unpinned caller. The empty params dict makes this return
+    # VALIDATION_ERROR before any browser opens, so the version-resolution path can be
+    # exercised on its own without a live mock app.
+    with patch.object(cli, "load_artifact", wraps=load_artifact) as spy_load:
+        result = run_replay(
+            "lookup_member", {}, confirm_risky=False, diagnose_drift_on_failure=False, transport=None,
+        )
+    loaded_versions = [call.kwargs.get("version") for call in spy_load.call_args_list]
+    assert loaded_versions == [None]
+    assert result.outcome == OutcomeType.VALIDATION_ERROR
+
+
+def test_run_replay_raises_when_pinned_version_is_not_approved(tmp_path, monkeypatch):
+    settings = Settings(artifacts_dir=tmp_path, evidence_dir=tmp_path / "evidence")
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    save_artifact(_artifact_requiring_member_id(version=1, status="approved"), tmp_path)
+    save_artifact(_artifact_requiring_member_id(version=2, status="draft"), tmp_path)
+
+    with pytest.raises(ValueError, match="version 2 of 'lookup_member' is 'draft', not 'approved'"):
+        run_replay(
+            "lookup_member", {"member_id": "12345"}, confirm_risky=False, diagnose_drift_on_failure=False,
+            transport=None, version=2,
+        )
+
+
+def test_run_replay_accepts_a_pinned_version_that_is_approved(tmp_path, monkeypatch):
+    settings = Settings(artifacts_dir=tmp_path, evidence_dir=tmp_path / "evidence")
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    save_artifact(_artifact_requiring_member_id(version=1, status="approved"), tmp_path)
+    save_artifact(_artifact_requiring_member_id(version=2, status="approved"), tmp_path)
+
+    # empty params -> VALIDATION_ERROR before any browser opens, once the pin has
+    # already passed the approved check without raising.
+    with patch.object(cli, "load_artifact", wraps=load_artifact) as spy_load:
+        result = run_replay(
+            "lookup_member", {}, confirm_risky=False, diagnose_drift_on_failure=False,
+            transport=None, version=1,
+        )
+    loaded_versions = [call.kwargs.get("version") for call in spy_load.call_args_list]
+    assert loaded_versions == [1]  # the pin was honored
+    assert result.outcome == OutcomeType.VALIDATION_ERROR  # reached past the approval check
 
 
 def test_next_artifact_version_is_1_for_a_new_capability(tmp_path):
@@ -221,6 +282,7 @@ def test_run_discover_produces_a_reusable_checkpoint_end_to_end(tmp_path, live_s
             params=json.dumps({"member_id": "67890"}),
             confirm_risky=False,
             diagnose_drift_on_failure=False,
+            version=None,
         )
         with patch("builtins.print") as mock_print:
             cli._run_replay(replay_args)
@@ -262,6 +324,18 @@ def test_main_dispatches_replay_subcommand_with_parsed_args(monkeypatch):
     assert called_args.params == '{"member_id": "12345"}'
     assert called_args.confirm_risky is False  # not passed - defaults to False
     assert called_args.diagnose_drift_on_failure is False  # not passed - defaults to False
+    assert called_args.version is None  # not passed - defaults to latest approved
+
+
+def test_main_dispatches_replay_subcommand_with_explicit_version(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["comp-use", "replay", "--capability-name", "lookup_member", "--version", "3"],
+    )
+    with patch.object(cli, "_run_replay") as mock_run_replay:
+        cli.main()
+    called_args = mock_run_replay.call_args.args[0]
+    assert called_args.version == 3
 
 
 class FakeDriftTransport(ControlTransport):
@@ -342,6 +416,7 @@ def test_run_replay_with_diagnose_drift_proposes_a_patched_version_not_active(tm
             params="{}",
             confirm_risky=True,  # skip the unrelated risky-step pause; only care about drift escalation here
             diagnose_drift_on_failure=True,
+            version=None,
         )
         result_json = None
 
