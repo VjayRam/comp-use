@@ -116,7 +116,7 @@ def demo_recoverable_retry(settings, guardrail) -> None:
             if p_now is None:
                 print("    condition cleared unexpectedly")
                 break
-            if not engine._should_retry(p_now, index=6, retries_used=retries_used):
+            if not engine._should_retry(artifact, p_now, index=6, retries_used=retries_used, confirm_risky=False):
                 print(f"    gave up after {attempt} retries -> outcome={p_now.outcome.value} detail={p_now.detail!r}")
                 break
             attempt += 1
@@ -149,7 +149,7 @@ def demo_recoverable_retry(settings, guardrail) -> None:
         matched2 = engine2._match_outcome_pattern(patched_artifact)
         print(f"  condition matched before recovery: {matched2 is not None}")
 
-        retried = engine2._should_retry(matched2, index=6, retries_used={})
+        retried = engine2._should_retry(patched_artifact, matched2, index=6, retries_used={}, confirm_risky=False)
         print(f"  _should_retry performed the REAL recovery_action (clicked the real 'Start over' link): {retried}")
         print(f"  url after recovery_action ran: {surface.current_url()}")
 

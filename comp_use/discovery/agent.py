@@ -12,6 +12,16 @@ from comp_use.schemas import ActionType, InterventionRequest, Locator, RiskTier,
 from comp_use.surface import safe_screenshot
 from comp_use.tokenizer import SensitiveValueTokenizer
 
+
+class _EscalationTransportFailed(Exception):
+    """Raised by DiscoveryAgent._escalate() when the transport itself fails (e.g. a
+    real, live-observed RuntimeError: LocalSharedBrowserTransport requires an
+    interactive terminal and raises when stdin is non-interactive). Never left to
+    surface as a raw traceback - caught in run(), which treats it as a hard stop:
+    there is no way to safely get human input at that point, so the run cannot
+    safely continue."""
+
+
 def _optional_str(raw) -> str | None:
     if raw is None:
         return None
@@ -105,17 +115,29 @@ class DiscoveryAgent:
     def _escalate(self, goal: str, current_step: int, reason: str) -> None:
         if self.escalation is None:
             return
-        self.escalation.escalate(
-            InterventionRequest(
-                run_id=self.evidence_logger.run_id,
-                capability_or_goal=goal,
-                current_step=current_step,
-                screenshot_path=self.evidence_logger.save_screenshot(
-                    safe_screenshot(self.surface), f"escalation_step{current_step}"
-                ),
-                reason=reason,
+        try:
+            self.escalation.escalate(
+                InterventionRequest(
+                    run_id=self.evidence_logger.run_id,
+                    capability_or_goal=goal,
+                    current_step=current_step,
+                    screenshot_path=self.evidence_logger.save_screenshot(
+                        safe_screenshot(self.surface), f"escalation_step{current_step}"
+                    ),
+                    reason=reason,
+                )
             )
-        )
+        except Exception as exc:
+            # A transport failure (e.g. non-interactive stdin) must never surface as a
+            # raw traceback - convert it into a controlled abort instead. See
+            # _EscalationTransportFailed's docstring for why run() treats this as a
+            # hard stop rather than a skip-and-continue.
+            error_detail = f"{type(exc).__name__}: {exc}"
+            self._print(f"[discover] ESCALATION TRANSPORT FAILED: {error_detail}")
+            self.evidence_logger.log_event(
+                "escalation_transport_failed", {"reason": reason, "error": error_detail}
+            )
+            raise _EscalationTransportFailed(error_detail) from exc
 
     def _print(self, message: str) -> None:
         # Console output isn't the evidence JSONL (which is already redacted via
@@ -131,6 +153,18 @@ class DiscoveryAgent:
         return consecutive_skips
 
     def run(self, goal: str, start_url: str) -> RunTrace:
+        try:
+            return self._run_loop(goal, start_url)
+        except _EscalationTransportFailed:
+            # The escalation transport itself failed (e.g. non-interactive stdin) -
+            # already logged inside _escalate(). There's no way to safely get human
+            # input at that point, so the run cannot safely continue; report it the
+            # same way any other "stuck, never reached finish" run is reported
+            # (succeeded=False, steps=[]) rather than letting the exception surface
+            # as a raw traceback all the way out of run().
+            return RunTrace(run_id=self.evidence_logger.run_id, goal=goal, final_url=self.surface.current_url())
+
+    def _run_loop(self, goal: str, start_url: str) -> RunTrace:
         trace = RunTrace(run_id=self.evidence_logger.run_id, goal=goal)
         self.surface.act(ActionType.NAVIGATE, locator=None, target=start_url, text=None)
         history: list[dict] = []
@@ -263,6 +297,25 @@ class DiscoveryAgent:
                 needs_vision_fallback = True
                 consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
                 continue
+
+            # The action that just ran (most concretely a CLICK) may have navigated the
+            # browser somewhere new. The allowlist check above only validated where we
+            # were BEFORE the action - a click that navigates off-allowlist was never
+            # checked at all. Re-validate the CURRENT url now, every time. Unlike the
+            # pre-check (which can just skip the decision and let the model retry),
+            # this one can't be undone - the browser has already left the allowlisted
+            # domain - so it's treated as a hard stop for the whole run, not a skip.
+            try:
+                self.guardrail.check_allowlist(self.surface.current_url(), action.value)
+            except AllowlistViolation as exc:
+                self._print(f"[discover] ABORTING: {action.value} navigated outside the allowlist: {exc}")
+                self.evidence_logger.log_event(
+                    "allowlist_violation_post_action",
+                    {"action": action.value, "url": self.surface.current_url(), "error": str(exc)},
+                )
+                self._escalate(goal, step_index, f"post-action allowlist violation: {exc}")
+                trace.final_url = self.surface.current_url()
+                return trace
 
             # Only persist the literal text for steps that AREN'T a goal_parameter -
             # a goal_parameter's discovery-time example (a real member ID, account

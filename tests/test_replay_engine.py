@@ -352,6 +352,186 @@ def test_recoverable_pattern_retries_3_times_by_default_before_giving_up(tmp_pat
     assert [e["data"]["attempt"] for e in retry_events] == [1, 2, 3]
 
 
+def test_recovery_action_performed_is_logged_as_its_own_evidence_event(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=1,
+            recovery_action=_dismiss_recovery_action(),
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_recovery_action_logged")
+    engine = ReplayEngine(surface, guardrail, evidence)
+
+    engine.run(artifact, params={"member_id": "12345"})
+
+    events = [json.loads(line) for line in (tmp_path / "evidence" / "replay_recovery_action_logged" / "log.jsonl").read_text().splitlines()]
+    performed = [e for e in events if e["event_type"] == "recovery_action_performed"]
+    assert len(performed) == 1
+    assert performed[0]["data"] == {"step_index": 0, "action": "click"}
+
+
+def test_recovery_action_that_violates_allowlist_hard_fails_instead_of_retrying_or_softening(tmp_path):
+    # A recovery_action is a real action against the live surface - it must get the same
+    # allowlist enforcement every other step gets. A policy breach here is NOT a transient
+    # condition: it must hard-stop the run, never be silently retried and never softened
+    # into a plain `recoverable` report.
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=2,
+            recovery_action=Step(
+                action=ActionType.NAVIGATE, target="http://evil.example.com/x", risk_tier=RiskTier.SAFE
+            ),
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
+    assert "not in allowlist" in (result.detail or "")
+    assert result.expected == "recovery_action to pass the URL/action allowlist"
+    assert surface.acted == []  # the disallowed recovery navigation must never actually run
+
+
+def test_risky_recovery_action_escalates_before_running(tmp_path):
+    # A recovery_action tagged RISKY must pause for human confirmation before it runs,
+    # exactly like a normal risky step does - never silently executed.
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=1,
+            recovery_action=Step(
+                action=ActionType.CLICK,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Dismiss"}),
+                risk_tier=RiskTier.RISKY,
+            ),
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_risky_recovery_escalate")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    engine.run(artifact, params={"member_id": "12345"}, confirm_risky=False)
+
+    assert len(transport.notified) == 1
+    assert "recovery_action" in transport.notified[0].reason
+    assert surface.dismissed is True  # confirmed via FakeTransport, then the click still ran
+
+
+def test_risky_recovery_action_does_not_escalate_when_confirm_risky_is_true(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=1,
+            recovery_action=Step(
+                action=ActionType.CLICK,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Dismiss"}),
+                risk_tier=RiskTier.RISKY,
+            ),
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_risky_recovery_no_escalate")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    result = engine.run(artifact, params={"member_id": "12345"}, confirm_risky=True)
+
+    assert transport.notified == []
+    assert result.outcome == OutcomeType.SUCCESS
+
+
+class _RaisingTransport(ControlTransport):
+    """Reproduces a real, live-observed failure: LocalSharedBrowserTransport raises
+    RuntimeError when stdin isn't interactive."""
+
+    def notify(self, request):
+        raise RuntimeError("stdin is closed/non-interactive")
+
+    def wait_for_resume(self):
+        raise AssertionError("should never be reached - notify() already raised")
+
+
+def test_risky_step_escalation_transport_failure_returns_hard_failure_not_a_crash(tmp_path):
+    artifact = _make_artifact()
+    artifact.steps[1].risk_tier = RiskTier.RISKY
+    surface = FakeSurface()
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_risky_escalation_transport_fail")
+    escalation = EscalationController(evidence, _RaisingTransport())
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    # Must return a structured HARD_FAILURE, never let the transport's RuntimeError
+    # escape run() as a raw traceback.
+    result = engine.run(artifact, params={"member_id": "12345"}, confirm_risky=False)
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
+    assert "RuntimeError" in result.detail
+    assert result.expected == "escalation to complete (human confirmation for a risky step)"
+    assert surface.acted == [(ActionType.NAVIGATE, "http://localhost:5000/member/search", None)]  # the risky step never ran
+
+
+def test_recovery_action_escalation_transport_failure_returns_hard_failure_not_a_crash(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=1,
+            recovery_action=Step(
+                action=ActionType.CLICK,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Dismiss"}),
+                risk_tier=RiskTier.RISKY,
+            ),
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_recovery_escalation_transport_fail")
+    escalation = EscalationController(evidence, _RaisingTransport())
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    result = engine.run(artifact, params={"member_id": "12345"}, confirm_risky=False)
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
+    assert "RuntimeError" in result.detail
+    assert result.expected == "recovery_action's escalation to complete"
+    assert surface.acted == []  # the recovery click never ran either
+
+
 def test_hard_failure_still_returned_when_no_outcome_pattern_matches(tmp_path):
     artifact = _make_artifact()
     artifact.outcome_patterns = [
@@ -428,6 +608,77 @@ def test_disallowed_url_step_returns_hard_failure_instead_of_crashing(tmp_path):
     assert result.step_index == 0
     assert "not in allowlist" in (result.detail or "")
     assert len(surface.acted) == 0  # the disallowed action must never actually run
+
+
+class _ClickNavigatesOffAllowlistSurface(FakeSurface):
+    """A CLICK on the recorded locator silently navigates off the allowlisted domain -
+    exactly the case the PRE-action allowlist check (which only validates the url we
+    were on BEFORE the click) can't catch, since a click has no explicit `target`."""
+
+    def act(self, action, locator, target, text):
+        result = super().act(action, locator, target, text)
+        if action == ActionType.CLICK:
+            self.url = "http://evil.example.com/hijacked"
+        return result
+
+
+def test_click_that_navigates_off_allowlist_is_caught_by_the_post_action_check(tmp_path):
+    artifact = _make_artifact()
+    artifact.steps.append(
+        Step(
+            action=ActionType.CLICK,
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Search"}),
+            risk_tier=RiskTier.SAFE,
+        )
+    )
+    surface = _ClickNavigatesOffAllowlistSurface()
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
+    assert result.step_index == 2  # the CLICK step - navigate(0), type_text(1), click(2)
+    assert "not in allowlist" in (result.detail or "")
+    assert result.expected == "click result to stay within the URL/action allowlist"
+    # the click itself DID run (this isn't a pre-action block) - the point is that its
+    # off-allowlist result is caught immediately after, not silently missed
+    assert len(surface.acted) == 3
+
+
+class _RecoveryClickNavigatesOffAllowlistSurface(FakeSurface):
+    """Same idea as _ClickNavigatesOffAllowlistSurface, but for a recovery_action's own
+    click rather than a normal recorded step's."""
+
+    def act(self, action, locator, target, text):
+        result = super().act(action, locator, target, text)
+        if action == ActionType.CLICK and locator is not None and locator.value.get("name") == "Dismiss":
+            self.url = "http://evil.example.com/hijacked"
+        return result
+
+    def check_checkpoint(self, checkpoint):
+        if checkpoint.type == CheckpointType.TEXT_PRESENT and checkpoint.text == "Interstitial":
+            return True  # always "visible" - forces a recovery attempt every time
+        return super().check_checkpoint(checkpoint)
+
+
+def test_recovery_action_click_that_navigates_off_allowlist_hard_fails(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=2,
+            recovery_action=_dismiss_recovery_action(),
+        )
+    ]
+    surface = _RecoveryClickNavigatesOffAllowlistSurface()
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
+    assert "not in allowlist" in (result.detail or "")
 
 
 def test_disallowed_url_step_is_not_mistaken_for_a_drifted_locator(tmp_path):

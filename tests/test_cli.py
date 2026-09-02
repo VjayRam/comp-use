@@ -13,11 +13,14 @@ from comp_use.cli import (
     next_artifact_version, reject_artifact, retire_artifact, run_replay, save_artifact,
 )
 from comp_use.config import Settings
+from comp_use.escalation.controller import EscalationController
 from comp_use.escalation.transport import ControlTransport
+from comp_use.evidence import EvidenceLogger
+from comp_use.guardrail import Guardrail
 from comp_use.llm_client import FakeLLMClient, FallbackLLMClient, NvidiaNimClient, OpenRouterClient
 from comp_use.schemas import (
     ActionType, Artifact, Checkpoint, CheckpointType, InputParam, Locator,
-    LocatorStrategy, OutcomeType, RiskTier, Step, ValueSource,
+    LocatorStrategy, OutcomeType, ReplayResult, RiskTier, Step, ValueSource,
 )
 from comp_use.surface import PlaywrightSurface
 from mock_app.app import create_app
@@ -338,6 +341,79 @@ def test_main_dispatches_replay_subcommand_with_explicit_version(monkeypatch):
     assert called_args.version == 3
 
 
+def _instrument_real_browser_close(monkeypatch, closed: list):
+    """Wraps the REAL Playwright BrowserType.launch (not a fake) so the returned
+    Browser's own .close() is observed - proves cleanup happens at the real API
+    level, not just against a mock. Used by the two tests below."""
+    from playwright.sync_api import BrowserType
+
+    original_launch = BrowserType.launch
+
+    def wrapped_launch(self, *args, **kwargs):
+        browser = original_launch(self, *args, **kwargs)
+        original_close = browser.close
+
+        def wrapped_close(*a, **k):
+            closed.append(True)
+            return original_close(*a, **k)
+
+        browser.close = wrapped_close
+        return browser
+
+    monkeypatch.setattr(BrowserType, "launch", wrapped_launch)
+
+
+def test_run_discover_closes_the_browser_even_when_the_agent_raises(tmp_path, monkeypatch):
+    settings = Settings(artifacts_dir=tmp_path, evidence_dir=tmp_path / "evidence")
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setenv("COMP_USE_HEADLESS", "1")
+    closed: list = []
+    _instrument_real_browser_close(monkeypatch, closed)
+
+    class _RaisingAgent:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, goal, start_url):
+            raise RuntimeError("simulated crash - e.g. a non-interactive-stdin escalation")
+
+    monkeypatch.setattr(cli, "DiscoveryAgent", _RaisingAgent)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        cli.run_discover(
+            goal="x", start_url="http://localhost:5000/member/search", capability_name="leak_check",
+            confirm_risky=False, transport=None,
+        )
+
+    assert closed == [True]  # browser.close() ran despite the exception, not skipped
+
+
+def test_run_replay_closes_the_browser_even_when_the_engine_raises(tmp_path, monkeypatch):
+    settings = Settings(artifacts_dir=tmp_path, evidence_dir=tmp_path / "evidence")
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setenv("COMP_USE_HEADLESS", "1")
+    save_artifact(_artifact(version=1, status="approved"), settings.artifacts_dir)
+    closed: list = []
+    _instrument_real_browser_close(monkeypatch, closed)
+
+    class _RaisingEngine:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, artifact, params, confirm_risky=False):
+            raise RuntimeError("simulated crash - e.g. a non-interactive-stdin escalation")
+
+    monkeypatch.setattr(cli, "ReplayEngine", _RaisingEngine)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        cli.run_replay(
+            capability_name="lookup_member", params={}, confirm_risky=False,
+            diagnose_drift_on_failure=False, transport=None,
+        )
+
+    assert closed == [True]  # browser.close() ran despite the exception, not skipped
+
+
 class FakeDriftTransport(ControlTransport):
     def __init__(self):
         self.notified = []
@@ -400,6 +476,78 @@ def _broken_transfer_artifact(live_server: str) -> Artifact:
         ),
         created_from_run_id="run_drift_test",
     )
+
+
+class _RaisingDriftTransport(ControlTransport):
+    """Reproduces a real, live-observed failure: LocalSharedBrowserTransport raises
+    RuntimeError when stdin isn't interactive."""
+
+    def notify(self, request):
+        raise RuntimeError("stdin is closed/non-interactive")
+
+    def wait_for_resume(self):
+        raise AssertionError("should never be reached - notify() already raised")
+
+
+class _MinimalSurface:
+    """Just enough of Surface for propose_drift_patch()/_diagnose_and_propose_patch():
+    a screenshot to send to the vision model, nothing more - no real browser needed."""
+
+    def screenshot(self):
+        return b"fakepng"
+
+    def current_url(self):
+        return "http://localhost:5000/member/12345/transfer"
+
+
+def test_diagnose_and_propose_patch_survives_escalation_transport_failure(tmp_path):
+    # The drift-diagnosis escalation is the 4th of the four call sites where
+    # EscalationController.escalate() was previously unwrapped - a transport failure
+    # here must not crash run_replay() and lose the already-computed ReplayResult;
+    # the proposed patch must still be saved to disk even though notifying a human
+    # about it failed.
+    settings = Settings(artifacts_dir=tmp_path, evidence_dir=tmp_path / "evidence")
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="drift_escalation_transport_fail")
+    escalation = EscalationController(evidence, _RaisingDriftTransport())
+    surface = _MinimalSurface()
+
+    artifact = Artifact(
+        capability_name="drift_escalation_test",
+        target={"app": "mock_bank", "base_url": "http://localhost:5000"},
+        steps=[
+            Step(
+                action=ActionType.CLICK,
+                locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Cofirm Transfer"}),
+                risk_tier=RiskTier.RISKY,
+            ),
+        ],
+        success_checkpoint=Checkpoint(
+            type=CheckpointType.ELEMENT_VISIBLE,
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "heading", "name": "Confirmation"}),
+        ),
+        created_from_run_id="run_x",
+    )
+    result = ReplayResult(
+        outcome=OutcomeType.HARD_FAILURE, step_index=0, expected="click to succeed", observed="..."
+    )
+
+    with patch.object(cli, "OpenRouterClient", return_value=FakeVisionDriftClient()):
+        cli._diagnose_and_propose_patch(settings, evidence, escalation, surface, artifact, result)
+
+    # must not raise, and the real replay result must be left untouched
+    assert result.proposed_patch_version is None
+    # the patch was still saved to disk despite the escalation failure - only the
+    # "notify a human to review it now" step failed, not the whole diagnosis
+    # (this artifact had no prior versions saved, so the proposed patch is v1)
+    assert (tmp_path / "drift_escalation_test" / "v1.json").exists()
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "evidence" / "drift_escalation_transport_fail" / "log.jsonl").read_text().splitlines()
+    ]
+    failed = [e for e in events if e["event_type"] == "escalation_transport_failed"]
+    assert len(failed) == 1
+    assert failed[0]["data"]["proposed_version"] == 1
 
 
 def test_run_replay_with_diagnose_drift_proposes_a_patched_version_not_active(tmp_path, live_server, monkeypatch):

@@ -1,3 +1,5 @@
+import json
+
 from comp_use.config import load_settings
 from comp_use.discovery.agent import DiscoveryAgent
 from comp_use.escalation.controller import EscalationController
@@ -237,6 +239,85 @@ def test_agent_escalates_when_max_steps_reached_without_finish(tmp_path):
     assert request.capability_or_goal == "do something"
     assert "max_steps" in request.reason
     assert transport.resumed is True
+
+
+def test_agent_aborts_and_escalates_when_a_click_navigates_off_allowlist(tmp_path):
+    # The PRE-action allowlist check validates the url we're already on - it can't
+    # catch a click that navigates somewhere new. This is the post-action check that
+    # closes that gap: it must abort the run (not just skip the decision, since the
+    # browser has already left the allowlisted domain and can't safely continue) and
+    # escalate to a human.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+
+    class HijackingSurface(FakeSurface):
+        def act(self, action, locator, target, text):
+            super().act(action, locator, target, text)
+            if action == ActionType.CLICK:
+                self.url = "http://evil.example.com/hijacked"
+
+    surface = HijackingSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}},
+             "target": None, "text": None, "value_source": None, "done": False},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_hijacked")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10, escalation=escalation)
+
+    trace = agent.run(goal="do something", start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is False
+    assert trace.steps == []  # the off-allowlist click must never be recorded as a valid step
+    assert len(transport.notified) == 1
+    assert "post-action allowlist violation" in transport.notified[0].reason
+    assert trace.final_url == "http://evil.example.com/hijacked"
+
+
+class _RaisingTransport(ControlTransport):
+    """Reproduces a real, live-observed failure: LocalSharedBrowserTransport raises
+    RuntimeError when stdin isn't interactive. wait_for_resume() is the call that
+    actually raises in production; raising from notify() here is an equally valid
+    stand-in for "the transport itself failed" and keeps this test simple."""
+
+    def notify(self, request):
+        raise RuntimeError("stdin is closed/non-interactive")
+
+    def wait_for_resume(self):
+        raise AssertionError("should never be reached - notify() already raised")
+
+
+def test_agent_returns_a_clean_trace_instead_of_crashing_when_escalation_transport_fails(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Confirm Transfer"}},
+             "done": False},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_escalation_transport_fails")
+    escalation = EscalationController(evidence, _RaisingTransport())
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10, escalation=escalation)
+
+    # Must return a clean RunTrace, never let the transport's RuntimeError escape
+    # run() as a raw traceback.
+    trace = agent.run(goal="Transfer funds", start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is False
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "evidence" / "run_escalation_transport_fails" / "log.jsonl").read_text().splitlines()
+    ]
+    failed_events = [e for e in events if e["event_type"] == "escalation_transport_failed"]
+    assert len(failed_events) == 1
+    assert "RuntimeError" in failed_events[0]["data"]["error"]
 
 
 def test_agent_escalates_on_repeated_skipped_decisions(tmp_path):

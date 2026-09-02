@@ -457,6 +457,22 @@ defaults to 3, why `business_outcome` is never retried) and `_resolve_with_fallb
 in `comp_use/surface.py` (why non-terminal attempts get a short probe timeout, why a
 total failure surfaces the *primary* locator's error).
 
+**Safety & robustness fixes found in self-review (no new demo commands — covered by
+unit tests and the live checks above).** Three gaps found by re-reading the shipped
+code rather than by the assignment's own checklist:
+- The allowlist is now re-checked **after** every action too, not just before — a
+  `CLICK` has no explicit target, so a click that navigates off-allowlist was
+  previously never validated at all (only an explicit `NAVIGATE`'s destination was).
+- All four `escalation.escalate(...)` call sites (`discovery/agent.py`,
+  `replay/engine.py` ×2, `cli.py`'s drift-diagnosis review) now catch a failing
+  transport (e.g. the non-interactive-stdin case above) and return a clean,
+  structured outcome instead of a raw traceback.
+- `browser.close()` in `run_discover()`/`run_replay()` now runs in a `finally`
+  block, so an unhandled exception mid-run can no longer skip cleanup and leak the
+  Chromium process.
+
+Full write-up, rationale, and the tests proving each: `ENHANCEMENTS.md` items 9-11.
+
 **9. Drift-aware self-healing replay** (needs a deliberately broken artifact —
 one locator typo'd to simulate drift)
 
@@ -500,8 +516,11 @@ python -m comp_use.cli replay --capability-name transfer_funds_drift_demo --conf
 
 If you run it *without* `--confirm-risky`, it escalates for risky-step
 confirmation like any other risky replay; make sure you're in an interactive
-terminal (a non-interactive stdin makes the CLI raise a clear error instead of
-hanging) or just pass `--confirm-risky`.
+terminal, or just pass `--confirm-risky`. A non-interactive stdin no longer
+hangs *or* crashes with a raw traceback — it comes back as a structured
+`"outcome": "hard_failure"` with `"expected": "escalation to complete (human
+confirmation for a risky step)"` explaining exactly why, same as any other
+replay failure.
 
 **10. Artifact versioning** (re-run discover for an existing capability)
 

@@ -195,20 +195,31 @@ def run_discover(
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=_headless())
-        page = browser.new_page()
-        surface = PlaywrightSurface(page)
-        escalation = EscalationController(evidence, transport, surface=surface)
-        agent = DiscoveryAgent(
-            surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps,
-            escalation=escalation, confirm_risky=confirm_risky,
-        )
-        trace = agent.run(goal=goal, start_url=start_url)
-        if not trace.succeeded:
-            evidence.save_screenshot(safe_screenshot(surface), "final")
-            browser.close()
-        else:
-            success_checkpoint = _derive_success_checkpoint(surface, fallback_url=trace.final_url)
-            browser.close()
+        try:
+            page = browser.new_page()
+            surface = PlaywrightSurface(page)
+            escalation = EscalationController(evidence, transport, surface=surface)
+            agent = DiscoveryAgent(
+                surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps,
+                escalation=escalation, confirm_risky=confirm_risky,
+            )
+            trace = agent.run(goal=goal, start_url=start_url)
+            if not trace.succeeded:
+                evidence.save_screenshot(safe_screenshot(surface), "final")
+            else:
+                success_checkpoint = _derive_success_checkpoint(surface, fallback_url=trace.final_url)
+        finally:
+            # Always attempt cleanup, even if agent.run() (or anything above) raised -
+            # e.g. a non-interactive-stdin RuntimeError from an escalation. Without this,
+            # any unhandled exception here skips browser.close() entirely and leaks the
+            # Chromium process; over the capability server (where the worker thread
+            # catches the exception and keeps running) that leak is also invisible.
+            # A close() failure itself must never mask whatever exception is already
+            # propagating, so it's swallowed rather than raised.
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     if not trace.succeeded:
         print(f"Discovery did not reach 'finish' within {settings.max_discovery_steps} steps.")
@@ -338,16 +349,35 @@ def _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifac
         },
     )
     print(f"[replay] drift diagnosis: proposed a patch, saved as {path} (NOT active until a human approves it).", flush=True)
-    escalation.escalate(
-        InterventionRequest(
-            run_id=evidence.run_id,
-            capability_or_goal=artifact.capability_name,
-            current_step=result.step_index,
-            screenshot_path=evidence.save_screenshot(safe_screenshot(surface), "drift_diagnosis"),
-            reason=f"possible drift detected at step {result.step_index} - review proposed patch "
-            f"v{patched.version} at {path} before relying on it for future replays",
+    try:
+        escalation.escalate(
+            InterventionRequest(
+                run_id=evidence.run_id,
+                capability_or_goal=artifact.capability_name,
+                current_step=result.step_index,
+                screenshot_path=evidence.save_screenshot(safe_screenshot(surface), "drift_diagnosis"),
+                reason=f"possible drift detected at step {result.step_index} - review proposed patch "
+                f"v{patched.version} at {path} before relying on it for future replays",
+            )
         )
-    )
+    except Exception as exc:
+        # This whole diagnosis pass is best-effort (§9: --diagnose-drift-on-failure is
+        # optional and beyond the assignment's requirements) - a transport failure here
+        # (e.g. non-interactive stdin) must not crash run_replay() and lose the real,
+        # already-computed `result`. The patch is already saved to disk regardless
+        # (above); only the "notify a human to review it now" step failed.
+        error_detail = f"{type(exc).__name__}: {exc}"
+        print(
+            f"[replay] drift diagnosis: patch v{patched.version} saved, but escalating for review failed "
+            f"({error_detail}) - review it manually, e.g. `comp-use approve --capability-name "
+            f"{artifact.capability_name} --version {patched.version}`.",
+            flush=True,
+        )
+        evidence.log_event(
+            "escalation_transport_failed",
+            {"reason": "drift_diagnosis_review", "proposed_version": patched.version, "error": error_detail},
+        )
+        return
     result.proposed_patch_version = patched.version
 
 
@@ -383,16 +413,24 @@ def run_replay(
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=_headless())
-        page = browser.new_page()
-        surface = PlaywrightSurface(page)
-        escalation = EscalationController(evidence, transport, surface=surface)
-        engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
-        result = engine.run(artifact, params, confirm_risky=confirm_risky)
-        if result.outcome != OutcomeType.SUCCESS:
-            evidence.save_screenshot(safe_screenshot(surface), "final")
-        if diagnose_drift_on_failure and result.outcome == OutcomeType.HARD_FAILURE:
-            _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifact, result)
-        browser.close()
+        try:
+            page = browser.new_page()
+            surface = PlaywrightSurface(page)
+            escalation = EscalationController(evidence, transport, surface=surface)
+            engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+            result = engine.run(artifact, params, confirm_risky=confirm_risky)
+            if result.outcome != OutcomeType.SUCCESS:
+                evidence.save_screenshot(safe_screenshot(surface), "final")
+            if diagnose_drift_on_failure and result.outcome == OutcomeType.HARD_FAILURE:
+                _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifact, result)
+        finally:
+            # Same reasoning as run_discover(): always attempt cleanup, even if
+            # engine.run() (or the drift-diagnosis escalation above) raised. A close()
+            # failure itself must never mask whatever exception is already propagating.
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     return result
 
