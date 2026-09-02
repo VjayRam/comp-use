@@ -398,9 +398,66 @@ curl -s -o /dev/null -X POST "http://localhost:5000/member/12345/transfer/review
 curl -s -X POST "http://localhost:5000/member/12345/transfer/review/$TOKEN/confirm" | grep -i "Session Expired"  # stale
 ```
 Expected: `Session Expired` in the second response — the exact page
-`transfer_funds`'s `recoverable` `OutcomePattern` matches on.
+`transfer_funds`'s `recoverable` `OutcomePattern` matches on. This only shows the raw
+page state, not `ReplayEngine`'s reaction to it (a normal `comp-use replay` always
+gets a fresh token, so it can't naturally reach this state mid-run) — see step 8 for
+that, which exercises the engine itself against this exact condition.
 
-**8. Drift-aware self-healing replay** (needs a deliberately broken artifact —
+**8. Locator fallback + `recoverable` auto-retry** (the two most recently added
+robustness features — a working fallback locator, and a bounded, automatic retry for
+`recoverable` outcomes instead of only ever detecting-and-reporting them)
+
+```bash
+python demo_edge_cases.py
+```
+
+This drives a real headless Chromium against the real mock app (no LLM, no API key
+needed) and prints two parts:
+
+- **Part A — `Locator.fallback` (`comp_use/surface.py`).** Clicks using a `Locator`
+  whose primary strategy (`role=button name="This Button Does Not Exist"`) doesn't
+  resolve on the page at all; `_resolve_with_fallback` falls through to the declared
+  `.fallback` locator (the real "Search" button) instead of raising. **Look for:**
+  `primary locator was bogus, fallback resolved to the real Search button: PASS` and
+  a final URL of `.../member/12345` — proof the fallback locator, not the primary,
+  actually drove the click.
+- **Part B — `OutcomePattern` retry (`comp_use/replay/engine.py`).** Manufactures a
+  real stale review token (confirms a sub-account once for real, then re-visits the
+  *same* now-consumed review URL — exactly what an accidental double-submit or a
+  stale bookmark produces) and exercises `ReplayEngine`'s retry logic directly
+  against that real page in two ways:
+  - **B1** uses the checked-in `open_sub_account` artifact completely unmodified.
+    **Look for:** three lines reading `retry #1/2/3 attempted...`, then `gave up
+    after 3 retries -> outcome=recoverable detail='session_expired'` — proof the new
+    default (`OutcomePattern.max_retries=3`) applies automatically even to an
+    artifact whose pattern predates the field. Then open the printed evidence log
+    path (`evidence/demo_recoverable_default_<ts>/log.jsonl`) and confirm it
+    contains exactly three `"event_type": "recoverable_retry"` lines with
+    `"attempt": 1, 2, 3`.
+  - **B2** attaches a `recovery_action` pointed at the app's real `"Start over"`
+    link (the one actually rendered on its `session_expired.html`) and re-runs
+    against the same stale page. **Look for:** `_should_retry performed the REAL
+    recovery_action...: True`, a changed `url after recovery_action ran` (now
+    `.../sub-account/new`, not the review page), and `condition still matches after
+    recovery: False` — proof the recovery action was a real click against a real
+    element that genuinely cleared the matched condition, not just a label change.
+    Its evidence log (`evidence/demo_recoverable_real_action_<ts>/log.jsonl`) has
+    exactly one `recoverable_retry` line with `"max_retries": 1`.
+
+Known, documented limitation this demo makes visible rather than hides: B2 proves
+the recovery action *clears the condition*, not that the run reaches `SUCCESS`
+afterward — this particular real scenario needs the whole multi-step sub-account
+form re-filled after "Start over," which a single `recovery_action: Step` can't do.
+The full recovery→`SUCCESS` path is proven instead by
+`tests/test_replay_engine.py::test_recoverable_pattern_retries_and_succeeds_once_recovery_action_clears_it`,
+against a synthetic single-step-dismissible interstitial (the case this feature is
+actually designed for). Full design rationale for both features is inline where
+they're implemented: `OutcomePattern` in `comp_use/schemas.py` (why `max_retries`
+defaults to 3, why `business_outcome` is never retried) and `_resolve_with_fallback`
+in `comp_use/surface.py` (why non-terminal attempts get a short probe timeout, why a
+total failure surfaces the *primary* locator's error).
+
+**9. Drift-aware self-healing replay** (needs a deliberately broken artifact —
 one locator typo'd to simulate drift)
 
 ```bash
@@ -446,7 +503,7 @@ confirmation like any other risky replay; make sure you're in an interactive
 terminal (a non-interactive stdin makes the CLI raise a clear error instead of
 hanging) or just pass `--confirm-risky`.
 
-**9. Artifact versioning** (re-run discover for an existing capability)
+**10. Artifact versioning** (re-run discover for an existing capability)
 
 ```bash
 python -m comp_use.cli discover --goal "Look up member 12345 and view their account balances" \
@@ -455,7 +512,7 @@ python -m comp_use.cli discover --goal "Look up member 12345 and view their acco
 Expected: creates the *next* version file without touching the existing one —
 check `artifacts/lookup_member/` afterward.
 
-**10. Full regression check**
+**11. Full regression check**
 
 ```bash
 python -m pytest -v
@@ -471,6 +528,7 @@ python -m pytest -v
 /evidence/          logs + screenshots from discovery and replay runs
 /docs/              design specs and implementation plans
 run_mock_app.py     start the mock bank app on :5000
+demo_edge_cases.py  live demo: Locator.fallback + recoverable auto-retry (see "Exercising every outcome" step 8)
 REPORT.md           design write-up (architecture, schema, determinism, etc.)
 ```
 

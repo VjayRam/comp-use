@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,10 @@ def test_recoverable_returned_when_a_dismiss_and_retry_pattern_matches(tmp_path)
             detail="session_expired",
         )
     ]
+    # This pattern never declares max_retries/recovery_action - it still gets the
+    # default 3 retry attempts (a bare recheck, since there's no recovery_action to
+    # perform) before giving up; the condition here never clears either way, so the
+    # final reported outcome is unchanged from before retry support existed.
     surface = FakeSurface(checkpoint_result=False, matching_checkpoint_text="This review session has expired")
     engine = _make_engine(surface, tmp_path)
 
@@ -191,6 +196,160 @@ def test_recoverable_returned_when_a_dismiss_and_retry_pattern_matches(tmp_path)
 
     assert result.outcome == OutcomeType.RECOVERABLE
     assert result.detail == "session_expired"
+
+
+class _RecoverableUntilDismissedSurface(FakeSurface):
+    """A recoverable interstitial (TEXT_PRESENT "Interstitial") is visible until a
+    CLICK on a button named "Dismiss" is performed, then it clears and the artifact's
+    normal steps proceed. Used to prove ReplayEngine's retry loop actually performs
+    the declared recovery_action and re-checks, rather than only labeling the state."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dismissed = False
+
+    def act(self, action, locator, target, text):
+        result = super().act(action, locator, target, text)
+        if action == ActionType.CLICK and locator is not None and locator.value.get("name") == "Dismiss":
+            self.dismissed = True
+        return result
+
+    def check_checkpoint(self, checkpoint):
+        if checkpoint.type == CheckpointType.TEXT_PRESENT and checkpoint.text == "Interstitial":
+            return not self.dismissed
+        return super().check_checkpoint(checkpoint)
+
+
+def _dismiss_recovery_action(button_name: str = "Dismiss") -> Step:
+    return Step(
+        action=ActionType.CLICK,
+        locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": button_name}),
+        risk_tier=RiskTier.SAFE,
+    )
+
+
+def test_recoverable_pattern_retries_and_succeeds_once_recovery_action_clears_it(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=2,
+            recovery_action=_dismiss_recovery_action(),
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.SUCCESS
+    assert surface.dismissed is True
+    # the recovery action really ran as a genuine surface.act() call, before the
+    # artifact's own recorded steps (navigate, type_text) proceeded
+    assert surface.acted[0] == (ActionType.CLICK, None, None)
+    assert len(surface.acted) == 3
+
+
+def test_recoverable_pattern_gives_up_after_max_retries_and_reports_recoverable(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=2,
+            # clicks the wrong button - the interstitial never actually clears
+            recovery_action=_dismiss_recovery_action(button_name="Not The Real Dismiss Button"),
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.RECOVERABLE
+    assert result.detail == "dismissable_interstitial"
+    assert surface.dismissed is False
+    # exactly max_retries recovery attempts were made, then it gave up - no infinite
+    # loop, and the artifact's own steps were never attempted
+    assert len(surface.acted) == 2
+
+
+def test_recoverable_retry_is_logged_as_evidence(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=1,
+            recovery_action=_dismiss_recovery_action(),
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_retry_evidence")
+    engine = ReplayEngine(surface, guardrail, evidence)
+
+    engine.run(artifact, params={"member_id": "12345"})
+
+    events = [json.loads(line) for line in (tmp_path / "evidence" / "replay_retry_evidence" / "log.jsonl").read_text().splitlines()]
+    retry_events = [e for e in events if e["event_type"] == "recoverable_retry"]
+    assert len(retry_events) == 1
+    assert retry_events[0]["data"]["attempt"] == 1
+    assert retry_events[0]["data"]["max_retries"] == 1
+    assert retry_events[0]["data"]["detail"] == "dismissable_interstitial"
+
+
+def test_max_retries_zero_opts_out_of_retrying_and_reports_immediately(tmp_path):
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="dismissable_interstitial",
+            max_retries=0,
+            recovery_action=_dismiss_recovery_action(),
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)
+    engine = _make_engine(surface, tmp_path)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.RECOVERABLE
+    assert surface.acted == []  # no recovery action attempted, no retry loop entered
+
+
+def test_recoverable_pattern_retries_3_times_by_default_before_giving_up(tmp_path):
+    # OutcomePattern.max_retries defaults to 3 - even a pattern that declares no
+    # max_retries/recovery_action at all still gets a bounded, automatic retry budget.
+    artifact = _make_artifact()
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.RECOVERABLE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="Interstitial"),
+            detail="transient",
+        )
+    ]
+    surface = _RecoverableUntilDismissedSurface(checkpoint_result=True)  # never clears - no recovery_action declared
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_default_retry")
+    engine = ReplayEngine(surface, guardrail, evidence)
+
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.RECOVERABLE
+    events = [json.loads(line) for line in (tmp_path / "evidence" / "replay_default_retry" / "log.jsonl").read_text().splitlines()]
+    retry_events = [e for e in events if e["event_type"] == "recoverable_retry"]
+    assert len(retry_events) == 3
+    assert [e["data"]["attempt"] for e in retry_events] == [1, 2, 3]
 
 
 def test_hard_failure_still_returned_when_no_outcome_pattern_matches(tmp_path):
