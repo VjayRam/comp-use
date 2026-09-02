@@ -57,6 +57,19 @@ class Surface:
     def current_url(self) -> str:
         raise NotImplementedError
 
+    def get_heading_text(self) -> str | None:
+        """Best-effort: the current view's primary heading/title, if this surface
+        can identify one. Used only to derive a generic success checkpoint after a
+        discovery run (see cli._derive_success_checkpoint) - returning None just
+        means the caller falls back to a literal target-identifier match instead.
+        Deliberately its own method rather than something callers derive from
+        observe()'s accessibility-tree text: "the main heading" is a different
+        concept per surface (a DOM heading role vs. a native window title vs. a
+        desktop control), so each Surface implementation decides how to answer it,
+        the same way check_checkpoint() lets each surface interpret its own
+        checkpoint types."""
+        raise NotImplementedError
+
 
 class PlaywrightSurface(Surface):
     def __init__(self, page: Page):
@@ -101,3 +114,10 @@ class PlaywrightSurface(Surface):
 
     def current_url(self) -> str:
         return self.page.url or ""
+
+    def get_heading_text(self) -> str | None:
+        try:
+            text = self.page.get_by_role("heading").first.text_content(timeout=2000)
+        except Exception:
+            return None
+        return text.strip() if text and text.strip() else None

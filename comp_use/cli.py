@@ -29,7 +29,7 @@ from comp_use.schemas import (
     RiskTier,
     Step,
 )
-from comp_use.surface import PlaywrightSurface, safe_screenshot
+from comp_use.surface import PlaywrightSurface, Surface, safe_screenshot
 
 
 def _headless() -> bool:
@@ -139,20 +139,23 @@ def _build_llm_client(settings: Settings) -> LLMClient:
     return primary
 
 
-def _derive_success_checkpoint(surface: PlaywrightSurface, fallback_url: str) -> Checkpoint:
+def _derive_success_checkpoint(surface: Surface, fallback_url: str) -> Checkpoint:
     """Build a checkpoint from the final page's own heading rather than baking in
     this run's literal URL, which would only ever match a future replay that
     happens to reproduce the exact same dynamic path segments (a member ID, a
-    generated confirmation/transaction number, ...)."""
-    heading_text = None
-    try:
-        heading_text = surface.page.get_by_role("heading").first.text_content(timeout=2000)
-    except Exception:
-        heading_text = None
-    if heading_text and heading_text.strip():
+    generated confirmation/transaction number, ...).
+
+    Goes through Surface.get_heading_text() rather than reaching into a
+    PlaywrightSurface's underlying `.page` directly - this function used to be
+    typed on PlaywrightSurface and call `surface.page.get_by_role(...)` itself,
+    which meant discovery's checkpoint derivation couldn't work against any future
+    non-Playwright Surface (e.g. a desktop implementation) without being rewritten.
+    Depending only on the abstract Surface interface keeps this generic."""
+    heading_text = surface.get_heading_text()
+    if heading_text:
         return Checkpoint(
             type=CheckpointType.ELEMENT_VISIBLE,
-            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "heading", "name": heading_text.strip()}),
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "heading", "name": heading_text}),
         )
     print(
         "[discover] WARNING: no heading found on the final page to build a generic "

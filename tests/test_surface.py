@@ -62,6 +62,18 @@ def test_check_checkpoint_element_visible(surface, live_server):
     assert surface.check_checkpoint(checkpoint) is True
 
 
+def test_get_heading_text_returns_the_page_heading(surface, live_server):
+    surface.act(ActionType.NAVIGATE, locator=None, target=f"{live_server}/member/12345", text=None)
+    assert surface.get_heading_text() == "Member Detail"
+
+
+def test_get_heading_text_returns_none_when_no_heading_exists(surface, live_server):
+    # /member/search has no <h1>/heading role - this is the path
+    # cli._derive_success_checkpoint falls back to a literal URL match on.
+    surface.act(ActionType.NAVIGATE, locator=None, target=f"{live_server}/member/search", text=None)
+    assert surface.get_heading_text() is None
+
+
 class _RaisingSurface:
     def screenshot(self):
         raise TimeoutError("Page.screenshot: Timeout 30000ms exceeded.")
