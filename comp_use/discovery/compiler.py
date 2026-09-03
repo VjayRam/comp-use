@@ -1,5 +1,19 @@
 from comp_use.discovery.agent import RunTrace
-from comp_use.schemas import ActionType, Artifact, Checkpoint, InputParam, OutputParam
+from comp_use.schemas import ActionType, Artifact, Checkpoint, InputParam, OutputParam, Step
+
+
+def _dedup_consecutive_steps(steps: list[Step]) -> list[Step]:
+    # Harmless but wasteful duplicate consecutive steps (the same locator/action/value
+    # decided twice in a row - observed live against MERIDIAN CORE's Funds Transfer
+    # flow, see EXT_TASK_FIXES.md #8) collapse to one. Only exact-adjacent duplicates
+    # are removed - a repeated action elsewhere in the flow that isn't consecutive is
+    # left untouched, since that could be a genuinely distinct step.
+    deduped: list[Step] = []
+    for step in steps:
+        if deduped and deduped[-1] == step:
+            continue
+        deduped.append(step)
+    return deduped
 
 
 def compile_artifact(
@@ -32,7 +46,7 @@ def compile_artifact(
         description=trace.goal,
         input_schema=input_schema,
         output_schema=output_schema,
-        steps=trace.steps,
+        steps=_dedup_consecutive_steps(trace.steps),
         success_checkpoint=success_checkpoint,
         created_from_run_id=trace.run_id,
     )

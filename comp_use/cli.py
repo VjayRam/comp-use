@@ -3,6 +3,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -157,16 +158,31 @@ def _derive_success_checkpoint(surface: Surface, fallback_url: str) -> Checkpoin
             type=CheckpointType.ELEMENT_VISIBLE,
             locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "heading", "name": heading_text}),
         )
-    print(
-        "[discover] WARNING: no heading found on the final page to build a generic "
-        "success checkpoint; falling back to a literal URL match, which will only "
-        f"match future replays that happen to produce this exact URL again ({fallback_url!r}).",
-        flush=True,
-    )
-    return Checkpoint(
-        type=CheckpointType.URL_MATCHES,
-        url_pattern=fallback_url.split("://", 1)[-1].split("/", 1)[-1],
-    )
+    path = fallback_url.split("://", 1)[-1].split("/", 1)[-1]
+    # A purely-numeric path segment is almost always a dynamic ID (a member number,
+    # here) rather than part of the route itself - wildcard it before falling back to
+    # a literal match, so e.g. "members/102777/hold/review" becomes
+    # "members/*/hold/review" and generalizes across every member, not just the one
+    # seen during this discovery run. See EXT_TASK_FIXES.md #4: without this, a page
+    # with no heading (so no generic ELEMENT_VISIBLE checkpoint is possible) produced
+    # an artifact whose success_checkpoint could only ever verify against the exact
+    # member discovered against.
+    generalized_path = "/".join("*" if segment.isdigit() else segment for segment in path.split("/"))
+    if generalized_path != path:
+        print(
+            f"[discover] no heading found on the final page; falling back to a "
+            f"wildcarded URL match ({generalized_path!r}) with numeric segments "
+            f"generalized so future replays for a different record still verify.",
+            flush=True,
+        )
+    else:
+        print(
+            "[discover] WARNING: no heading found on the final page to build a generic "
+            "success checkpoint; falling back to a literal URL match, which will only "
+            f"match future replays that happen to produce this exact URL again ({fallback_url!r}).",
+            flush=True,
+        )
+    return Checkpoint(type=CheckpointType.URL_MATCHES, url_pattern=generalized_path)
 
 
 def run_discover(
@@ -225,10 +241,20 @@ def run_discover(
         print(f"Discovery did not reach 'finish' within {settings.max_discovery_steps} steps.")
         return None
 
+    # Derive the target descriptor from start_url's own host/scheme rather than a
+    # hardcoded "mock_bank" label + a "/member"-split base_url - both were written for
+    # the original take-home's mock app specifically and silently produced wrong
+    # values (a leftover mock_bank label, and a base_url that still included the path,
+    # e.g. ".../signon") against MERIDIAN CORE, whose start_url has no "/member"
+    # segment to split on. See EXT_TASK_FIXES.md #8.
+    parsed_start_url = urlparse(start_url)
     artifact = compile_artifact(
         trace,
         capability_name=capability_name,
-        target={"app": "mock_bank", "base_url": start_url.split("/member")[0]},
+        target={
+            "app": parsed_start_url.hostname or start_url,
+            "base_url": f"{parsed_start_url.scheme}://{parsed_start_url.netloc}",
+        },
         success_checkpoint=success_checkpoint,
         output_schema=[],
     )

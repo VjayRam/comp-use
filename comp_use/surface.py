@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from playwright.sync_api import Page
@@ -133,7 +134,39 @@ class PlaywrightSurface(Surface):
             # Playwright 1.47 (pinned in requirements.txt) predates Locator.aria_snapshot();
             # page.accessibility.snapshot() is the equivalent API on this version.
             snapshot = str(self.page.accessibility.snapshot())
+        field_hints = self._form_field_hints()
+        if field_hints:
+            snapshot = (
+                f"{snapshot}\n\nForm field attributes (stable handles for building "
+                f"locators - prefer these over matching a field's current value, "
+                f"which changes):\n{field_hints}"
+            )
         return ObservedState(accessibility_tree=snapshot, url=self.page.url)
+
+    def _form_field_hints(self) -> str:
+        # aria_snapshot() exposes role/accessible-name/value but never raw HTML
+        # attributes - on a legacy table-based form where inputs have no accessible
+        # name (label text sits in an adjacent cell, not a real <label for=...>), the
+        # model's only remaining handle for an ambiguous field becomes its CURRENT
+        # VALUE, which produces a locator that breaks the moment that value changes
+        # (see EXT_TASK_FIXES.md #2). This supplements the tree with name/id/type only
+        # - never the field's actual value, so this stays safe to run through the same
+        # tokenize() pipeline as the rest of the tree, and never leaks real content
+        # (an email, a phone number, ...) through this second channel.
+        try:
+            fields = self.page.eval_on_selector_all(
+                "input, select, textarea",
+                "els => els.map(el => ({tag: el.tagName.toLowerCase(), type: el.type || '', "
+                "name: el.name || '', id: el.id || ''}))",
+            )
+        except Exception:
+            return ""
+        lines = [
+            f"- {f['tag']}[type={f['type']!r} name={f['name']!r} id={f['id']!r}]"
+            for f in fields
+            if f.get("name") or f.get("id")
+        ]
+        return "\n".join(lines)
 
     def act(self, action: ActionType, locator: Locator | None, target: str | None, text: str | None) -> str | None:
         if action == ActionType.NAVIGATE:
@@ -160,7 +193,15 @@ class PlaywrightSurface(Surface):
         if checkpoint.type == CheckpointType.TEXT_PRESENT:
             return checkpoint.text in self.page.content()
         if checkpoint.type == CheckpointType.URL_MATCHES:
-            return checkpoint.url_pattern in self.page.url
+            # url_pattern may contain "*" wildcard segments (see
+            # cli._derive_success_checkpoint's numeric-segment substitution) - convert
+            # to a regex and search, rather than a plain substring check, so a pattern
+            # like "members/*/hold/review" matches any member's URL. A pattern with no
+            # "*" behaves identically to the old plain substring check, since
+            # re.escape(pattern) with nothing to un-escape into ".*" is just the
+            # literal string.
+            regex = re.escape(checkpoint.url_pattern).replace(r"\*", ".*")
+            return re.search(regex, self.page.url) is not None
         raise ValueError(f"unknown checkpoint type: {checkpoint.type}")
 
     def screenshot(self) -> bytes:

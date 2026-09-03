@@ -34,9 +34,21 @@ def _optional_str(raw) -> str | None:
 
 
 _LOCATOR_ACTIONS = {ActionType.CLICK, ActionType.TYPE_TEXT, ActionType.SELECT_OPTION, ActionType.EXTRACT}
-# Match the control that actually commits an irreversible change (a "Confirm ..."
-# button), not navigation toward it - a link that just opens a form isn't risky.
-_RISKY_TARGET_HINTS = ("confirm", "delete")
+# Match the control that actually commits an irreversible change (a "Confirm ...",
+# "Post ..." button), not navigation toward it - a link that just opens a form isn't
+# risky. "post" was added after live testing against MERIDIAN CORE showed its own
+# commit buttons are named "Post Transfer"/"Post Hold", which the original
+# confirm/delete-only list never matched - see EXT_TASK_FIXES.md #1.
+_RISKY_TARGET_HINTS = ("confirm", "delete", "post")
+# Second, broader signal: any click/navigate while sitting on a URL whose path
+# contains "review" is treated as risky regardless of the control's own label. Every
+# review->post flow observed on MERIDIAN CORE (transfer, hold, open-share) reaches a
+# `.../review`-style URL immediately before the irreversible commit action - and one
+# of those commit buttons ("Open Share") matches no keyword at all. This is
+# deliberately over-conservative: it will also flag a "Cancel" link on the same review
+# page as risky (an unnecessary escalation), which is the safe failure direction,
+# unlike the alternative of silently missing a real commit button's exact wording.
+_RISKY_URL_HINTS = ("review",)
 
 
 def _locator_from_decision(raw) -> Locator | None:
@@ -78,10 +90,13 @@ class RunTrace:
     succeeded: bool = False
 
 
-def _classify_risk(action: ActionType, target: str | None, locator) -> RiskTier:
+def _classify_risk(action: ActionType, target: str | None, locator, current_url: str | None = None) -> RiskTier:
     haystack = " ".join(filter(None, [target, str(locator.value) if locator else ""])).lower()
-    if action in (ActionType.CLICK, ActionType.NAVIGATE) and any(h in haystack for h in _RISKY_TARGET_HINTS):
-        return RiskTier.RISKY
+    if action in (ActionType.CLICK, ActionType.NAVIGATE):
+        if any(h in haystack for h in _RISKY_TARGET_HINTS):
+            return RiskTier.RISKY
+        if current_url and any(h in current_url.lower() for h in _RISKY_URL_HINTS):
+            return RiskTier.RISKY
     return RiskTier.SAFE
 
 
@@ -170,9 +185,20 @@ class DiscoveryAgent:
         history: list[dict] = []
         consecutive_skips = 0
         needs_vision_fallback = False
+        # Best-effort completeness signal, not per-page-precise tracking: if a
+        # dropdown was visible on ANY page seen this run but the trace never actually
+        # performed a select_option, a capability may have silently shipped with a
+        # field left at its default (e.g. Place Hold's share/reason-code dropdowns -
+        # see EXT_TASK_FIXES.md #5). This can't tell you WHICH dropdown was skipped or
+        # whether skipping it was actually fine for this goal - it's a visibility net,
+        # not a hard gate, so it never blocks or fails a run.
+        saw_combobox = False
+        used_select_option = False
 
         for step_index in range(self.max_steps):
             observed = self.surface.observe()
+            if not saw_combobox and "combobox" in observed.accessibility_tree.lower():
+                saw_combobox = True
             screenshot_b64 = None
             if needs_vision_fallback:
                 png = safe_screenshot(self.surface)
@@ -203,6 +229,17 @@ class DiscoveryAgent:
             if decision.get("done") or decision.get("action") == "finish":
                 self._print("[discover] finish")
                 trace.succeeded = True
+                if saw_combobox and not used_select_option:
+                    self._print(
+                        "[discover] WARNING: a dropdown (combobox) was visible at some point "
+                        "during this run but no select_option action was ever performed - a "
+                        "field may have been silently left at its default. Review the "
+                        "compiled artifact before approving it."
+                    )
+                    self.evidence_logger.log_event(
+                        "possible_incomplete_capability",
+                        {"reason": "combobox_seen_but_never_selected"},
+                    )
                 break
 
             try:
@@ -276,7 +313,7 @@ class DiscoveryAgent:
                 self.evidence_logger.log_event("skipped_decision", {"reason": "allowlist", "decision": decision})
                 consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
                 continue
-            risk_tier = _classify_risk(action, target, locator)
+            risk_tier = _classify_risk(action, target, locator, current_url=self.surface.current_url())
             consecutive_skips = 0
 
             if self.guardrail.requires_confirmation(risk_tier, self.confirm_risky) and self.escalation is not None:
@@ -284,6 +321,8 @@ class DiscoveryAgent:
 
             try:
                 self.surface.act(action, locator=locator, target=target, text=text)
+                if action == ActionType.SELECT_OPTION:
+                    used_select_option = True
             except Exception as exc:
                 error_detail = f"{type(exc).__name__}: {exc}"
                 self._print(f"[discover] action failed: {action.value} raised {error_detail}")

@@ -50,7 +50,28 @@ Rules:
 - locator MUST include strategy and value. Never send locator as {}.
 - click/type_text/select_option/extract require a complete locator.
 - type_text requires text and value_source.
+- value_source.type must be exactly "goal_parameter" or "fixed" - no other value.
+- strategy must be exactly "role", "text", or "css" - no other value (never "xpath").
+- A role locator with an empty or missing name is only safe when exactly one element on
+  the page has that role. Legacy table-based forms often have multiple unlabeled inputs
+  with the same role (e.g. two textboxes for username and password, with the label as
+  plain text in an adjacent table cell, not a real <label>). If a role locator would be
+  ambiguous, use a css locator keyed on the input's own name/type/id attribute instead,
+  e.g. {"strategy":"css","value":{"css":"input[name='operator']"}} or
+  {"strategy":"css","value":{"css":"input[type='password']"}}. If the page includes a
+  "Form field attributes" section, use the name/id shown there to build this locator.
+- NEVER build a locator keyed on a field's CURRENT value (e.g.
+  input[value='old@example.com']) - that value is about to change (you're editing it)
+  or won't be the same on a future run with different inputs, so the locator will fail
+  the very next time this flow runs. Use name/id/type instead. This applies to every
+  action, not just type_text.
+- If a page has a dropdown (combobox) whose choice matters to the goal (e.g. a share
+  to act on, a reason code, a category), you MUST select_option on it explicitly - do
+  not leave it at whatever option happens to be pre-selected and move on. Only skip a
+  dropdown if the goal genuinely doesn't care what it's set to.
 - extract requires extract_as (a short snake_case name for the value being read).
+- After a successful extract that captured everything the goal asked for, your NEXT
+  action must be finish (action=finish, done=true) - do not repeat the same extract.
 - When the goal is done, action=finish and done=true.
 """
 

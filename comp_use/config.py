@@ -61,7 +61,14 @@ class Settings(BaseModel):
 
 
 def load_settings() -> Settings:
+    allowed_url_prefixes_env = os.environ.get("ALLOWED_URL_PREFIXES", "")
+    kwargs: dict = {}
+    if allowed_url_prefixes_env.strip():
+        kwargs["allowed_url_prefixes"] = [
+            p.strip() for p in allowed_url_prefixes_env.split(",") if p.strip()
+        ]
     return Settings(
+        **kwargs,
         model_provider=os.environ.get("MODEL_PROVIDER", "openrouter").strip().lower(),
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         openrouter_model=os.environ.get(
