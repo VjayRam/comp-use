@@ -203,6 +203,20 @@ def _normalize_drift_diagnosis(raw: dict) -> dict:
     return raw
 
 
+def parse_chat_message(message: dict) -> dict:
+    """Counterpart to parse_decision() for the chat agent's turns, which use
+    tool_choice="auto" - the model may legitimately reply in plain prose
+    instead of calling a tool. Unlike parse_decision(), this never tries to
+    JSON-parse plain content; a chat reply that happens to start with "{" is
+    still just prose, not a decision payload."""
+    if message.get("tool_calls"):
+        call = message["tool_calls"][0]["function"]
+        raw = call["arguments"]
+        arguments = raw if isinstance(raw, dict) else json.loads(raw)
+        return {"type": "tool_call", "name": call["name"], "arguments": arguments}
+    return {"type": "text", "text": (message.get("content") or "").strip()}
+
+
 class LLMClient:
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
         raise NotImplementedError
@@ -210,13 +224,23 @@ class LLMClient:
     def diagnose_drift(self, expected_locator: dict, screenshot_b64: str) -> dict:
         raise NotImplementedError
 
+    def chat(self, messages: list[dict], tools: list[dict], tool_choice: dict | str = "auto") -> dict:
+        raise NotImplementedError
+
 
 class FakeLLMClient(LLMClient):
-    def __init__(self, scripted_actions: list[dict], scripted_drift_diagnoses: list[dict] | None = None):
-        self._actions = list(scripted_actions)
+    def __init__(
+        self,
+        scripted_actions: list[dict] | None = None,
+        scripted_drift_diagnoses: list[dict] | None = None,
+        scripted_chat_turns: list[dict] | None = None,
+    ):
+        self._actions = list(scripted_actions or [])
         self._index = 0
         self._drift_diagnoses = list(scripted_drift_diagnoses or [])
         self._drift_index = 0
+        self._chat_turns = list(scripted_chat_turns or [])
+        self._chat_index = 0
 
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
         action = self._actions[self._index]
@@ -227,6 +251,11 @@ class FakeLLMClient(LLMClient):
         diagnosis = self._drift_diagnoses[self._drift_index]
         self._drift_index += 1
         return diagnosis
+
+    def chat(self, messages: list[dict], tools: list[dict], tool_choice: dict | str = "auto") -> dict:
+        turn = self._chat_turns[self._chat_index]
+        self._chat_index += 1
+        return turn
 
 
 class _OpenAICompatibleClient(LLMClient):
@@ -303,6 +332,22 @@ class _OpenAICompatibleClient(LLMClient):
         ]
         raw = self._post_chat(self._vision_model(), messages, _DRIFT_TOOL_SCHEMA)
         return _normalize_drift_diagnosis(raw)
+
+    def chat(self, messages: list[dict], tools: list[dict], tool_choice: dict | str = "auto") -> dict:
+        print(f"[chat] asking {self._provider_label()}:{self._text_model()} ...", flush=True)
+        response = requests.post(
+            self._endpoint(),
+            headers=self._headers(),
+            json={
+                "model": self._text_model(),
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        return parse_chat_message(response.json()["choices"][0]["message"])
 
     def _post_chat(self, model: str, messages: list[dict], tool_schema: dict) -> dict:
         print(f"[discover] asking {self._provider_label()}:{model} ...", flush=True)
@@ -414,3 +459,10 @@ class FallbackLLMClient(LLMClient):
         except Exception as exc:
             print(f"[discover] primary provider failed ({type(exc).__name__}: {exc}); falling back...", flush=True)
             return self.fallback.diagnose_drift(expected_locator=expected_locator, screenshot_b64=screenshot_b64)
+
+    def chat(self, messages: list[dict], tools: list[dict], tool_choice: dict | str = "auto") -> dict:
+        try:
+            return self.primary.chat(messages=messages, tools=tools, tool_choice=tool_choice)
+        except Exception as exc:
+            print(f"[chat] primary provider failed ({type(exc).__name__}: {exc}); falling back...", flush=True)
+            return self.fallback.chat(messages=messages, tools=tools, tool_choice=tool_choice)

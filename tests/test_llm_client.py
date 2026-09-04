@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 from comp_use.config import load_settings
 from comp_use.llm_client import (
     _SYSTEM_PROMPT, _TOOL_SCHEMA, FakeLLMClient, FallbackLLMClient, NvidiaNimClient,
-    OpenRouterClient, parse_decision,
+    OpenRouterClient, parse_decision, LLMClient,
 )
 from comp_use.schemas import Locator, LocatorStrategy
 
@@ -381,3 +381,91 @@ def test_fallback_client_applies_to_diagnose_drift_too():
     result = client.diagnose_drift(expected_locator={"strategy": "role", "value": {}}, screenshot_b64="Zg==")
 
     assert result["found"] is False
+
+
+def test_parse_chat_message_returns_tool_call_shape():
+    from comp_use.llm_client import parse_chat_message
+    message = {
+        "tool_calls": [{"function": {"name": "propose_invoke", "arguments": '{"capability_name": "x", "params": {}}'}}]
+    }
+    result = parse_chat_message(message)
+    assert result == {"type": "tool_call", "name": "propose_invoke", "arguments": {"capability_name": "x", "params": {}}}
+
+
+def test_parse_chat_message_returns_text_shape_when_no_tool_call():
+    from comp_use.llm_client import parse_chat_message
+    message = {"content": "Sure, which member number?"}
+    result = parse_chat_message(message)
+    assert result == {"type": "text", "text": "Sure, which member number?"}
+
+
+def test_parse_chat_message_never_json_parses_plain_text():
+    # Unlike parse_decision(), a chat reply that happens to start with "{" but
+    # isn't actually JSON (real prose) must come back as text, not raise/mangle it.
+    from comp_use.llm_client import parse_chat_message
+    message = {"content": "{today's} plan is to check the balance first"}
+    result = parse_chat_message(message)
+    assert result == {"type": "text", "text": "{today's} plan is to check the balance first"}
+
+
+def test_fake_llm_client_chat_returns_scripted_turns_in_order():
+    client = FakeLLMClient(
+        scripted_chat_turns=[
+            {"type": "text", "text": "Which site?"},
+            {"type": "tool_call", "name": "propose_invoke", "arguments": {"capability_name": "x", "params": {}}},
+        ]
+    )
+    first = client.chat(messages=[], tools=[])
+    second = client.chat(messages=[], tools=[])
+    assert first["type"] == "text"
+    assert second["name"] == "propose_invoke"
+
+
+def test_fake_llm_client_scripted_actions_defaults_to_empty_list():
+    # scripted_actions must stay optional so chat-only tests can construct a
+    # FakeLLMClient without a discovery-loop script.
+    client = FakeLLMClient(scripted_chat_turns=[{"type": "text", "text": "hi"}])
+    assert client.chat(messages=[], tools=[])["text"] == "hi"
+
+
+@patch("comp_use.llm_client.requests.post")
+def test_openrouter_client_chat_sends_auto_tool_choice_by_default(mock_post):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"choices": [{"message": {"content": "okay"}}]}
+    mock_post.return_value = mock_response
+
+    client = OpenRouterClient(load_settings())
+    result = client.chat(messages=[{"role": "user", "content": "hi"}], tools=[{"type": "function", "function": {"name": "t"}}])
+
+    assert result == {"type": "text", "text": "okay"}
+    sent_json = mock_post.call_args.kwargs["json"]
+    assert sent_json["tool_choice"] == "auto"
+
+
+@patch("comp_use.llm_client.requests.post")
+def test_openrouter_client_chat_honors_a_forced_tool_choice(mock_post):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"tool_calls": [{"function": {"name": "resolve_pending", "arguments": '{"decision": "confirm"}'}}]}}]
+    }
+    mock_post.return_value = mock_response
+
+    client = OpenRouterClient(load_settings())
+    forced = {"type": "function", "function": {"name": "resolve_pending"}}
+    result = client.chat(messages=[], tools=[{"type": "function", "function": {"name": "resolve_pending"}}], tool_choice=forced)
+
+    assert result == {"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "confirm"}}
+    assert mock_post.call_args.kwargs["json"]["tool_choice"] == forced
+
+
+def test_fallback_llm_client_chat_falls_back_on_primary_exception():
+    class RaisingClient(LLMClient):
+        def chat(self, messages, tools, tool_choice="auto"):
+            raise RuntimeError("rate limited")
+
+    fallback = FakeLLMClient(scripted_chat_turns=[{"type": "text", "text": "from fallback"}])
+    client = FallbackLLMClient(RaisingClient(), fallback)
+
+    result = client.chat(messages=[], tools=[])
+
+    assert result == {"type": "text", "text": "from fallback"}
