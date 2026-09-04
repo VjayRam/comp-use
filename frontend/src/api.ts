@@ -47,6 +47,12 @@ export interface VersionSummary {
   is_default: boolean;
 }
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  run_id: string | null;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
@@ -94,4 +100,7 @@ export const api = {
     post<Record<string, unknown>>(`/capabilities/${name}/versions/${version}/clear-default`, {}),
   deleteCapability: (name: string) =>
     del<{ capability_name: string; versions_deleted: number }>(`/capabilities/${name}`),
+  startChatSession: () => post<{ session_id: string }>("/chat/sessions", {}),
+  sendChatMessage: (sessionId: string, message: string) =>
+    post<{ reply: string; run_id: string | null }>(`/chat/sessions/${sessionId}/message`, { message }),
 };
