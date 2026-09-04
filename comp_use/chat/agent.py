@@ -7,6 +7,7 @@ PendingAction comes back on ChatTurnResult.to_execute for the caller (the
 through the exact same RunManager.start() path invoke_capability/
 discover_capability already use."""
 import json
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -80,6 +81,11 @@ def _known_sites(catalog: list[dict]) -> list[str]:
     return seen
 
 
+def _slugify(name: str) -> str:
+    text = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
+    return text or "capability"
+
+
 def _target_site_prompt(sites: list[str]) -> str:
     if not sites:
         return "Which site should I work against? Reply with a URL."
@@ -146,7 +152,7 @@ class ChatAgent:
         if result["name"] == "propose_invoke":
             return self._propose_invoke(session, site_catalog, args["capability_name"], args.get("params") or {})
         if result["name"] == "propose_discovery":
-            raise NotImplementedError("propose_discovery handling lands in Task 7")
+            return self._propose_discovery(session, args["capability_name"], args["goal"], args.get("param_hints"))
 
         reply = "Sorry, I couldn't figure out how to help with that - could you rephrase?"
         session.messages.append({"role": "assistant", "content": reply})
@@ -169,4 +175,15 @@ class ChatAgent:
         reply = f"I'll run `{capability_name}` with {shown_params} — proceed? (yes/no)"
         session.messages.append({"role": "assistant", "content": reply})
         session.pending_action = PendingAction(kind="invoke", capability_name=capability_name, params=params)
+        return ChatTurnResult(reply_text=reply)
+
+    def _propose_discovery(self, session: ChatSession, capability_name: str, goal: str, param_hints: list[str] | None) -> ChatTurnResult:
+        slug = _slugify(capability_name)
+        reply = (
+            f"No existing capability for {session.target_site} covers that. "
+            f"I'll record a new one — `{slug}` — against {session.target_site} with goal: \"{goal}\". "
+            "Proceed? (yes/no)"
+        )
+        session.messages.append({"role": "assistant", "content": reply})
+        session.pending_action = PendingAction(kind="discover", capability_name=slug, goal=goal, param_hints=param_hints)
         return ChatTurnResult(reply_text=reply)

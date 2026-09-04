@@ -189,3 +189,39 @@ def test_normal_turn_only_offers_capabilities_matching_the_session_target_site()
     system_content = llm.seen_messages[0]["content"]
     assert "lookup_member" in system_content
     assert "other_site_thing" not in system_content
+
+
+def test_propose_discovery_asks_for_confirmation_and_sets_pending_with_a_slugified_name():
+    agent = ChatAgent(FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_discovery",
+         "arguments": {"capability_name": "Close a Share!", "goal": "close a share for a member"}},
+    ]))
+    session = _session_with_site()
+
+    result = agent.turn(session, "close a share for member 100234", _ONE_SITE_CATALOG)
+
+    assert "close_a_share" in result.reply_text
+    assert session.target_site in result.reply_text
+    assert result.to_execute is None
+    assert session.pending_action.kind == "discover"
+    assert session.pending_action.capability_name == "close_a_share"
+    assert session.pending_action.goal == "close a share for a member"
+
+
+def test_propose_discovery_passes_through_param_hints():
+    agent = ChatAgent(FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_discovery",
+         "arguments": {"capability_name": "close_a_share", "goal": "close a share", "param_hints": ["share_id"]}},
+    ]))
+    session = _session_with_site()
+
+    agent.turn(session, "close a share", _ONE_SITE_CATALOG)
+
+    assert session.pending_action.param_hints == ["share_id"]
+
+
+def test_slugify_collapses_non_alphanumerics_and_lowercases():
+    from comp_use.chat.agent import _slugify
+    assert _slugify("Close a Share!") == "close_a_share"
+    assert _slugify("  already_snake_case  ") == "already_snake_case"
+    assert _slugify("!!!") == "capability"
