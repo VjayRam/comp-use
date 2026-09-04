@@ -113,11 +113,15 @@ def test_agent_skips_step_instead_of_baking_in_literal_when_value_source_is_malf
 def test_agent_stops_at_max_steps_without_finish():
     settings = load_settings()
     surface = FakeSurface()
+    # Distinct locators per step (not the same one repeated) - keeps this test
+    # isolated to the max_steps path, not also tripping loop detection (which has
+    # its own dedicated test below).
     llm = FakeLLMClient(
         scripted_actions=[
-            {"action": "click", "locator": {"strategy": "text", "value": {"text": "x"}},
-             "target": None, "text": None, "value_source": None, "done": False},
-        ] * 5
+            {"action": "click", "locator": {"strategy": "text", "value": {"text": f"x{i}"}},
+             "target": None, "text": None, "value_source": None, "done": False}
+            for i in range(5)
+        ]
     )
     guardrail = Guardrail(settings)
     from comp_use.evidence import EvidenceLogger
@@ -223,11 +227,14 @@ def test_agent_escalates_when_max_steps_reached_without_finish(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"
     surface = FakeSurface()
+    # Distinct locators per step - isolates this test to the max_steps path, not
+    # loop detection (dedicated test below).
     llm = FakeLLMClient(
         scripted_actions=[
-            {"action": "click", "locator": {"strategy": "text", "value": {"text": "x"}},
-             "target": None, "text": None, "value_source": None, "done": False},
-        ] * 5
+            {"action": "click", "locator": {"strategy": "text", "value": {"text": f"x{i}"}},
+             "target": None, "text": None, "value_source": None, "done": False}
+            for i in range(5)
+        ]
     )
     guardrail = Guardrail(settings)
     evidence = EvidenceLogger(settings, guardrail, run_id="run_stuck")
@@ -244,6 +251,74 @@ def test_agent_escalates_when_max_steps_reached_without_finish(tmp_path):
     assert request.capability_or_goal == "do something"
     assert "max_steps" in request.reason
     assert transport.resumed is True
+
+
+class TakeoverThenClearTransport(FakeTransport):
+    """Reports a pending takeover exactly once - like the real QueueTransport,
+    where clear_takeover() (called inside EscalationController.escalate()) turns
+    it back off so it can't fire a second, redundant escalation."""
+
+    def __init__(self):
+        super().__init__()
+        self._pending = True
+
+    def takeover_requested(self):
+        return self._pending
+
+    def clear_takeover(self):
+        self._pending = False
+
+
+def test_agent_escalates_for_a_pending_takeover_before_the_next_decision(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    # Never consulted for the takeover step itself (the check happens before any
+    # decision is made) - only for the one decision made after resuming.
+    llm = FakeLLMClient(scripted_actions=[{"action": "finish", "done": True}])
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_takeover")
+    transport = TakeoverThenClearTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=5, escalation=escalation)
+
+    trace = agent.run(goal="do something", start_url="http://localhost:5000/member/search")
+
+    assert len(transport.notified) == 1
+    assert transport.notified[0].reason == "manual takeover requested by operator"
+    assert transport.resumed is True
+    assert trace.succeeded is True
+
+
+def test_agent_escalates_on_loop_of_valid_but_unproductive_decisions(tmp_path):
+    """The exact same (url, action, locator) decided 3+ times must escalate as a
+    loop, distinct from the dead-end/max_steps paths - both of which only trip on
+    INVALID or missing decisions, never on a model that keeps making perfectly
+    valid-looking decisions that just never progress. Observed live against
+    MERIDIAN CORE's Place Hold flow (fill form -> Continue -> fail -> "Return to
+    previous screen" -> refill -> Continue -> fail again), which cycled for the
+    entire step budget without the pre-existing dead-end check ever firing."""
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "click", "locator": {"strategy": "text", "value": {"text": "x"}},
+             "target": None, "text": None, "value_source": None, "done": False},
+        ] * 5
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_loop")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=5, escalation=escalation)
+
+    agent.run(goal="do something", start_url="http://localhost:5000/member/search")
+
+    loop_requests = [r for r in transport.notified if "loop detected" in r.reason]
+    assert len(loop_requests) >= 1
+    assert loop_requests[0].run_id == "run_loop"
+    assert "attempted 3 times" in loop_requests[0].reason
 
 
 def test_agent_aborts_and_escalates_when_a_click_navigates_off_allowlist(tmp_path):
@@ -356,11 +431,14 @@ def test_agent_escalation_carries_a_real_screenshot_path(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"
     surface = FakeSurface()
+    # Distinct locators per step - isolates this test to the max_steps path, not
+    # loop detection (dedicated test below).
     llm = FakeLLMClient(
         scripted_actions=[
-            {"action": "click", "locator": {"strategy": "text", "value": {"text": "x"}},
-             "target": None, "text": None, "value_source": None, "done": False},
-        ] * 3
+            {"action": "click", "locator": {"strategy": "text", "value": {"text": f"x{i}"}},
+             "target": None, "text": None, "value_source": None, "done": False}
+            for i in range(3)
+        ]
     )
     guardrail = Guardrail(settings)
     evidence = EvidenceLogger(settings, guardrail, run_id="run_stuck_screenshot")

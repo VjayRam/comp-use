@@ -8,3 +8,8 @@ venv/
 node_modules/
 .DS_Store
 .superpowers/
+
+# Fallback on-disk evidence/artifact store, used only when COMP_USE_DB_URL isn't
+# configured (see comp_use/pg/ - Postgres is the primary store otherwise).
+/evidence/
+/artifacts/

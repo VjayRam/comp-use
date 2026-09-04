@@ -177,6 +177,30 @@ class ReplayEngine:
         while index < len(artifact.steps):
             step = artifact.steps[index]
 
+            if self.escalation is not None and self.escalation.takeover_requested():
+                # A human clicked "Take control" on the dashboard - pause here, before
+                # this step runs, exactly like a risky-step escalation just below.
+                try:
+                    self.escalation.escalate(
+                        InterventionRequest(
+                            run_id=self.evidence_logger.run_id,
+                            capability_or_goal=artifact.capability_name,
+                            current_step=index,
+                            screenshot_path=self.evidence_logger.save_screenshot(
+                                safe_screenshot(self.surface), f"escalation_step{index}"
+                            ),
+                            reason="manual takeover requested by operator",
+                        )
+                    )
+                except Exception as exc:
+                    return ReplayResult(
+                        outcome=OutcomeType.HARD_FAILURE,
+                        step_index=index,
+                        detail=f"{type(exc).__name__}: {exc}",
+                        expected="escalation to complete (manual takeover)",
+                        observed=self.surface.current_url(),
+                    )
+
             # The app may have already diverged onto a business/recoverable outcome
             # page after a previous step (e.g. "insufficient funds" instead of the
             # review screen a later recorded step expects). Detect that *before*

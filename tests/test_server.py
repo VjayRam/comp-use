@@ -164,7 +164,7 @@ def test_invoke_accepts_a_pinned_version_that_is_approved(tmp_path, monkeypatch)
 
     seen_versions = []
 
-    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None):
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None):
         seen_versions.append(version)
         return ReplayResult(outcome=OutcomeType.SUCCESS, outputs={"balance": "100"})
 
@@ -189,7 +189,7 @@ def test_invoke_defaults_to_latest_approved_version_when_unpinned(tmp_path, monk
 
     seen_versions = []
 
-    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None):
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None):
         seen_versions.append(version)
         return ReplayResult(outcome=OutcomeType.SUCCESS)
 
@@ -208,7 +208,7 @@ def test_invoke_runs_in_the_background_and_reports_success(tmp_path, monkeypatch
     save_artifact(_artifact(), settings.artifacts_dir)
     monkeypatch.setattr(
         app_module, "run_replay",
-        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None:
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None:
             ReplayResult(outcome=OutcomeType.SUCCESS, outputs={"balance": "100"}),
     )
 
@@ -225,7 +225,7 @@ def test_discover_runs_in_the_background_and_reports_the_new_draft_version(tmp_p
     client, settings = _client(tmp_path)
     monkeypatch.setattr(
         app_module, "run_discover",
-        lambda goal, start_url, capability_name, confirm_risky, transport, interactive, param_hints=None:
+        lambda goal, start_url, capability_name, confirm_risky, transport, interactive, param_hints=None, run_id=None:
             _artifact(capability_name=capability_name, version=1, status="draft"),
     )
 
@@ -244,7 +244,7 @@ def test_discover_reports_failure_when_run_discover_returns_none(tmp_path, monke
     client, settings = _client(tmp_path)
     monkeypatch.setattr(
         app_module, "run_discover",
-        lambda goal, start_url, capability_name, confirm_risky, transport, interactive, param_hints=None: None,
+        lambda goal, start_url, capability_name, confirm_risky, transport, interactive, param_hints=None, run_id=None: None,
     )
 
     response = client.post(
@@ -261,7 +261,7 @@ def test_run_escalates_and_resumes_over_http(tmp_path, monkeypatch):
     client, settings = _client(tmp_path)
     save_artifact(_artifact(), settings.artifacts_dir)
 
-    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None):
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None):
         transport.notify(InterventionRequest(run_id="ignored", capability_or_goal=capability_name, reason="risky step"))
         note = transport.wait_for_resume()
         return ReplayResult(outcome=OutcomeType.SUCCESS, detail=note)
@@ -281,12 +281,67 @@ def test_run_escalates_and_resumes_over_http(tmp_path, monkeypatch):
     assert done["result"]["detail"] == "confirmed manually"
 
 
+def test_takeover_endpoint_flags_the_run_and_agent_escalates_with_a_manual_reason(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None):
+        # Mirrors the poll DiscoveryAgent/ReplayEngine's real loop does once per step.
+        deadline = time.time() + 1.0
+        while time.time() < deadline and not transport.takeover_requested():
+            time.sleep(0.01)
+        transport.notify(
+            InterventionRequest(run_id="ignored", capability_or_goal=capability_name, reason="manual takeover requested by operator")
+        )
+        note = transport.wait_for_resume()
+        return ReplayResult(outcome=OutcomeType.SUCCESS, detail=note)
+
+    monkeypatch.setattr(app_module, "run_replay", fake_run_replay)
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+
+    takeover_response = client.post(f"/runs/{run_id}/takeover")
+    assert takeover_response.status_code == 202
+
+    escalated = _wait_for_status(client, run_id, "escalated")
+    assert escalated["escalation"]["reason"] == "manual takeover requested by operator"
+
+    resume_response = client.post(f"/runs/{run_id}/resume", json={"note": "handed back"})
+    assert resume_response.status_code == 202
+    done = _wait_for_status(client, run_id, "done")
+    assert done["result"]["detail"] == "handed back"
+
+
+def test_takeover_endpoint_404s_for_an_unknown_run_id(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.post("/runs/does_not_exist/takeover")
+    assert response.status_code == 404
+
+
+def test_takeover_endpoint_409s_once_the_run_is_done(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+    monkeypatch.setattr(
+        app_module, "run_replay",
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None:
+            ReplayResult(outcome=OutcomeType.SUCCESS),
+    )
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+    _wait_for_status(client, run_id, "done")
+
+    takeover_response = client.post(f"/runs/{run_id}/takeover")
+    assert takeover_response.status_code == 409
+
+
 def test_resume_409s_when_run_is_not_escalated(tmp_path, monkeypatch):
     client, settings = _client(tmp_path)
     save_artifact(_artifact(), settings.artifacts_dir)
     monkeypatch.setattr(
         app_module, "run_replay",
-        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None:
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None:
             ReplayResult(outcome=OutcomeType.SUCCESS),
     )
 
@@ -302,6 +357,166 @@ def test_get_run_404s_for_unknown_run_id(tmp_path):
     client, _ = _client(tmp_path)
     response = client.get("/runs/does_not_exist")
     assert response.status_code == 404
+
+
+def test_get_run_falls_back_to_postgres_for_a_run_from_before_the_last_restart(tmp_path, monkeypatch):
+    # RunManager only knows about runs started by THIS process - a run recorded by
+    # a previous server process (before a restart) only lives in Postgres. Without
+    # this fallback, GET /runs/{run_id} 404s for it even though GET /runs already
+    # lists it fine (list_runs has its own Postgres fallback) - observed live as
+    # the dashboard's run detail panel spinning on "Loading..." forever.
+    client, _ = _client(tmp_path)
+    monkeypatch.setattr(app_module.pg_store, "db_enabled", lambda: True)
+    monkeypatch.setattr(
+        app_module.pg_store, "get_run",
+        lambda run_id: {
+            "id": run_id, "kind": "invoke", "status": "done", "novnc_url": None,
+            "result": {"outcome": "success", "outputs": {"balance": "100"}, "detail": ""},
+        } if run_id == "invoke_from_a_prior_process" else None,
+    )
+
+    response = client.get("/runs/invoke_from_a_prior_process")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "done"
+    assert body["result"]["outcome"] == "success"
+    assert body["discover_result"] is None
+    assert body["escalation"] is None
+
+
+def test_get_run_still_404s_when_postgres_also_has_nothing(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path)
+    monkeypatch.setattr(app_module.pg_store, "db_enabled", lambda: True)
+    monkeypatch.setattr(app_module.pg_store, "get_run", lambda run_id: None)
+
+    response = client.get("/runs/does_not_exist")
+
+    assert response.status_code == 404
+
+
+def test_get_run_maps_a_discover_run_from_postgres_into_discover_result_not_result(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path)
+    monkeypatch.setattr(app_module.pg_store, "db_enabled", lambda: True)
+    monkeypatch.setattr(
+        app_module.pg_store, "get_run",
+        lambda run_id: {
+            "id": run_id, "kind": "discover", "status": "done", "novnc_url": None,
+            "result": {"succeeded": True, "artifact_version": 2, "artifact_status": "draft"},
+        },
+    )
+
+    response = client.get("/runs/discover_from_a_prior_process")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result"] is None
+    assert body["discover_result"] == {"succeeded": True, "artifact_version": 2, "artifact_status": "draft"}
+
+
+def test_list_runs_falls_back_to_in_memory_records_when_db_not_configured(tmp_path, monkeypatch):
+    # COMP_USE_DB_URL is unset in the test environment, so this exercises the
+    # RunManager fallback path in GET /runs, not the Postgres one.
+    monkeypatch.delenv("COMP_USE_DB_URL", raising=False)
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+    monkeypatch.setattr(
+        app_module, "run_replay",
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None:
+            ReplayResult(outcome=OutcomeType.SUCCESS, outputs={}),
+    )
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+    _wait_for_status(client, run_id, "done")
+
+    runs = client.get("/runs").json()
+    assert any(r["run_id"] == run_id for r in runs)
+    matched = next(r for r in runs if r["run_id"] == run_id)
+    assert matched["capability_name"] == "lookup_member"
+    assert matched["status"] == "done"
+
+
+def test_delete_run_endpoint_removes_a_done_run_and_its_evidence_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("COMP_USE_DB_URL", raising=False)
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+    monkeypatch.setattr(
+        app_module, "run_replay",
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None:
+            ReplayResult(outcome=OutcomeType.SUCCESS),
+    )
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+    _wait_for_status(client, run_id, "done")
+
+    # The fake run_replay above never touches EvidenceLogger - simulate the
+    # on-disk evidence dir a real run would have left, so deletion has something
+    # real to clean up.
+    run_dir = settings.evidence_dir / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "log.jsonl").write_text('{"event_type": "finish", "data": {}}\n', encoding="utf-8")
+
+    delete_response = client.delete(f"/runs/{run_id}")
+
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"run_id": run_id, "deleted": True}
+    assert client.get(f"/runs/{run_id}").status_code == 404
+    assert not run_dir.exists()
+
+
+def test_delete_run_endpoint_404s_for_an_unknown_run_id(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.delete("/runs/does_not_exist")
+    assert response.status_code == 404
+
+
+def test_delete_run_endpoint_409s_for_an_active_run_and_leaves_it_untouched(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None):
+        transport.notify(InterventionRequest(run_id="ignored", capability_or_goal=capability_name, reason="risky step"))
+        note = transport.wait_for_resume()
+        return ReplayResult(outcome=OutcomeType.SUCCESS, detail=note)
+
+    monkeypatch.setattr(app_module, "run_replay", fake_run_replay)
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+    _wait_for_status(client, run_id, "escalated")
+
+    delete_response = client.delete(f"/runs/{run_id}")
+    assert delete_response.status_code == 409
+    assert client.get(f"/runs/{run_id}").status_code == 200  # still there
+
+    client.post(f"/runs/{run_id}/resume", json={"note": "done"})
+
+
+def test_get_run_events_falls_back_to_jsonl_when_db_not_configured(tmp_path, monkeypatch):
+    monkeypatch.delenv("COMP_USE_DB_URL", raising=False)
+    client, settings = _client(tmp_path)
+    run_dir = settings.evidence_dir / "discover_test123"
+    run_dir.mkdir(parents=True)
+    (run_dir / "log.jsonl").write_text(
+        '{"event_type": "decision", "data": {"action": "click"}}\n'
+        '{"event_type": "finish", "data": {}}\n',
+        encoding="utf-8",
+    )
+
+    response = client.get("/runs/discover_test123/events")
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [e["event_type"] for e in events] == ["decision", "finish"]
+    assert events[0]["data"]["action"] == "click"
+
+
+def test_get_run_events_is_empty_for_a_run_with_no_evidence(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.get("/runs/never_happened/events")
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_approve_endpoint_flips_draft_to_approved_and_is_visible_in_catalog(tmp_path):
@@ -353,3 +568,92 @@ def test_retire_endpoint_flips_approved_to_rejected(tmp_path):
     assert response.json()["status"] == "rejected"
     # retired means no longer picked up as the default
     assert client.get("/capabilities/lookup_member").status_code == 404
+
+
+def test_set_default_endpoint_makes_an_older_version_win_unpinned_resolution(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(version=1, status="approved"), settings.artifacts_dir)
+    save_artifact(_artifact(version=2, status="approved"), settings.artifacts_dir)
+
+    response = client.post("/capabilities/lookup_member/versions/1/set-default")
+    assert response.status_code == 200
+    assert response.json()["is_default"] is True
+
+    assert client.get("/capabilities/lookup_member").json()["version"] == 1
+    versions = client.get("/capabilities/lookup_member/versions").json()
+    is_default_by_version = {v["version"]: v["is_default"] for v in versions}
+    assert is_default_by_version == {1: True, 2: False}
+
+
+def test_set_default_endpoint_409s_on_a_draft_version(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(version=1, status="draft"), settings.artifacts_dir)
+
+    response = client.post("/capabilities/lookup_member/versions/1/set-default")
+
+    assert response.status_code == 409
+
+
+def test_set_default_endpoint_404s_on_an_unknown_version(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(version=1, status="approved"), settings.artifacts_dir)
+
+    response = client.post("/capabilities/lookup_member/versions/99/set-default")
+
+    assert response.status_code == 404
+
+
+def test_clear_default_endpoint_reverts_to_highest_version_wins(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(version=1, status="approved"), settings.artifacts_dir)
+    save_artifact(_artifact(version=2, status="approved"), settings.artifacts_dir)
+    client.post("/capabilities/lookup_member/versions/1/set-default")
+
+    response = client.post("/capabilities/lookup_member/versions/1/clear-default")
+
+    assert response.status_code == 200
+    assert response.json()["is_default"] is False
+    assert client.get("/capabilities/lookup_member").json()["version"] == 2
+
+
+def test_clear_default_endpoint_404s_on_an_unknown_version(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.post("/capabilities/lookup_member/versions/99/clear-default")
+    assert response.status_code == 404
+
+
+def test_delete_endpoint_removes_every_version(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(version=1, status="approved"), settings.artifacts_dir)
+    save_artifact(_artifact(version=2, status="draft"), settings.artifacts_dir)
+
+    response = client.delete("/capabilities/lookup_member")
+
+    assert response.status_code == 200
+    assert response.json() == {"capability_name": "lookup_member", "versions_deleted": 2}
+    assert client.get("/capabilities/lookup_member/versions").status_code == 404
+
+
+def test_delete_endpoint_404s_for_an_unknown_capability(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.delete("/capabilities/does_not_exist")
+    assert response.status_code == 404
+
+
+def test_delete_endpoint_leaves_run_history_intact(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="approved"), settings.artifacts_dir)
+    monkeypatch.setattr(
+        app_module, "run_replay",
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None:
+            ReplayResult(outcome=OutcomeType.SUCCESS, outputs={}),
+    )
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+    _wait_for_status(client, run_id, "done")
+
+    client.delete("/capabilities/lookup_member")
+
+    # the capability is gone, but the run it created stays visible
+    assert client.get("/capabilities/lookup_member").status_code == 404
+    assert client.get(f"/runs/{run_id}").status_code == 200

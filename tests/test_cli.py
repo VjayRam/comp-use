@@ -9,8 +9,9 @@ from playwright.sync_api import sync_playwright
 
 import comp_use.cli as cli
 from comp_use.cli import (
-    _build_llm_client, _derive_success_checkpoint, approve_artifact, load_artifact,
-    next_artifact_version, reject_artifact, retire_artifact, run_replay, save_artifact,
+    _build_llm_client, _derive_success_checkpoint, approve_artifact, clear_default_version, delete_capability,
+    load_artifact, next_artifact_version, reject_artifact, retire_artifact, run_replay, save_artifact,
+    set_default_version,
 )
 from comp_use.config import Settings
 from comp_use.escalation.controller import EscalationController
@@ -194,6 +195,78 @@ def test_retire_artifact_rejects_a_version_that_is_not_approved(tmp_path):
     save_artifact(_artifact(version=1, status="draft"), tmp_path)
     with pytest.raises(ValueError, match="not 'approved'"):
         retire_artifact("lookup_member", 1, tmp_path)
+
+
+def test_delete_capability_removes_every_version_and_reports_the_count(tmp_path):
+    save_artifact(_artifact(version=1, status="approved"), tmp_path)
+    save_artifact(_artifact(version=2, status="draft"), tmp_path)
+
+    deleted = delete_capability("lookup_member", tmp_path)
+
+    assert deleted == 2
+    with pytest.raises(FileNotFoundError):
+        load_artifact("lookup_member", tmp_path)
+
+
+def test_delete_capability_returns_zero_for_an_unknown_capability(tmp_path):
+    assert delete_capability("does_not_exist", tmp_path) == 0
+
+
+def test_load_artifact_picks_the_highest_approved_version_when_no_default_is_set(tmp_path):
+    save_artifact(_artifact(version=1, status="approved"), tmp_path)
+    save_artifact(_artifact(version=2, status="approved"), tmp_path)
+    assert load_artifact("lookup_member", tmp_path).version == 2
+
+
+def test_set_default_version_makes_an_older_approved_version_win_unpinned_resolution(tmp_path):
+    save_artifact(_artifact(version=1, status="approved"), tmp_path)
+    save_artifact(_artifact(version=2, status="approved"), tmp_path)
+
+    set_default_version("lookup_member", 1, tmp_path)
+
+    assert load_artifact("lookup_member", tmp_path).version == 1
+
+
+def test_set_default_version_clears_the_previous_default(tmp_path):
+    save_artifact(_artifact(version=1, status="approved"), tmp_path)
+    save_artifact(_artifact(version=2, status="approved"), tmp_path)
+
+    set_default_version("lookup_member", 1, tmp_path)
+    set_default_version("lookup_member", 2, tmp_path)
+
+    v1 = load_artifact("lookup_member", tmp_path, version=1)
+    v2 = load_artifact("lookup_member", tmp_path, version=2)
+    assert v1.is_default is False
+    assert v2.is_default is True
+
+
+def test_set_default_version_rejects_a_non_approved_version(tmp_path):
+    save_artifact(_artifact(version=1, status="draft"), tmp_path)
+    with pytest.raises(ValueError, match="not 'approved'"):
+        set_default_version("lookup_member", 1, tmp_path)
+
+
+def test_clear_default_version_reverts_to_highest_version_wins(tmp_path):
+    save_artifact(_artifact(version=1, status="approved"), tmp_path)
+    save_artifact(_artifact(version=2, status="approved"), tmp_path)
+    set_default_version("lookup_member", 1, tmp_path)
+    assert load_artifact("lookup_member", tmp_path).version == 1
+
+    clear_default_version("lookup_member", 1, tmp_path)
+
+    assert load_artifact("lookup_member", tmp_path).version == 2  # back to highest-wins
+    assert load_artifact("lookup_member", tmp_path, version=1).is_default is False
+
+
+def test_clear_default_version_is_a_no_op_when_not_currently_default(tmp_path):
+    save_artifact(_artifact(version=1, status="approved"), tmp_path)
+    save_artifact(_artifact(version=2, status="approved"), tmp_path)
+    set_default_version("lookup_member", 2, tmp_path)
+
+    artifact = clear_default_version("lookup_member", 1, tmp_path)
+
+    assert artifact.is_default is False
+    assert load_artifact("lookup_member", tmp_path, version=2).is_default is True  # untouched
 
 
 @pytest.fixture(scope="module")

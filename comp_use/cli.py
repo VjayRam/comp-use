@@ -1,6 +1,8 @@
 import argparse
+import contextlib
 import json
 import os
+import shutil
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
@@ -16,6 +18,7 @@ from comp_use.escalation.transport import LocalSharedBrowserTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
 from comp_use.llm_client import FallbackLLMClient, LLMClient, NvidiaNimClient, OpenRouterClient
+from comp_use.pg import store as pg_store
 from comp_use.replay.engine import ReplayEngine, validate_required_params
 from comp_use.schemas import (
     ActionType,
@@ -39,7 +42,70 @@ def _headless() -> bool:
     return os.environ.get("COMP_USE_HEADLESS", "").lower() in ("1", "true", "yes")
 
 
-def save_artifact(artifact: Artifact, artifacts_dir: Path) -> Path:
+def _use_sandbox() -> bool:
+    return os.environ.get("COMP_USE_SANDBOX", "").lower() in ("1", "true", "yes")
+
+
+@contextlib.contextmanager
+def _browser_session(start_url: str, sandbox: bool):
+    """Yields (page, novnc_url). novnc_url is None unless sandbox=True.
+
+    Two modes, chosen by the caller (CLI --sandbox flag / COMP_USE_SANDBOX env var):
+    - Local (default, unchanged from before): a Chromium process launched directly on
+      this machine, headed or headless per COMP_USE_HEADLESS. Fast, no Docker
+      dependency - what every existing test and the original take-home path use.
+    - Sandbox: one ephemeral Docker container (comp_use/sandbox.py, adapted from
+      Project-Hawkeye's hawkeye_sandbox) running a headed Chromium behind noVNC, driven
+      here over CDP. Lets a human watch (and, during escalation, actually control - see
+      sandbox_image/supervisord.conf) the exact live session from a browser tab via the
+      returned novnc_url, instead of needing a native window on this machine - the
+      container-per-run lifetime is what makes "take over the SAME live session, not a
+      fresh one" (§3.6) still true when the browser isn't running somewhere you can
+      just look at.
+    """
+    from playwright.sync_api import sync_playwright
+
+    if not sandbox:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=_headless())
+            try:
+                yield browser.new_page(), None
+            finally:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+        return
+
+    from comp_use.sandbox import SandboxConfig, spawn, stop
+
+    handle = spawn(SandboxConfig(url=start_url))
+    with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(handle.cdp_url)
+        try:
+            ctx = browser.contexts[0]
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            yield page, handle.novnc_url
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
+            stop(handle)
+
+
+def save_artifact(artifact: Artifact, artifacts_dir: Path) -> Path | str:
+    # Postgres is the primary store when COMP_USE_DB_URL is configured (see
+    # comp_use/pg/schema.sql's artifacts table) - artifacts_dir is only used as the
+    # fallback on-disk layout for local dev/tests without a DB. This was a deliberate
+    # switch: every discover run used to leave a new untracked JSON file under
+    # artifacts/<name>/vN.json that nothing ever cleaned up.
+    if pg_store.db_enabled():
+        pg_store.save_artifact(
+            artifact.capability_name, artifact.version, artifact.status,
+            artifact.model_dump(mode="json"), artifact.created_from_run_id,
+        )
+        return f"postgres:artifacts/{artifact.capability_name}/v{artifact.version}"
     capability_dir = Path(artifacts_dir) / artifact.capability_name
     capability_dir.mkdir(parents=True, exist_ok=True)
     path = capability_dir / f"v{artifact.version}.json"
@@ -48,6 +114,21 @@ def save_artifact(artifact: Artifact, artifacts_dir: Path) -> Path:
 
 
 def load_artifact(capability_name: str, artifacts_dir: Path, version: int | None = None) -> Artifact:
+    if pg_store.db_enabled():
+        if version is None:
+            data = pg_store.latest_approved_artifact(capability_name)
+            if data is None:
+                raise FileNotFoundError(
+                    f"no approved artifact found for capability '{capability_name}' in Postgres "
+                    "(check --capability-name for a typo, run 'discover' first, or approve a draft "
+                    f"via `comp-use approve --capability-name {capability_name} --version N`)"
+                )
+            return Artifact.model_validate(data)
+        data = pg_store.load_artifact(capability_name, version)
+        if data is None:
+            raise FileNotFoundError(f"no artifact found for capability '{capability_name}' version {version} in Postgres")
+        return Artifact.model_validate(data)
+
     capability_dir = Path(artifacts_dir) / capability_name
     if version is None:
         versions = sorted(
@@ -58,12 +139,19 @@ def load_artifact(capability_name: str, artifacts_dir: Path, version: int | None
                 f"no artifact found for capability '{capability_name}' in {capability_dir} "
                 "(check --capability-name for a typo, or run 'discover' first)"
             )
+        approved = []
         for candidate_version in versions:
             candidate = Artifact.model_validate_json(
                 (capability_dir / f"v{candidate_version}.json").read_text()
             )
             if candidate.status == "approved":
-                return candidate
+                approved.append(candidate)
+        if approved:
+            # Prefer the version explicitly marked is_default (see
+            # set_default_version()); otherwise fall back to the highest version
+            # number - `versions` is sorted descending, so approved[0] already is
+            # that, same as the behavior before is_default existed.
+            return next((a for a in approved if a.is_default), approved[0])
         raise FileNotFoundError(
             f"capability '{capability_name}' has {len(versions)} version(s) in {capability_dir} "
             "but none are approved (approve one via `comp-use approve --capability-name "
@@ -100,7 +188,73 @@ def retire_artifact(capability_name: str, version: int, artifacts_dir: Path) -> 
     return artifact
 
 
+def _list_versions(capability_name: str, artifacts_dir: Path) -> list[int]:
+    if pg_store.db_enabled():
+        return sorted(v["version"] for v in pg_store.list_artifact_versions(capability_name))
+    capability_dir = Path(artifacts_dir) / capability_name
+    if not capability_dir.exists():
+        return []
+    return sorted(int(p.stem[1:]) for p in capability_dir.glob("v*.json"))
+
+
+def set_default_version(capability_name: str, version: int, artifacts_dir: Path) -> Artifact:
+    """Marks `version` as the one an unpinned invoke/replay picks (see
+    load_artifact's version=None branch). Only one version per capability may be
+    default at a time - any other version currently marked is cleared first. Only
+    an approved version can become the default; a draft or a retired/rejected
+    version being invocable-by-default at all would defeat the point of those
+    statuses gating what's live."""
+    artifact = load_artifact(capability_name, artifacts_dir, version=version)
+    if artifact.status != "approved":
+        raise ValueError(
+            f"version {version} is '{artifact.status}', not 'approved' - only an "
+            "approved version can be set as the default"
+        )
+    for other_version in _list_versions(capability_name, artifacts_dir):
+        if other_version == version:
+            continue
+        other = load_artifact(capability_name, artifacts_dir, version=other_version)
+        if other.is_default:
+            other.is_default = False
+            save_artifact(other, artifacts_dir)
+    artifact.is_default = True
+    save_artifact(artifact, artifacts_dir)
+    return artifact
+
+
+def clear_default_version(capability_name: str, version: int, artifacts_dir: Path) -> Artifact:
+    """The opposite of set_default_version: reverts `version` to NOT being the
+    explicit default, so unpinned resolution falls back to its original behavior -
+    "highest approved version wins" (see load_artifact's version=None branch) -
+    rather than moving the default to some other specific version. A no-op (not
+    an error) if `version` isn't currently the default, so a caller never needs
+    to check first."""
+    artifact = load_artifact(capability_name, artifacts_dir, version=version)
+    if artifact.is_default:
+        artifact.is_default = False
+        save_artifact(artifact, artifacts_dir)
+    return artifact
+
+
+def delete_capability(capability_name: str, artifacts_dir: Path) -> int:
+    """Deletes every version of a capability. Run history (runs/run_events/
+    run_screenshots, or evidence/<run_id>/... on disk) is untouched - runs are
+    keyed on run_id, never on capability_name+version, so a capability's run
+    history survives its artifact being deleted, in both storage modes."""
+    if pg_store.db_enabled():
+        return pg_store.delete_capability(capability_name)
+    capability_dir = Path(artifacts_dir) / capability_name
+    if not capability_dir.exists():
+        return 0
+    versions = list(capability_dir.glob("v*.json"))
+    shutil.rmtree(capability_dir)
+    return len(versions)
+
+
 def next_artifact_version(capability_name: str, artifacts_dir: Path) -> int:
+    if pg_store.db_enabled():
+        versions = [v["version"] for v in pg_store.list_artifact_versions(capability_name)]
+        return max(versions, default=0) + 1
     capability_dir = Path(artifacts_dir) / capability_name
     versions = [int(p.stem[1:]) for p in capability_dir.glob("v*.json")]
     return max(versions, default=0) + 1
@@ -187,18 +341,50 @@ def _derive_success_checkpoint(surface: Surface, fallback_url: str) -> Checkpoin
     return Checkpoint(type=CheckpointType.URL_MATCHES, url_pattern=generalized_path)
 
 
+def _settings_with_target_allowlisted(settings: Settings, url: str) -> Settings:
+    """A capability's discovery/replay must always be allowed to reach the exact
+    site it targets, whether or not that site happens to be in the server's own
+    configured ALLOWED_URL_PREFIXES - multiple capabilities recorded against
+    different target sites need to coexist on one running server without a
+    restart. Returns a per-run Settings copy; the passed-in settings (and any
+    other in-flight run's settings) are never mutated."""
+    if not url:
+        return settings
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return settings
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    if origin in settings.allowed_url_prefixes:
+        return settings
+    return settings.model_copy(update={"allowed_url_prefixes": [*settings.allowed_url_prefixes, origin]})
+
+
 def run_discover(
     goal: str, start_url: str, capability_name: str, confirm_risky: bool,
     transport, interactive: bool = True, param_hints: list[str] | None = None,
-    derived_outputs: list[OutputParam] | None = None,
+    derived_outputs: list[OutputParam] | None = None, sandbox: bool | None = None,
+    run_id: str | None = None,
 ) -> Artifact | None:
     import time
-    from playwright.sync_api import sync_playwright
 
+    sandbox = _use_sandbox() if sandbox is None else sandbox
     settings = load_settings()
+    # Discovery must be allowed to navigate to whatever start_url the caller gave it,
+    # even if the server's own ALLOWED_URL_PREFIXES is scoped to a different target
+    # site (e.g. running discovery against a second site without restarting the
+    # server). Union the requested origin into the allowlist for this run only -
+    # global settings/other in-flight runs are untouched.
+    settings = _settings_with_target_allowlisted(settings, start_url)
     guardrail = Guardrail(settings)
-    run_id = f"discover_{int(time.time())}"
+    # A caller driving this through the capability server (RunManager) already
+    # minted a run_id the frontend is polling against - reuse it so this run's
+    # own evidence/Postgres records land under the same id, instead of each
+    # generating an independent timestamp id that never match up (see
+    # EXT_TASK_FIXES.md - this was a live, reproducible dashboard bug: the events
+    # panel showed nothing because it polled the wrong run_id's evidence).
+    run_id = run_id or f"discover_{int(time.time())}"
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
+    pg_store.start_run(run_id, kind="discover", capability_name=capability_name, goal=goal)
     llm = _build_llm_client(settings)
     if settings.model_provider == "nvidia" and settings.nvidia_api_key:
         primary_label, primary_model = "NVIDIA NIM", settings.nvidia_model
@@ -212,36 +398,30 @@ def run_discover(
         flush=True,
     )
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=_headless())
-        try:
-            page = browser.new_page()
-            surface = PlaywrightSurface(page)
-            escalation = EscalationController(evidence, transport, surface=surface)
-            agent = DiscoveryAgent(
-                surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps,
-                escalation=escalation, confirm_risky=confirm_risky,
-            )
-            trace = agent.run(goal=goal, start_url=start_url, param_hints=param_hints)
-            if not trace.succeeded:
-                evidence.save_screenshot(safe_screenshot(surface), "final")
-            else:
-                success_checkpoint = _derive_success_checkpoint(surface, fallback_url=trace.final_url)
-        finally:
-            # Always attempt cleanup, even if agent.run() (or anything above) raised -
-            # e.g. a non-interactive-stdin RuntimeError from an escalation. Without this,
-            # any unhandled exception here skips browser.close() entirely and leaks the
-            # Chromium process; over the capability server (where the worker thread
-            # catches the exception and keeps running) that leak is also invisible.
-            # A close() failure itself must never mask whatever exception is already
-            # propagating, so it's swallowed rather than raised.
-            try:
-                browser.close()
-            except Exception:
-                pass
+    with _browser_session(start_url, sandbox) as (page, novnc_url):
+        if novnc_url:
+            evidence.log_event("sandbox_started", {"novnc_url": novnc_url})
+            pg_store.set_novnc_url(run_id, novnc_url, container_name="")
+            transport.on_novnc_url(novnc_url)
+        # _browser_session's own finally (browser.close(), and stop() in sandbox mode)
+        # already guarantees cleanup even if agent.run() raises - e.g. a non-interactive-
+        # stdin RuntimeError from an escalation - so nothing here needs its own
+        # try/finally the way the old inline sync_playwright block did.
+        surface = PlaywrightSurface(page)
+        escalation = EscalationController(evidence, transport, surface=surface)
+        agent = DiscoveryAgent(
+            surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps,
+            escalation=escalation, confirm_risky=confirm_risky,
+        )
+        trace = agent.run(goal=goal, start_url=start_url, param_hints=param_hints)
+        if not trace.succeeded:
+            evidence.save_screenshot(safe_screenshot(surface), "final")
+        else:
+            success_checkpoint = _derive_success_checkpoint(surface, fallback_url=trace.final_url)
 
     if not trace.succeeded:
         print(f"Discovery did not reach 'finish' within {settings.max_discovery_steps} steps.")
+        pg_store.finish_run(run_id, status="failed", result={"succeeded": False})
         return None
 
     # Derive the target descriptor from start_url's own host/scheme rather than a
@@ -313,6 +493,10 @@ def run_discover(
         path = save_artifact(artifact, settings.artifacts_dir)
 
     print(f"Saved artifact to {path} (status={artifact.status})")
+    pg_store.finish_run(
+        run_id, status="done",
+        result={"succeeded": True, "artifact_version": artifact.version, "artifact_status": artifact.status},
+    )
     return artifact
 
 
@@ -333,6 +517,7 @@ def _run_discover(args) -> None:
         goal=args.goal, start_url=args.start_url, capability_name=args.capability_name,
         confirm_risky=args.confirm_risky, transport=transport, interactive=True,
         param_hints=param_hints, derived_outputs=derived_outputs,
+        sandbox=getattr(args, "sandbox", None),
     )
 
 
@@ -425,16 +610,24 @@ def _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifac
 def run_replay(
     capability_name: str, params: dict, confirm_risky: bool,
     diagnose_drift_on_failure: bool, transport, version: int | None = None,
+    sandbox: bool | None = None, run_id: str | None = None,
 ) -> ReplayResult:
     import time
-    from playwright.sync_api import sync_playwright
 
+    sandbox = _use_sandbox() if sandbox is None else sandbox
     settings = load_settings()
-    guardrail = Guardrail(settings)
-    run_id = f"replay_{int(time.time())}"
-    evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
-
     artifact = load_artifact(capability_name, settings.artifacts_dir, version=version)
+    # This artifact was recorded against artifact.target["base_url"] - replay must be
+    # allowed to reach that exact site even if the server's own ALLOWED_URL_PREFIXES
+    # is scoped to a different capability's target (see _settings_with_target_allowlisted).
+    settings = _settings_with_target_allowlisted(settings, artifact.target.get("base_url", ""))
+    guardrail = Guardrail(settings)
+    # See the matching comment in run_discover() - reuse the caller's run_id
+    # (from RunManager, when invoked through the capability server) so evidence/
+    # Postgres records land under the same id the frontend is polling.
+    run_id = run_id or f"replay_{int(time.time())}"
+    evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
+    pg_store.start_run(run_id, kind="replay", capability_name=capability_name, goal=None)
     # load_artifact(version=None) already guarantees "approved" (it walks versions
     # newest-first and returns the first approved one). An explicitly-pinned version
     # gets no such guarantee - it loads that exact file regardless of status - so a
@@ -445,34 +638,35 @@ def run_replay(
             "'approved' - only an approved version can be replayed/invoked"
         )
         evidence.log_event("version_not_approved", {"detail": detail})
+        pg_store.finish_run(run_id, status="error", result={"detail": detail})
         raise ValueError(detail)
 
     validation_error = validate_required_params(artifact, params)
     if validation_error:
         evidence.log_event("validation_error", {"detail": validation_error})
+        pg_store.finish_run(run_id, status="validation_error", result={"detail": validation_error})
         return ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=validation_error)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=_headless())
-        try:
-            page = browser.new_page()
-            surface = PlaywrightSurface(page)
-            escalation = EscalationController(evidence, transport, surface=surface)
-            engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
-            result = engine.run(artifact, params, confirm_risky=confirm_risky)
-            if result.outcome != OutcomeType.SUCCESS:
-                evidence.save_screenshot(safe_screenshot(surface), "final")
-            if diagnose_drift_on_failure and result.outcome == OutcomeType.HARD_FAILURE:
-                _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifact, result)
-        finally:
-            # Same reasoning as run_discover(): always attempt cleanup, even if
-            # engine.run() (or the drift-diagnosis escalation above) raised. A close()
-            # failure itself must never mask whatever exception is already propagating.
-            try:
-                browser.close()
-            except Exception:
-                pass
+    # Replay has no explicit start_url param (it's baked into the artifact's own first
+    # NAVIGATE step) - use the artifact's own recorded base_url as the sandbox's initial
+    # page so a human watching via noVNC sees something meaningful immediately, rather
+    # than a blank tab until the first recorded navigate runs.
+    sandbox_start_url = artifact.target.get("base_url", "about:blank") if sandbox else "about:blank"
+    with _browser_session(sandbox_start_url, sandbox) as (page, novnc_url):
+        if novnc_url:
+            evidence.log_event("sandbox_started", {"novnc_url": novnc_url})
+            pg_store.set_novnc_url(run_id, novnc_url, container_name="")
+            transport.on_novnc_url(novnc_url)
+        surface = PlaywrightSurface(page)
+        escalation = EscalationController(evidence, transport, surface=surface)
+        engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+        result = engine.run(artifact, params, confirm_risky=confirm_risky)
+        if result.outcome != OutcomeType.SUCCESS:
+            evidence.save_screenshot(safe_screenshot(surface), "final")
+        if diagnose_drift_on_failure and result.outcome == OutcomeType.HARD_FAILURE:
+            _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifact, result)
 
+    pg_store.finish_run(run_id, status=result.outcome.value, result=result.model_dump(mode="json"))
     return result
 
 
@@ -482,7 +676,7 @@ def _run_replay(args) -> None:
     result = run_replay(
         capability_name=args.capability_name, params=params, confirm_risky=args.confirm_risky,
         diagnose_drift_on_failure=args.diagnose_drift_on_failure, transport=transport,
-        version=args.version,
+        version=args.version, sandbox=getattr(args, "sandbox", None),
     )
     print(result.model_dump_json(indent=2))
 
@@ -523,6 +717,12 @@ def main() -> None:
         "output's extracted text (e.g. 'total_balance:shares_balances_table'). "
         "Repeatable. For pages that list line items with no total of their own.",
     )
+    discover_parser.add_argument(
+        "--sandbox", action="store_true", default=None,
+        help="Run the browser in an isolated Docker sandbox (comp_use/sandbox.py) with a "
+        "noVNC URL to watch/control it, instead of launching Chromium directly on this "
+        "machine. Defaults to the COMP_USE_SANDBOX env var if this flag is omitted.",
+    )
     discover_parser.set_defaults(func=_run_discover)
 
     replay_parser = subparsers.add_parser("replay")
@@ -540,6 +740,12 @@ def main() -> None:
         help="On hard_failure, ask a vision model whether the target control just moved/renamed "
         "(drift) and, if so, propose a patched artifact as a new version for human review. "
         "Never applied automatically; this run's own outcome is unaffected.",
+    )
+    replay_parser.add_argument(
+        "--sandbox", action="store_true", default=None,
+        help="Run the browser in an isolated Docker sandbox with a noVNC URL to watch/"
+        "control it, instead of launching Chromium directly. Defaults to the "
+        "COMP_USE_SANDBOX env var if this flag is omitted.",
     )
     replay_parser.set_defaults(func=_run_replay)
 

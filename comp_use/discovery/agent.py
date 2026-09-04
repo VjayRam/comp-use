@@ -106,6 +106,15 @@ def _classify_risk(action: ActionType, target: str | None, locator, current_url:
 
 
 _DEAD_END_THRESHOLD = 3
+# How many times the exact same (url, action, locator) can be attempted before it's
+# treated as a loop rather than legitimate retries. Deliberately separate from
+# _DEAD_END_THRESHOLD: that one only counts INVALID/skipped decisions, so it never
+# fires when the model keeps making VALID-looking decisions that just don't make
+# progress - exactly what was observed live against MERIDIAN CORE's Place Hold flow
+# (fill form -> Continue -> fail -> "Return to previous screen" -> refill -> Continue
+# -> fail again), which cycled for the full step budget without ever tripping the
+# existing dead-end check. See EXT_TASK_FIXES.md's loop-detection discussion.
+_LOOP_THRESHOLD = 3
 
 
 class DiscoveryAgent:
@@ -215,8 +224,20 @@ class DiscoveryAgent:
         # not a hard gate, so it never blocks or fails a run.
         saw_combobox = False
         used_select_option = False
+        # Loop detection: counts every exact (url, action, locator) signature seen
+        # across the WHOLE run, not a sliding window - simple, and sufficient to catch
+        # a repeating cycle of several steps too, since each component of the cycle
+        # accumulates its own count every time the cycle repeats (no need to detect
+        # the cycle itself as a unit).
+        loop_signature_counts: dict[tuple, int] = {}
 
         for step_index in range(self.max_steps):
+            if self.escalation is not None and self.escalation.takeover_requested():
+                # A human clicked "Take control" on the dashboard - pause here rather
+                # than mid-decision, before spending an LLM call on a step that may
+                # never get performed. Same escalate()/resume() handshake as any other
+                # escalation, so the SAME "Resume" flow hands control back.
+                self._escalate(goal, step_index, "manual takeover requested by operator")
             observed = self.surface.observe()
             if not saw_combobox and "combobox" in observed.accessibility_tree.lower():
                 saw_combobox = True
@@ -334,8 +355,31 @@ class DiscoveryAgent:
                 self.evidence_logger.log_event("skipped_decision", {"reason": "allowlist", "decision": decision})
                 consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
                 continue
-            risk_tier = _classify_risk(action, target, locator, current_url=self.surface.current_url())
             consecutive_skips = 0
+
+            loop_signature = (url, action.value, locator.model_dump_json() if locator else None)
+            loop_signature_counts[loop_signature] = loop_signature_counts.get(loop_signature, 0) + 1
+            if loop_signature_counts[loop_signature] >= _LOOP_THRESHOLD:
+                self._print(
+                    f"[discover] LOOP DETECTED: {action.value} on {locator} at {url} "
+                    f"attempted {loop_signature_counts[loop_signature]} times without progress"
+                )
+                self.evidence_logger.log_event(
+                    "loop_detected",
+                    {"url": url, "action": action.value, "count": loop_signature_counts[loop_signature]},
+                )
+                self._escalate(
+                    goal, step_index,
+                    f"loop detected: {action.value} on this control at {url} was attempted "
+                    f"{loop_signature_counts[loop_signature]} times without making progress",
+                )
+                # Give the human's intervention a chance to actually change something -
+                # reset this signature's count rather than re-escalating on every single
+                # subsequent turn if the model tries the exact same thing again anyway.
+                loop_signature_counts[loop_signature] = 0
+                continue
+
+            risk_tier = _classify_risk(action, target, locator, current_url=self.surface.current_url())
 
             if self.guardrail.requires_confirmation(risk_tier, self.confirm_risky) and self.escalation is not None:
                 self._escalate(goal, step_index, f"step {step_index} is risk_tier=risky and confirm_risky is False")

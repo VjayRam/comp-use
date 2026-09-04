@@ -10,10 +10,12 @@ from comp_use.schemas import InterventionRequest
 
 
 class FakeTransport(ControlTransport):
-    def __init__(self, human_note: str = "reviewed and approved the transfer"):
+    def __init__(self, human_note: str = "reviewed and approved the transfer", takeover_pending: bool = False):
         self.notified = []
         self.resumed = False
         self.human_note = human_note
+        self._takeover_pending = takeover_pending
+        self.clear_takeover_calls = 0
 
     def notify(self, request):
         self.notified.append(request)
@@ -21,6 +23,13 @@ class FakeTransport(ControlTransport):
     def wait_for_resume(self):
         self.resumed = True
         return self.human_note
+
+    def takeover_requested(self):
+        return self._takeover_pending
+
+    def clear_takeover(self):
+        self.clear_takeover_calls += 1
+        self._takeover_pending = False
 
 
 class FakeSurfaceForDiff:
@@ -99,6 +108,36 @@ def test_escalate_transitions_control_and_resumes(tmp_path):
     assert transport.notified == [request]
     assert transport.resumed is True
     assert controller.control == ControlState.AGENT
+
+
+def test_takeover_requested_delegates_to_the_transport(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="esc_takeover")
+    transport = FakeTransport(takeover_pending=True)
+    controller = EscalationController(evidence, transport)
+
+    assert controller.takeover_requested() is True
+
+
+def test_escalate_clears_any_pending_takeover_request(tmp_path):
+    # Whatever triggered escalate() - here a risky step, not a takeover - a pending
+    # takeover must not also fire a second, redundant escalation once this one
+    # resumes.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="esc_takeover_clear")
+    transport = FakeTransport(takeover_pending=True)
+    controller = EscalationController(evidence, transport)
+
+    controller.escalate(
+        InterventionRequest(run_id="esc_takeover_clear", capability_or_goal="lookup_member", reason="risky step")
+    )
+
+    assert transport.clear_takeover_calls == 1
+    assert controller.takeover_requested() is False
 
 
 def test_escalate_logs_what_the_human_did(tmp_path):

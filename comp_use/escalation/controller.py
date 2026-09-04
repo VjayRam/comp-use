@@ -39,8 +39,18 @@ class EscalationController:
         self.surface = surface
         self.control = ControlState.AGENT
 
+    def takeover_requested(self) -> bool:
+        """Polled by DiscoveryAgent/ReplayEngine once per step - see
+        ControlTransport.takeover_requested()'s docstring."""
+        return self.transport.takeover_requested()
+
     def escalate(self, request: InterventionRequest) -> None:
         self.control = ControlState.HUMAN
+        # Whatever triggered this escalate() call (a risky step, loop detection, or a
+        # voluntary takeover request), any pending takeover request is now being
+        # honored - clear it so it can't also fire a second, redundant escalation
+        # right after this one resumes.
+        self.transport.clear_takeover()
         self.evidence_logger.log_event("escalation_requested", request.model_dump())
 
         before_tree = None

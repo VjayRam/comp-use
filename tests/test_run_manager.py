@@ -71,6 +71,69 @@ def test_run_manager_resume_returns_false_when_not_currently_escalated():
     assert manager.resume(run_id, "too early") is False
 
 
+def test_run_manager_request_takeover_flags_the_transport_while_running():
+    manager = RunManager()
+    saw_takeover = {}
+
+    def target(transport):
+        # Poll like DiscoveryAgent/ReplayEngine's loop does, without a real browser.
+        deadline = time.time() + 1.0
+        while time.time() < deadline and not transport.takeover_requested():
+            time.sleep(0.01)
+        saw_takeover["value"] = transport.takeover_requested()
+        return ReplayResult(outcome=OutcomeType.SUCCESS)
+
+    run_id = manager.start("invoke", "lookup_member", target)
+    assert manager.request_takeover(run_id) is True
+
+    assert _wait_until(lambda: manager.get(run_id).status == "done")
+    assert saw_takeover["value"] is True
+
+
+def test_run_manager_request_takeover_returns_false_for_unknown_run_id():
+    manager = RunManager()
+    assert manager.request_takeover("does_not_exist") is False
+
+
+def test_run_manager_request_takeover_returns_false_once_run_is_done():
+    manager = RunManager()
+    run_id = manager.start("invoke", "lookup_member", lambda transport: ReplayResult(outcome=OutcomeType.SUCCESS))
+    assert _wait_until(lambda: manager.get(run_id).status == "done")
+
+    assert manager.request_takeover(run_id) is False
+
+
+def test_run_manager_delete_removes_a_done_run():
+    manager = RunManager()
+    run_id = manager.start("invoke", "lookup_member", lambda transport: ReplayResult(outcome=OutcomeType.SUCCESS))
+    assert _wait_until(lambda: manager.get(run_id).status == "done")
+
+    assert manager.delete(run_id) is True
+    assert manager.get(run_id) is None
+
+
+def test_run_manager_delete_returns_false_for_unknown_run_id():
+    manager = RunManager()
+    assert manager.delete("does_not_exist") is False
+
+
+def test_run_manager_delete_refuses_an_active_run():
+    manager = RunManager()
+
+    def target(transport):
+        transport.notify(InterventionRequest(run_id="ignored", capability_or_goal="lookup_member", reason="risky step"))
+        note = transport.wait_for_resume()
+        return ReplayResult(outcome=OutcomeType.SUCCESS, detail=note)
+
+    run_id = manager.start("invoke", "lookup_member", target)
+    assert _wait_until(lambda: manager.get(run_id).status == "escalated")
+
+    assert manager.delete(run_id) is False
+    assert manager.get(run_id) is not None  # untouched, not silently removed
+
+    manager.resume(run_id, "done")
+
+
 def test_run_manager_get_returns_none_for_unknown_run_id():
     manager = RunManager()
     assert manager.get("does_not_exist") is None

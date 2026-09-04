@@ -143,6 +143,14 @@ class Artifact(BaseModel):
     outcome_patterns: list[OutcomePattern] = Field(default_factory=list)
     status: Literal["draft", "approved", "rejected"] = "approved"
     created_from_run_id: str
+    # When multiple versions of a capability are "approved" (e.g. after re-recording
+    # a capability against a site change, the old one is kept approved for rollback
+    # rather than immediately retired), an unpinned invoke/replay needs a
+    # deterministic pick rather than always silently picking "the highest version
+    # number" - is_default lets an operator explicitly choose which one that is.
+    # At most one version per capability should be True at a time; enforced by
+    # set_default_version() (comp_use/cli.py), not by this schema.
+    is_default: bool = False
 
 
 class ReplayResult(BaseModel):

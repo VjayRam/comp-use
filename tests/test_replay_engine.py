@@ -468,6 +468,41 @@ def test_recovery_action_that_violates_allowlist_hard_fails_instead_of_retrying_
     assert surface.acted == []  # the disallowed recovery navigation must never actually run
 
 
+class TakeoverThenClearTransport(FakeTransport):
+    """Reports a pending takeover exactly once - like the real QueueTransport,
+    where clear_takeover() (called inside EscalationController.escalate()) turns
+    it back off so it can't fire a second, redundant escalation."""
+
+    def __init__(self):
+        super().__init__()
+        self._pending = True
+
+    def takeover_requested(self):
+        return self._pending
+
+    def clear_takeover(self):
+        self._pending = False
+
+
+def test_takeover_request_pauses_before_the_next_step_with_a_manual_reason(tmp_path):
+    surface = FakeSurface(checkpoint_result=True)
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_takeover")
+    transport = TakeoverThenClearTransport()
+    escalation = EscalationController(evidence, transport)
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    result = engine.run(_make_artifact(), params={"member_id": "12345"})
+
+    assert len(transport.notified) == 1
+    assert transport.notified[0].reason == "manual takeover requested by operator"
+    assert transport.notified[0].current_step == 0  # paused before the FIRST step ran
+    assert transport.resumed is True
+    assert result.outcome == OutcomeType.SUCCESS  # replay continued normally after handback
+
+
 def test_risky_recovery_action_escalates_before_running(tmp_path):
     # A recovery_action tagged RISKY must pause for human confirmation before it runs,
     # exactly like a normal risky step does - never silently executed.

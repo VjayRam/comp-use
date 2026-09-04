@@ -75,3 +75,29 @@ def test_queue_transport_wait_for_resume_blocks_until_resume_is_called():
     waiter_thread.join(timeout=1)
 
     assert result["note"] == "handled it via the API"
+
+
+def test_queue_transport_takeover_starts_unrequested():
+    transport = QueueTransport(on_notify=lambda r: None)
+    assert transport.takeover_requested() is False
+
+
+def test_queue_transport_request_takeover_then_clear_takeover_round_trips():
+    transport = QueueTransport(on_notify=lambda r: None)
+
+    transport.request_takeover()
+    assert transport.takeover_requested() is True
+
+    transport.clear_takeover()
+    assert transport.takeover_requested() is False
+
+
+def test_control_transport_default_takeover_methods_are_inert_no_ops():
+    # The base ControlTransport (and LocalSharedBrowserTransport, which never
+    # overrides them) has no HTTP endpoint to wire a takeover request to - these
+    # must be harmless no-ops, not NotImplementedError, so a CLI-local run never
+    # crashes on the loop's takeover_requested() poll.
+    transport = LocalSharedBrowserTransport()
+    transport.request_takeover()
+    assert transport.takeover_requested() is False
+    transport.clear_takeover()
