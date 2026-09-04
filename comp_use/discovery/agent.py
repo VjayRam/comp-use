@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from comp_use.escalation.controller import EscalationController
 from comp_use.evidence import EvidenceLogger
-from comp_use.guardrail import AllowlistViolation, Guardrail
+from comp_use.guardrail import AllowlistViolation, Guardrail, is_sensitive_param_name
 from comp_use.llm_client import LLMClient
 from comp_use.schemas import ActionType, InterventionRequest, Locator, RiskTier, Step, ValueSource
 from comp_use.surface import safe_screenshot
@@ -88,6 +88,11 @@ class RunTrace:
     steps: list[Step] = field(default_factory=list)
     final_url: str = ""
     succeeded: bool = False
+    # Side-channel, never persisted onto a Step: the literal discovery-time value used
+    # for each goal_parameter, keyed by param_name - compile_artifact() surfaces this
+    # as InputParam.example. Deliberately excludes credential-shaped param names (see
+    # the is_sensitive_param_name() check where this is populated).
+    parameter_examples: dict[str, str] = field(default_factory=dict)
 
 
 def _classify_risk(action: ActionType, target: str | None, locator, current_url: str | None = None) -> RiskTier:
@@ -167,9 +172,9 @@ class DiscoveryAgent:
             consecutive_skips = 0
         return consecutive_skips
 
-    def run(self, goal: str, start_url: str) -> RunTrace:
+    def run(self, goal: str, start_url: str, param_hints: list[str] | None = None) -> RunTrace:
         try:
-            return self._run_loop(goal, start_url)
+            return self._run_loop(goal, start_url, param_hints=param_hints)
         except _EscalationTransportFailed:
             # The escalation transport itself failed (e.g. non-interactive stdin) -
             # already logged inside _escalate(). There's no way to safely get human
@@ -179,8 +184,24 @@ class DiscoveryAgent:
             # as a raw traceback all the way out of run().
             return RunTrace(run_id=self.evidence_logger.run_id, goal=goal, final_url=self.surface.current_url())
 
-    def _run_loop(self, goal: str, start_url: str) -> RunTrace:
+    def _run_loop(self, goal: str, start_url: str, param_hints: list[str] | None = None) -> RunTrace:
         trace = RunTrace(run_id=self.evidence_logger.run_id, goal=goal)
+        # goal_for_llm augments the prompt with an explicit, operator-declared list of
+        # values that MUST become goal_parameters if the agent interacts with them -
+        # trace.goal (and hence the artifact's description) stays the clean, original
+        # goal text; this augmented version is only ever used in the LLM prompt below.
+        # This exists because under-parameterization is a judgment call the model can
+        # get wrong even with a clearly-phrased goal (observed live - see
+        # EXT_TASK_FIXES.md) - a hint removes the ambiguity for values the operator
+        # already knows should vary, without constraining the model from *also*
+        # parameterizing something it independently judges should vary.
+        goal_for_llm = goal
+        if param_hints:
+            goal_for_llm = (
+                f"{goal}\n\n(Operator-declared parameters - if you type or select a "
+                f"value for any of these concepts, you MUST use value_source "
+                f"type=goal_parameter, not a literal: {', '.join(param_hints)}.)"
+            )
         self.surface.act(ActionType.NAVIGATE, locator=None, target=start_url, text=None)
         history: list[dict] = []
         consecutive_skips = 0
@@ -214,7 +235,7 @@ class DiscoveryAgent:
             tokenized_tree = self.tokenizer.tokenize(observed.accessibility_tree)
             try:
                 decision = self.llm_client.decide_next_action(
-                    goal=goal, observed_tree=tokenized_tree, screenshot_b64=screenshot_b64, history=history
+                    goal=goal_for_llm, observed_tree=tokenized_tree, screenshot_b64=screenshot_b64, history=history
                 )
             except Exception as exc:
                 error_detail = f"{type(exc).__name__}: {exc}"
@@ -274,7 +295,7 @@ class DiscoveryAgent:
                     **decision,
                     "error": "value_source, if present, must look like "
                     '{"type": "goal_parameter", "param_name": "member_id", "param_type": "string"} '
-                    'or {"type": "fixed", "reason": "..."}.',
+                    '- omit value_source entirely (leave it null) for a value that never varies.',
                 })
                 self.evidence_logger.log_event("skipped_decision", {"reason": "invalid_value_source", "decision": decision})
                 consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
@@ -358,14 +379,33 @@ class DiscoveryAgent:
 
             # Only persist the literal text for steps that AREN'T a goal_parameter -
             # a goal_parameter's discovery-time example (a real member ID, account
-            # number, amount, ...) has no business being baked into the artifact;
-            # replay always substitutes the caller's own params for those anyway.
-            is_goal_parameter = value_source is not None and value_source.type == "goal_parameter"
+            # number, amount, ...) has no business being baked into Step.value; replay
+            # always substitutes the caller's own params for those anyway. ValueSource
+            # now only ever means "goal_parameter" (see schemas.py) - any non-None
+            # value_source is one.
+            is_goal_parameter = value_source is not None
             recorded_value = (
                 text
                 if action in (ActionType.TYPE_TEXT, ActionType.SELECT_OPTION) and not is_goal_parameter
                 else None
             )
+            # The discovery-time literal DOES get kept, but off to the side in
+            # trace.parameter_examples rather than in the artifact's Step - purely so
+            # compile_artifact() can surface it as InputParam.example (a real,
+            # concrete example value for a reviewer/calling agent - see §3.2's
+            # "reviewable" requirement), never as something replay itself reads.
+            # First occurrence wins (matches compile_artifact()'s own dedup-by-name).
+            # Credential-shaped params (password, token, ...) are deliberately excluded
+            # - a real password typed during discovery has no business persisted to
+            # an artifact JSON on disk, even as an "example".
+            if (
+                is_goal_parameter
+                and text is not None
+                and action in (ActionType.TYPE_TEXT, ActionType.SELECT_OPTION)
+                and value_source.param_name not in trace.parameter_examples
+                and not is_sensitive_param_name(value_source.param_name)
+            ):
+                trace.parameter_examples[value_source.param_name] = text
             trace.steps.append(
                 Step(
                     action=action,

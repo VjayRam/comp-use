@@ -225,7 +225,7 @@ def test_discover_runs_in_the_background_and_reports_the_new_draft_version(tmp_p
     client, settings = _client(tmp_path)
     monkeypatch.setattr(
         app_module, "run_discover",
-        lambda goal, start_url, capability_name, confirm_risky, transport, interactive:
+        lambda goal, start_url, capability_name, confirm_risky, transport, interactive, param_hints=None:
             _artifact(capability_name=capability_name, version=1, status="draft"),
     )
 
@@ -244,7 +244,7 @@ def test_discover_reports_failure_when_run_discover_returns_none(tmp_path, monke
     client, settings = _client(tmp_path)
     monkeypatch.setattr(
         app_module, "run_discover",
-        lambda goal, start_url, capability_name, confirm_risky, transport, interactive: None,
+        lambda goal, start_url, capability_name, confirm_risky, transport, interactive, param_hints=None: None,
     )
 
     response = client.post(

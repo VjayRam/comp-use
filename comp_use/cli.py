@@ -22,10 +22,12 @@ from comp_use.schemas import (
     Artifact,
     Checkpoint,
     CheckpointType,
+    DerivedOutputSpec,
     InterventionRequest,
     Locator,
     LocatorStrategy,
     OutcomeType,
+    OutputParam,
     ReplayResult,
     RiskTier,
     Step,
@@ -187,7 +189,8 @@ def _derive_success_checkpoint(surface: Surface, fallback_url: str) -> Checkpoin
 
 def run_discover(
     goal: str, start_url: str, capability_name: str, confirm_risky: bool,
-    transport, interactive: bool = True,
+    transport, interactive: bool = True, param_hints: list[str] | None = None,
+    derived_outputs: list[OutputParam] | None = None,
 ) -> Artifact | None:
     import time
     from playwright.sync_api import sync_playwright
@@ -219,7 +222,7 @@ def run_discover(
                 surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps,
                 escalation=escalation, confirm_risky=confirm_risky,
             )
-            trace = agent.run(goal=goal, start_url=start_url)
+            trace = agent.run(goal=goal, start_url=start_url, param_hints=param_hints)
             if not trace.succeeded:
                 evidence.save_screenshot(safe_screenshot(surface), "final")
             else:
@@ -256,7 +259,7 @@ def run_discover(
             "base_url": f"{parsed_start_url.scheme}://{parsed_start_url.netloc}",
         },
         success_checkpoint=success_checkpoint,
-        output_schema=[],
+        output_schema=derived_outputs or [],
     )
     if not any(step.action == ActionType.NAVIGATE for step in artifact.steps):
         artifact.steps.insert(
@@ -315,9 +318,21 @@ def run_discover(
 
 def _run_discover(args) -> None:
     transport = LocalSharedBrowserTransport()
+    param_hint = getattr(args, "param_hint", None)
+    param_hints = [p.strip() for p in param_hint.split(",") if p.strip()] if param_hint else None
+    derived_outputs = None
+    derive_sum_output = getattr(args, "derive_sum_output", None)
+    if derive_sum_output:
+        derived_outputs = []
+        for spec in derive_sum_output:
+            name, _, source = spec.partition(":")
+            derived_outputs.append(
+                OutputParam(name=name, type="string", derive=DerivedOutputSpec(from_output=source))
+            )
     run_discover(
         goal=args.goal, start_url=args.start_url, capability_name=args.capability_name,
         confirm_risky=args.confirm_risky, transport=transport, interactive=True,
+        param_hints=param_hints, derived_outputs=derived_outputs,
     )
 
 
@@ -496,6 +511,18 @@ def main() -> None:
     discover_parser.add_argument("--start-url", required=True)
     discover_parser.add_argument("--capability-name", required=True)
     discover_parser.add_argument("--confirm-risky", action="store_true")
+    discover_parser.add_argument(
+        "--param-hint", default=None,
+        help="Comma-separated list of value concepts that MUST become goal_parameters "
+        "if touched (e.g. 'member_number,amount,memo') - removes ambiguity for values "
+        "the operator already knows should vary per call.",
+    )
+    discover_parser.add_argument(
+        "--derive-sum-output", action="append", default=None, metavar="NAME:SOURCE_OUTPUT",
+        help="Add a computed output that sums every $X,XXX.XX found in another "
+        "output's extracted text (e.g. 'total_balance:shares_balances_table'). "
+        "Repeatable. For pages that list line items with no total of their own.",
+    )
     discover_parser.set_defaults(func=_run_discover)
 
     replay_parser = subparsers.add_parser("replay")

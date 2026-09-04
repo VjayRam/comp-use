@@ -13,10 +13,38 @@ _TOOL_SCHEMA = {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["navigate", "click", "type_text", "select_option", "extract", "finish"]},
-                "locator": {"type": ["object", "null"]},
+                "locator": {
+                    "type": ["object", "null"],
+                    "description": "Required for click/type_text/select_option/extract.",
+                    "properties": {
+                        "strategy": {"type": "string", "enum": ["role", "text", "css"]},
+                        "value": {
+                            "type": "object",
+                            "description": "For strategy=role: {\"role\":..., \"name\":...}. "
+                            "For strategy=text: {\"text\":...}. For strategy=css: {\"css\":...}.",
+                        },
+                        "fallback": {"type": ["object", "null"], "description": "A second Locator to try if this one fails."},
+                    },
+                    "required": ["strategy", "value"],
+                },
                 "target": {"type": ["string", "null"]},
                 "text": {"type": ["string", "null"]},
-                "value_source": {"type": ["object", "null"]},
+                "value_source": {
+                    "type": ["object", "null"],
+                    "description": "Leave null for a value that never varies between calls. Set this "
+                    "whenever the value SHOULD vary (credentials, account/share numbers, amounts, "
+                    "emails, phone numbers, member IDs, ...).",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["goal_parameter"]},
+                        "param_name": {"type": "string", "description": "snake_case name for this parameter."},
+                        "param_type": {"type": ["string", "null"], "enum": ["string", "number", "boolean", None]},
+                        "reason": {
+                            "type": ["string", "null"],
+                            "description": "Optional one-line note on why this value varies per call.",
+                        },
+                    },
+                    "required": ["type", "param_name"],
+                },
                 "extract_as": {
                     "type": ["string", "null"],
                     "description": "Only for action=extract: a short snake_case name for the value being "
@@ -49,8 +77,18 @@ finish example:
 Rules:
 - locator MUST include strategy and value. Never send locator as {}.
 - click/type_text/select_option/extract require a complete locator.
-- type_text requires text and value_source.
-- value_source.type must be exactly "goal_parameter" or "fixed" - no other value.
+- type_text/select_option require text (the value being typed/selected).
+- value_source is binary: leave it null for a value that is genuinely always the
+  same no matter who calls this capability or when (e.g. a dropdown with only one
+  real option). Set it to {"type":"goal_parameter","param_name":...,"param_type":...}
+  for EVERY value that should vary between calls - this includes login credentials
+  (operator ID, password, branch), account/share numbers, dollar amounts, email
+  addresses, phone numbers, member/customer IDs, reason codes, memos/notes -
+  basically any value a caller would reasonably want to supply differently next time.
+  When in doubt, parameterize it: a value wrongly marked as varying just means an
+  extra required input the caller can pass the same literal for; a value wrongly left
+  fixed makes the whole capability unusable for anyone/anything else, which is worse.
+- value_source.type must be exactly "goal_parameter" - there is no other value.
 - strategy must be exactly "role", "text", or "css" - no other value (never "xpath").
 - A role locator with an empty or missing name is only safe when exactly one element on
   the page has that role. Legacy table-based forms often have multiple unlabeled inputs
@@ -268,6 +306,14 @@ class _OpenAICompatibleClient(LLMClient):
 
     def _post_chat(self, model: str, messages: list[dict], tool_schema: dict) -> dict:
         print(f"[discover] asking {self._provider_label()}:{model} ...", flush=True)
+        # Force the model to actually use the tool call rather than optionally
+        # replying in free text - previously "tools" was offered without a
+        # "tool_choice", so a weaker/free-tier model could (and sometimes did)
+        # respond in prose instead, falling through to parse_decision()'s much
+        # weaker free-text JSON scraping. Derived from tool_schema itself (not a
+        # hardcoded name) since this same method also serves the drift-diagnosis
+        # tool call, which has a different function name.
+        tool_choice = {"type": "function", "function": {"name": tool_schema["function"]["name"]}}
         response = requests.post(
             self._endpoint(),
             headers=self._headers(),
@@ -275,6 +321,7 @@ class _OpenAICompatibleClient(LLMClient):
                 "model": model,
                 "messages": messages,
                 "tools": [tool_schema],
+                "tool_choice": tool_choice,
             },
             timeout=60,
         )

@@ -24,9 +24,20 @@ class Locator(BaseModel):
 
 
 class ValueSource(BaseModel):
-    type: Literal["goal_parameter", "fixed"]
-    param_name: str | None = None
+    # "fixed" used to be a second valid type here, but at replay time
+    # (replay/engine.py) it was never actually distinguished from value_source=None -
+    # both fall through to the same "use Step.value literally" branch. It added a
+    # state the LLM had to reason about (what goes in param_name/reason for a "fixed"
+    # entry?) for zero behavioral difference - see EXT_TASK_FIXES.md's ValueSource
+    # cleanup note. A Step's value is now exactly binary: value_source=None means
+    # "literal, read Step.value"; value_source present means "replay substitutes
+    # params[param_name]". Nothing else.
+    type: Literal["goal_parameter"]
+    param_name: str
     param_type: str | None = None
+    # Human-readable note on why this field was chosen to vary per call (e.g. "the
+    # member being serviced changes every invocation") - purely for a reviewer reading
+    # the artifact per §3.2's "reviewable" requirement; never read by any code.
     reason: str | None = None
 
 
@@ -70,10 +81,23 @@ class InputParam(BaseModel):
     example: Any = None
 
 
+class DerivedOutputSpec(BaseModel):
+    """Declares that this output is computed from another already-extracted output,
+    not read directly off the page. Resolved by ReplayEngine after all steps run -
+    pure text parsing + arithmetic, never an LLM call, so "replay never invokes the
+    model" stays true. "sum_currency" is the only op today: parse every $X,XXX.XX
+    substring out of from_output's text and sum them. Exists because some pages (e.g.
+    MERIDIAN CORE's member record) list individual line items with no total of their
+    own - a capability that needs a total has to compute one, not extract it."""
+    from_output: str
+    op: Literal["sum_currency"] = "sum_currency"
+
+
 class OutputParam(BaseModel):
     name: str
     type: Literal["string", "number", "boolean"]
     description: str = ""
+    derive: DerivedOutputSpec | None = None
 
 
 class OutcomeType(str, Enum):

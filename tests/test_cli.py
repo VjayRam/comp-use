@@ -20,7 +20,7 @@ from comp_use.guardrail import Guardrail
 from comp_use.llm_client import FakeLLMClient, FallbackLLMClient, NvidiaNimClient, OpenRouterClient
 from comp_use.schemas import (
     ActionType, Artifact, Checkpoint, CheckpointType, InputParam, Locator,
-    LocatorStrategy, OutcomeType, ReplayResult, RiskTier, Step, ValueSource,
+    LocatorStrategy, OutcomeType, ReplayResult, RiskTier, Step,
 )
 from comp_use.surface import PlaywrightSurface
 from mock_app.app import create_app
@@ -374,7 +374,7 @@ def test_run_discover_closes_the_browser_even_when_the_agent_raises(tmp_path, mo
         def __init__(self, *a, **k):
             pass
 
-        def run(self, goal, start_url):
+        def run(self, goal, start_url, param_hints=None):
             raise RuntimeError("simulated crash - e.g. a non-interactive-stdin escalation")
 
     monkeypatch.setattr(cli, "DiscoveryAgent", _RaisingAgent)
@@ -447,17 +447,17 @@ def _broken_transfer_artifact(live_server: str) -> Artifact:
             Step(
                 action=ActionType.TYPE_TEXT,
                 locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "textbox", "name": "From Account"}),
-                value_source=ValueSource(type="fixed", reason="test"), value="ACC-001", risk_tier=RiskTier.SAFE,
+                value="ACC-001", risk_tier=RiskTier.SAFE,
             ),
             Step(
                 action=ActionType.TYPE_TEXT,
                 locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "textbox", "name": "To Account"}),
-                value_source=ValueSource(type="fixed", reason="test"), value="ACC-002", risk_tier=RiskTier.SAFE,
+                value="ACC-002", risk_tier=RiskTier.SAFE,
             ),
             Step(
                 action=ActionType.TYPE_TEXT,
                 locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "textbox", "name": "Amount"}),
-                value_source=ValueSource(type="fixed", reason="test"), value="25", risk_tier=RiskTier.SAFE,
+                value="25", risk_tier=RiskTier.SAFE,
             ),
             Step(
                 action=ActionType.CLICK,

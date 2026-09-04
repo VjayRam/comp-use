@@ -156,7 +156,7 @@ def test_agent_skips_type_text_without_locator_then_continues(tmp_path):
     assert surface.actions[1][1] is not None
 
 
-def test_agent_records_literal_value_on_step_for_fixed_and_goal_parameter_text(tmp_path):
+def test_agent_records_literal_value_for_literal_and_captures_example_for_goal_parameter(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"
     surface = FakeSurface()
@@ -167,7 +167,7 @@ def test_agent_records_literal_value_on_step_for_fixed_and_goal_parameter_text(t
                 "locator": {"strategy": "role", "value": {"role": "textbox", "name": "Note"}},
                 "target": None,
                 "text": "Opened at teller request",
-                "value_source": {"type": "fixed", "reason": "boilerplate note"},
+                "value_source": None,
                 "done": False,
             },
             {
@@ -187,13 +187,18 @@ def test_agent_records_literal_value_on_step_for_fixed_and_goal_parameter_text(t
 
     trace = agent.run(goal="Open sub-account", start_url="http://localhost:5000/member/search")
 
-    assert trace.steps[0].value_source.type == "fixed"
+    # value_source=None means "literal" - ValueSource has only one meaning now
+    # (goal_parameter), see schemas.py.
+    assert trace.steps[0].value_source is None
     assert trace.steps[0].value == "Opened at teller request"
     assert trace.steps[1].value_source.type == "goal_parameter"
     # goal_parameter steps must NOT persist their discovery-time literal (a real
-    # member ID here) into the artifact - replay always substitutes the caller's
-    # own params, and the recorded example has no business being saved/committed.
+    # member ID here) onto the Step - replay always substitutes the caller's own
+    # params, and the recorded example has no business being saved/committed there.
     assert trace.steps[1].value is None
+    # It IS captured off to the side, for compile_artifact() to surface as
+    # InputParam.example - see EXT_TASK_FIXES.md's ValueSource cleanup.
+    assert trace.parameter_examples == {"member_id": "12345"}
 
 
 def test_agent_skips_empty_locator_object(tmp_path):
@@ -649,7 +654,7 @@ def test_agent_console_output_redacts_typed_values(tmp_path, capsys):
                 "action": "type_text",
                 "locator": {"strategy": "role", "value": {"role": "textbox", "name": "From Account"}},
                 "text": "ACC-001",
-                "value_source": {"type": "fixed", "reason": "test"},
+                "value_source": None,
                 "done": False,
             },
             {"action": "finish", "done": True},

@@ -1,3 +1,4 @@
+import re
 import time
 
 from comp_use.escalation.controller import EscalationController
@@ -5,6 +6,24 @@ from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import AllowlistViolation, Guardrail
 from comp_use.schemas import Artifact, InterventionRequest, OutcomePattern, OutcomeType, ReplayResult
 from comp_use.surface import safe_screenshot
+
+_CURRENCY_RE = re.compile(r"\$[\d,]+\.\d{2}")
+
+
+def _resolve_derived_outputs(artifact: Artifact, outputs: dict) -> None:
+    """Fills in any OutputParam with a `derive` spec, in place. Best-effort: a
+    missing/unparseable source output leaves the derived output absent rather than
+    failing the whole replay - a total that can't be computed is a lesser problem than
+    losing an otherwise-successful run over it."""
+    for output_param in artifact.output_schema:
+        if output_param.derive is None:
+            continue
+        source_text = outputs.get(output_param.derive.from_output)
+        if not isinstance(source_text, str):
+            continue
+        amounts = [float(m.replace("$", "").replace(",", "")) for m in _CURRENCY_RE.findall(source_text)]
+        if amounts:
+            outputs[output_param.name] = f"${sum(amounts):,.2f}"
 
 
 def validate_required_params(artifact: Artifact, params: dict) -> str | None:
@@ -296,4 +315,5 @@ class ReplayEngine:
                 observed=self.surface.current_url(),
             )
 
+        _resolve_derived_outputs(artifact, outputs)
         return ReplayResult(outcome=OutcomeType.SUCCESS, outputs=outputs)

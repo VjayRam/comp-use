@@ -131,6 +131,68 @@ def test_successful_replay_returns_success(tmp_path):
     assert result.outcome == OutcomeType.SUCCESS
 
 
+class _TableExtractSurface(FakeSurface):
+    """Returns a MERIDIAN-shaped shares/balances table blob from any EXTRACT action,
+    for testing derived-output summation - the source page this models has no total
+    row of its own, only individual line items (see EXT_TASK_FIXES.md)."""
+
+    def act(self, action, locator, target, text):
+        if action == ActionType.EXTRACT:
+            self.acted.append((action, target, text))
+            return (
+                "100234-S0001 Regular Shares $2,499.00 HOLD\n"
+                "100234-S0070 Share Draft (Checking) $1,240.55 HOLD\n"
+                "100234-S0001-6 Regular Shares $40.00 OPEN"
+            )
+        return super().act(action, locator, target, text)
+
+
+def test_derived_output_sums_currency_from_another_extracted_output(tmp_path):
+    from comp_use.schemas import DerivedOutputSpec, OutputParam
+
+    artifact = _make_artifact()
+    artifact.steps.append(
+        Step(
+            action=ActionType.EXTRACT,
+            locator=Locator(strategy=LocatorStrategy.CSS, value={"css": "table"}),
+            extract_as="shares_balances_table",
+            risk_tier=RiskTier.SAFE,
+        )
+    )
+    artifact.output_schema = [
+        OutputParam(
+            name="total_balance", type="string",
+            derive=DerivedOutputSpec(from_output="shares_balances_table"),
+        )
+    ]
+    engine = _make_engine(_TableExtractSurface(checkpoint_result=True), tmp_path)
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.SUCCESS
+    assert result.outputs["shares_balances_table"].startswith("100234-S0001 ")
+    # 2499.00 + 1240.55 + 40.00, including the two HOLD-status shares - the total
+    # deliberately includes them since the money is still on the member's record,
+    # just restricted (see the design discussion in EXT_TASK_FIXES.md).
+    assert result.outputs["total_balance"] == "$3,779.55"
+
+
+def test_derived_output_absent_when_source_output_missing(tmp_path):
+    from comp_use.schemas import DerivedOutputSpec, OutputParam
+
+    artifact = _make_artifact()
+    artifact.output_schema = [
+        OutputParam(
+            name="total_balance", type="string",
+            derive=DerivedOutputSpec(from_output="nonexistent_output"),
+        )
+    ]
+    engine = _make_engine(FakeSurface(checkpoint_result=True), tmp_path)
+    result = engine.run(artifact, params={"member_id": "12345"})
+
+    assert result.outcome == OutcomeType.SUCCESS
+    assert "total_balance" not in result.outputs
+
+
 def test_checkpoint_failure_returns_hard_failure_with_step_detail(tmp_path):
     surface = FakeSurface(fail_on_step=1)
     engine = _make_engine(surface, tmp_path)
@@ -139,13 +201,13 @@ def test_checkpoint_failure_returns_hard_failure_with_step_detail(tmp_path):
     assert result.step_index == 1
 
 
-def test_fixed_step_replays_recorded_literal_value_regardless_of_params(tmp_path):
+def test_literal_step_replays_recorded_value_regardless_of_params(tmp_path):
     artifact = _make_artifact()
     artifact.steps.append(
         Step(
             action=ActionType.TYPE_TEXT,
             locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "textbox", "name": "Note"}),
-            value_source=ValueSource(type="fixed", reason="boilerplate note"),
+            value_source=None,
             value="Opened at teller request",
             risk_tier=RiskTier.SAFE,
         )
@@ -154,8 +216,8 @@ def test_fixed_step_replays_recorded_literal_value_regardless_of_params(tmp_path
     engine = _make_engine(surface, tmp_path)
     engine.run(artifact, params={"member_id": "12345"})
 
-    fixed_step_call = surface.acted[-1]
-    assert fixed_step_call[2] == "Opened at teller request"
+    literal_step_call = surface.acted[-1]
+    assert literal_step_call[2] == "Opened at teller request"
 
 
 def test_business_outcome_returned_when_outcome_pattern_matches_instead_of_hard_failure(tmp_path):

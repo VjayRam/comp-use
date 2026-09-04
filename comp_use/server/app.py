@@ -36,6 +36,7 @@ class InvokeRequest(BaseModel):
 class DiscoverRequest(BaseModel):
     goal: str
     start_url: str
+    param_hints: list[str] | None = None
 
 
 class ResumeRequest(BaseModel):
@@ -131,7 +132,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _validate_capability_name(name)
 
         def target(transport):
-            artifact = run_discover(body.goal, body.start_url, name, False, transport, False)
+            artifact = run_discover(
+                body.goal, body.start_url, name, False, transport, False, param_hints=body.param_hints,
+            )
             if artifact is None:
                 return {"succeeded": False, "artifact_version": None}
             return {"succeeded": True, "artifact_version": artifact.version}

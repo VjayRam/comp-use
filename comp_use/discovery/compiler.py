@@ -27,10 +27,20 @@ def compile_artifact(
     seen = set()
     for step in trace.steps:
         vs = step.value_source
-        if vs is not None and vs.type == "goal_parameter" and vs.param_name not in seen:
+        if vs is not None and vs.param_name not in seen:
             seen.add(vs.param_name)
             input_schema.append(
-                InputParam(name=vs.param_name, type=vs.param_type or "string", required=True)
+                InputParam(
+                    name=vs.param_name,
+                    type=vs.param_type or "string",
+                    required=True,
+                    # The discovery-time literal, captured off to the side in
+                    # trace.parameter_examples (never on the Step itself - see
+                    # discovery/agent.py) - gives a reviewer/calling agent a concrete
+                    # example per §3.2's "reviewable" requirement. None for
+                    # credential-shaped params, which are deliberately never captured.
+                    example=trace.parameter_examples.get(vs.param_name),
+                )
             )
 
     output_schema = list(output_schema)
