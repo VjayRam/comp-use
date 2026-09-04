@@ -9,8 +9,8 @@ from playwright.sync_api import sync_playwright
 
 import comp_use.cli as cli
 from comp_use.cli import (
-    _build_llm_client, _derive_success_checkpoint, approve_artifact, clear_default_version, delete_capability,
-    load_artifact, next_artifact_version, reject_artifact, retire_artifact, run_replay, save_artifact,
+    build_llm_client, _derive_success_checkpoint, approve_artifact, clear_default_version, delete_capability,
+    list_capability_names, load_artifact, next_artifact_version, reject_artifact, retire_artifact, run_replay, save_artifact,
     set_default_version,
 )
 from comp_use.config import Settings
@@ -267,6 +267,16 @@ def test_clear_default_version_is_a_no_op_when_not_currently_default(tmp_path):
 
     assert artifact.is_default is False
     assert load_artifact("lookup_member", tmp_path, version=2).is_default is True  # untouched
+
+
+def test_list_capability_names_returns_every_capability_with_a_saved_version(tmp_path):
+    save_artifact(_artifact(capability_name="lookup_member", version=1), tmp_path)
+    save_artifact(_artifact(capability_name="transfer_funds", version=1), tmp_path)
+    assert sorted(list_capability_names(tmp_path)) == ["lookup_member", "transfer_funds"]
+
+
+def test_list_capability_names_is_empty_when_artifacts_dir_does_not_exist(tmp_path):
+    assert list_capability_names(tmp_path / "does_not_exist") == []
 
 
 @pytest.fixture(scope="module")
@@ -740,13 +750,13 @@ def test_run_discover_non_interactive_never_prompts_and_stays_draft(tmp_path, li
 
 def test_build_llm_client_is_openrouter_only_without_an_nvidia_key():
     settings = Settings(nvidia_api_key="")
-    client = _build_llm_client(settings)
+    client = build_llm_client(settings)
     assert isinstance(client, OpenRouterClient)
 
 
 def test_build_llm_client_wraps_openrouter_with_nvidia_fallback_when_key_present():
     settings = Settings(nvidia_api_key="nvidia-test-key")
-    client = _build_llm_client(settings)
+    client = build_llm_client(settings)
     assert isinstance(client, FallbackLLMClient)
     assert isinstance(client.primary, OpenRouterClient)
     assert isinstance(client.fallback, NvidiaNimClient)
@@ -754,13 +764,13 @@ def test_build_llm_client_wraps_openrouter_with_nvidia_fallback_when_key_present
 
 def test_build_llm_client_is_nvidia_only_when_provider_is_nvidia_and_no_openrouter_key():
     settings = Settings(model_provider="nvidia", nvidia_api_key="nvidia-test-key", openrouter_api_key="")
-    client = _build_llm_client(settings)
+    client = build_llm_client(settings)
     assert isinstance(client, NvidiaNimClient)
 
 
 def test_build_llm_client_wraps_nvidia_with_openrouter_fallback_when_provider_is_nvidia():
     settings = Settings(model_provider="nvidia", nvidia_api_key="nvidia-test-key", openrouter_api_key="or-test-key")
-    client = _build_llm_client(settings)
+    client = build_llm_client(settings)
     assert isinstance(client, FallbackLLMClient)
     assert isinstance(client.primary, NvidiaNimClient)
     assert isinstance(client.fallback, OpenRouterClient)
@@ -771,7 +781,7 @@ def test_build_llm_client_nvidia_provider_with_no_nvidia_key_still_falls_back_to
     # use NVIDIA as primary - fall back to OpenRouter-only rather than
     # building a client that's guaranteed to fail on first use.
     settings = Settings(model_provider="nvidia", nvidia_api_key="", openrouter_api_key="or-test-key")
-    client = _build_llm_client(settings)
+    client = build_llm_client(settings)
     assert isinstance(client, OpenRouterClient)
 
 

@@ -15,6 +15,7 @@ from comp_use.cli import (
     approve_artifact,
     clear_default_version,
     delete_capability,
+    list_capability_names,
     load_artifact,
     reject_artifact,
     retire_artifact,
@@ -80,12 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     def _capability_names() -> list[str]:
-        if pg_store.db_enabled():
-            return pg_store.list_capability_names()
-        artifacts_dir = settings.artifacts_dir
-        if not artifacts_dir.exists():
-            return []
-        return sorted(p.name for p in artifacts_dir.iterdir() if p.is_dir())
+        return list_capability_names(settings.artifacts_dir)
 
     def _capability_versions(name: str) -> list[int]:
         if pg_store.db_enabled():

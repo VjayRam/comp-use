@@ -40,7 +40,7 @@ class Settings(BaseModel):
     )
     # Which provider decide_next_action()/diagnose_drift() go to first. The
     # OTHER provider is still used as an automatic fallback if its own API key
-    # is configured (see _build_llm_client in comp_use/cli.py) - this only
+    # is configured (see build_llm_client in comp_use/cli.py) - this only
     # picks which one goes first, not whether fallback is available at all.
     model_provider: Literal["openrouter", "nvidia"] = "openrouter"
     openrouter_api_key: str = ""

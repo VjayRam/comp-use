@@ -188,7 +188,16 @@ def retire_artifact(capability_name: str, version: int, artifacts_dir: Path) -> 
     return artifact
 
 
-def _list_versions(capability_name: str, artifacts_dir: Path) -> list[int]:
+def list_capability_names(artifacts_dir: Path) -> list[str]:
+    if pg_store.db_enabled():
+        return pg_store.list_capability_names()
+    artifacts_dir = Path(artifacts_dir)
+    if not artifacts_dir.exists():
+        return []
+    return sorted(p.name for p in artifacts_dir.iterdir() if p.is_dir())
+
+
+def list_versions(capability_name: str, artifacts_dir: Path) -> list[int]:
     if pg_store.db_enabled():
         return sorted(v["version"] for v in pg_store.list_artifact_versions(capability_name))
     capability_dir = Path(artifacts_dir) / capability_name
@@ -210,7 +219,7 @@ def set_default_version(capability_name: str, version: int, artifacts_dir: Path)
             f"version {version} is '{artifact.status}', not 'approved' - only an "
             "approved version can be set as the default"
         )
-    for other_version in _list_versions(capability_name, artifacts_dir):
+    for other_version in list_versions(capability_name, artifacts_dir):
         if other_version == version:
             continue
         other = load_artifact(capability_name, artifacts_dir, version=other_version)
@@ -276,7 +285,7 @@ def next_artifact_version(capability_name: str, artifacts_dir: Path) -> int:
 _version_lock = threading.Lock()
 
 
-def _build_llm_client(settings: Settings) -> LLMClient:
+def build_llm_client(settings: Settings) -> LLMClient:
     """MODEL_PROVIDER picks which provider is tried first; the other is used
     as an automatic fallback only if its own API key is configured (see
     FallbackLLMClient). If the primary provider's own key isn't configured,
@@ -385,7 +394,7 @@ def run_discover(
     run_id = run_id or f"discover_{int(time.time())}"
     evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
     pg_store.start_run(run_id, kind="discover", capability_name=capability_name, goal=goal)
-    llm = _build_llm_client(settings)
+    llm = build_llm_client(settings)
     if settings.model_provider == "nvidia" and settings.nvidia_api_key:
         primary_label, primary_model = "NVIDIA NIM", settings.nvidia_model
         fallback_label, fallback_model, fallback_key = "OpenRouter", settings.openrouter_model, settings.openrouter_api_key
@@ -545,7 +554,7 @@ def _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifac
     if not _is_action_locator_failure(artifact, result):
         return
     print(f"[replay] hard_failure at step {result.step_index}; diagnosing possible drift...", flush=True)
-    llm = _build_llm_client(settings)
+    llm = build_llm_client(settings)
     diagnosis = propose_drift_patch(llm, surface, artifact, result.step_index)
     if diagnosis.patched_artifact is None:
         print(
