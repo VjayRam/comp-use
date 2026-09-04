@@ -6,10 +6,12 @@ PendingAction comes back on ChatTurnResult.to_execute for the caller (the
 /chat/sessions/{id}/message endpoint, see comp_use/server/app.py) to run
 through the exact same RunManager.start() path invoke_capability/
 discover_capability already use."""
+import json
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from comp_use.chat.session import ChatSession, PendingAction
+from comp_use.guardrail import is_sensitive_param_name
 from comp_use.llm_client import LLMClient
 
 
@@ -17,6 +19,56 @@ from comp_use.llm_client import LLMClient
 class ChatTurnResult:
     reply_text: str
     to_execute: PendingAction | None = None
+
+
+_PROPOSE_INVOKE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "propose_invoke",
+        "description": "Propose running an existing recorded capability to satisfy the user's request.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "capability_name": {"type": "string"},
+                "params": {"type": "object", "description": "Typed arguments for the capability, keyed by parameter name."},
+            },
+            "required": ["capability_name", "params"],
+        },
+    },
+}
+
+_PROPOSE_DISCOVERY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "propose_discovery",
+        "description": "Propose recording a NEW capability because nothing in the catalog covers the user's request.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "capability_name": {"type": "string", "description": "A new snake_case name for this capability."},
+                "goal": {"type": "string", "description": "The natural-language goal to give the discovery agent."},
+                "param_hints": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["capability_name", "goal"],
+        },
+    },
+}
+
+
+def _system_prompt(session: ChatSession, site_catalog: list[dict]) -> str:
+    return (
+        f"You are a chat agent driving MERIDIAN-style capability APIs against {session.target_site}.\n"
+        "Available capabilities for this site (JSON):\n"
+        f"{json.dumps(site_catalog)}\n\n"
+        "If one of these capabilities satisfies the user's request, call propose_invoke with its "
+        "name and every param value you can determine from the conversation. If none of them do, "
+        "call propose_discovery. If you need more information before you can call either, just "
+        "reply in plain text asking for it."
+    )
+
+
+def _build_messages(session: ChatSession, site_catalog: list[dict]) -> list[dict]:
+    return [{"role": "system", "content": _system_prompt(session, site_catalog)}] + session.messages
 
 
 def _known_sites(catalog: list[dict]) -> list[str]:
@@ -60,7 +112,10 @@ class ChatAgent:
         if session.target_site is None:
             return self._handle_target_site_selection(session, user_message, catalog)
 
-        raise NotImplementedError("normal-turn and pending-resolution handling land in later tasks")
+        if session.pending_action is not None:
+            raise NotImplementedError("pending-resolution handling lands in Task 8")
+
+        return self._handle_normal_turn(session, catalog)
 
     def _handle_target_site_selection(self, session: ChatSession, user_message: str, catalog: list[dict]) -> ChatTurnResult:
         sites = _known_sites(catalog)
@@ -72,4 +127,46 @@ class ChatAgent:
         session.target_site = chosen
         reply = f"Working against {chosen}. What would you like to do?"
         session.messages.append({"role": "assistant", "content": reply})
+        return ChatTurnResult(reply_text=reply)
+
+    def _handle_normal_turn(self, session: ChatSession, catalog: list[dict]) -> ChatTurnResult:
+        site_catalog = [c for c in catalog if c["target_base_url"] == session.target_site]
+        result = self.llm.chat(
+            messages=_build_messages(session, site_catalog),
+            tools=[_PROPOSE_INVOKE_TOOL, _PROPOSE_DISCOVERY_TOOL],
+            tool_choice="auto",
+        )
+
+        if result["type"] == "text":
+            reply = result["text"]
+            session.messages.append({"role": "assistant", "content": reply})
+            return ChatTurnResult(reply_text=reply)
+
+        args = result["arguments"]
+        if result["name"] == "propose_invoke":
+            return self._propose_invoke(session, site_catalog, args["capability_name"], args.get("params") or {})
+        if result["name"] == "propose_discovery":
+            raise NotImplementedError("propose_discovery handling lands in Task 7")
+
+        reply = "Sorry, I couldn't figure out how to help with that - could you rephrase?"
+        session.messages.append({"role": "assistant", "content": reply})
+        return ChatTurnResult(reply_text=reply)
+
+    def _propose_invoke(self, session: ChatSession, site_catalog: list[dict], capability_name: str, params: dict) -> ChatTurnResult:
+        capability = next((c for c in site_catalog if c["capability_name"] == capability_name), None)
+        if capability is None:
+            reply = f"I don't have a capability called `{capability_name}` for {session.target_site}."
+            session.messages.append({"role": "assistant", "content": reply})
+            return ChatTurnResult(reply_text=reply)
+
+        missing = [p["name"] for p in capability["input_schema"] if p["required"] and p["name"] not in params]
+        if missing:
+            reply = f"To run `{capability_name}` I still need: {', '.join(missing)}."
+            session.messages.append({"role": "assistant", "content": reply})
+            return ChatTurnResult(reply_text=reply)
+
+        shown_params = {k: ("••••••" if is_sensitive_param_name(k) else v) for k, v in params.items()}
+        reply = f"I'll run `{capability_name}` with {shown_params} — proceed? (yes/no)"
+        session.messages.append({"role": "assistant", "content": reply})
+        session.pending_action = PendingAction(kind="invoke", capability_name=capability_name, params=params)
         return ChatTurnResult(reply_text=reply)
