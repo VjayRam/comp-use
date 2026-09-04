@@ -30,7 +30,7 @@ function eventToLine(e: RunEvent): string {
   }
 }
 
-export function RunPanel({ runId, onDeleted = () => {} }: { runId: string; onDeleted?: () => void }) {
+export function RunPanel({ runId, onDeleted }: { runId: string; onDeleted?: () => void }) {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [note, setNote] = useState("");
@@ -91,7 +91,7 @@ export function RunPanel({ runId, onDeleted = () => {} }: { runId: string; onDel
     setDeleteError(null);
     try {
       await api.deleteRun(runId);
-      onDeleted();
+      onDeleted?.();
     } catch (e) {
       setDeleteError(e instanceof Error ? e.message : String(e));
       setDeleteBusy(false);
@@ -101,7 +101,15 @@ export function RunPanel({ runId, onDeleted = () => {} }: { runId: string; onDel
   const canTakeControl = detail.status === "running" && !!detail.novnc_url;
   const feedInteractive = detail.status === "escalated";
   const showFeed = ACTIVE_STATUSES.has(detail.status) && !!detail.novnc_url;
-  const canDelete = !ACTIVE_STATUSES.has(detail.status);
+  // Mirrors the server's own 409 gate on DELETE /runs/{run_id} (an active run's
+  // background thread/transport is still live and referenced from RunManager's
+  // record, so deleting it out from under itself is refused there too). Also
+  // requires a real onDeleted callback: without one there's nothing to unmount
+  // this panel (e.g. Chat.tsx embeds RunPanel with no onDeleted, since there's
+  // no sensible chat-side action to take once the run behind a message bubble
+  // is gone) - showing the button there would let a click succeed against the
+  // backend while this component kept polling the now-404'd run forever.
+  const canDelete = !ACTIVE_STATUSES.has(detail.status) && onDeleted !== undefined;
 
   return (
     <div className="run-detail">

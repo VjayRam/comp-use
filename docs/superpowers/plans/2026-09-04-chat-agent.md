@@ -21,27 +21,42 @@
 
 ## Cut from this plan (spec-covered, deliberately deferred)
 
-The spec's "Discovery-specific details" section describes chaining a successful
-discovery straight into an approve-and-run offer, in the same confirm loop as
-`propose_invoke`. This plan does not implement that chaining: `ChatAgent.turn()`
-is a synchronous, stateless-per-request function, and a discovery run finishes
-on a background thread (`RunManager`) well after the turn that started it
-returned — there is no request in flight for the agent to attach a follow-up
-proposal to. Wiring that up correctly needs either a client-side "poll the
-run, then send a synthetic follow-up chat message when it completes" step or a
+Three spec-promised behaviors all share one root cause: `ChatAgent.turn()` is
+a synchronous, stateless-per-request function, and a run it starts finishes
+on a background thread (`RunManager`) well after the HTTP turn that started
+it returned — there is no request in flight for the agent to attach any
+follow-up behavior to. None of the three are implemented in this plan:
+
+1. **Approve-and-run chaining.** The spec's "Discovery-specific details"
+   section describes chaining a successful discovery straight into an
+   approve-and-run offer, in the same confirm loop as `propose_invoke`.
+2. **Escalation chat notice.** The spec's "Live-run surfacing" section
+   promises that when a run's status flips to `escalated`, "the agent drops
+   a short chat message (\"This run needs your input — see below\") so it
+   isn't missed in a scrolling thread."
+3. **Plain-language result summary.** The spec's "Guardrail preservation"
+   section promises that "a finished run's `ReplayResult` / discovery result
+   is translated into a plain-language summary" and posted to chat (in
+   addition to the embedded widget's raw structured result).
+
+Wiring any of these up correctly needs either a client-side "poll the run,
+then send a synthetic follow-up chat message when it completes" step or a
 server-side callback into the session, either of which is a second mechanism
 on top of everything else in this plan.
 
-Cut instead of built now: once a chat-started discovery run finishes, the
-user sees it (draft status, version) in the embedded `RunPanel` exactly as
-they would on the dashboard, and can approve + invoke it from there — the
-dashboard's `VersionManager` already has full approve/set-default/invoke
-support (built earlier this session), so nothing is actually unreachable,
-just not chained automatically inside the chat turn. Next step with more
-time: have the frontend, on seeing a discovery run's `RunPanel` reach
-`status: "done"` with `succeeded: true`, send an automatic follow-up chat
-message on the user's behalf (e.g. "the recording finished — approve and run
-it now?") so the confirm loop picks it up like any other turn.
+Cut instead of built now: once a chat-started run finishes (or escalates),
+the user sees it (status, escalation reason, structured result, draft
+version for discovery) in the embedded `RunPanel` exactly as they would on
+the dashboard, and can approve + invoke a draft from there — the dashboard's
+`VersionManager` already has full approve/set-default/invoke support (built
+earlier this session), so nothing is actually unreachable, just not
+surfaced as a chat message. `Chat.tsx` never observes `RunPanel`'s status,
+only the inline widget updates. Next step with more time: have the
+frontend, on seeing a `RunPanel` reach a terminal status (`done`/`error`) or
+`escalated`, send an automatic follow-up chat message on the user's behalf
+(e.g. "the recording finished — approve and run it now?", "this run needs
+your input — see below", or a plain-language summary of the result) so the
+confirm loop and chat thread pick it up like any other turn.
 
 ---
 

@@ -724,6 +724,69 @@ def test_send_chat_message_starts_a_discovery_run_on_confirm(tmp_path, monkeypat
     assert started_with["goal"] == "close a share"
 
 
+def test_send_chat_message_confirm_re_validates_and_skips_the_run_if_capability_was_deleted(tmp_path, monkeypatch):
+    # Final-review finding: the confirm path went straight to run_manager.start()
+    # with no re-check that the capability still exists - unlike invoke_capability,
+    # which 404s before ever starting a background run. This mirrors that guard at
+    # the chat endpoint level.
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="approved"), settings.artifacts_dir)
+    called = []
+    monkeypatch.setattr(app_module, "run_replay", lambda *a, **k: called.append(1))
+    fake_llm = FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_invoke", "arguments": {"capability_name": "lookup_member", "params": {"member_id": "12345"}}},
+        {"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "confirm"}},
+    ])
+    client.app.state.chat_agent = ChatAgent(fake_llm)
+
+    session_id = client.post("/chat/sessions").json()["session_id"]
+    client.post(f"/chat/sessions/{session_id}/message", json={"message": "http://localhost:5000"})
+    client.post(f"/chat/sessions/{session_id}/message", json={"message": "check member 12345"})
+
+    # The capability is deleted mid-conversation, between the proposal and the confirm.
+    delete_response = client.delete("/capabilities/lookup_member")
+    assert delete_response.status_code == 200
+
+    response = client.post(f"/chat/sessions/{session_id}/message", json={"message": "yes"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] is None
+    assert "lookup_member" in body["reply"]
+    assert "no longer exists" in body["reply"]
+    assert called == []  # no background run was ever started
+
+
+def test_send_chat_message_confirm_re_validates_missing_required_params(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="approved"), settings.artifacts_dir)
+    called = []
+    monkeypatch.setattr(app_module, "run_replay", lambda *a, **k: called.append(1))
+    fake_llm = FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_invoke", "arguments": {"capability_name": "lookup_member", "params": {"member_id": "12345"}}},
+        {"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "confirm"}},
+    ])
+    client.app.state.chat_agent = ChatAgent(fake_llm)
+
+    session_id = client.post("/chat/sessions").json()["session_id"]
+    client.post(f"/chat/sessions/{session_id}/message", json={"message": "http://localhost:5000"})
+    client.post(f"/chat/sessions/{session_id}/message", json={"message": "check member 12345"})
+
+    # Simulate the pending action's stored params going stale by clearing the
+    # required member_id param directly on the session before confirming.
+    session = client.app.state.chat_sessions.get(session_id)
+    session.pending_action.params = {}
+
+    response = client.post(f"/chat/sessions/{session_id}/message", json={"message": "yes"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] is None
+    assert "lookup_member" in body["reply"]
+    assert "member_id" in body["reply"]
+    assert called == []  # no background run was ever started
+
+
 def test_delete_endpoint_leaves_run_history_intact(tmp_path, monkeypatch):
     client, settings = _client(tmp_path)
     save_artifact(_artifact(status="approved"), settings.artifacts_dir)

@@ -1,3 +1,6 @@
+import threading
+import time
+
 from comp_use.chat.session import ChatSessionManager, PendingAction
 
 
@@ -35,3 +38,43 @@ def test_pending_action_holds_invoke_fields():
     assert action.kind == "invoke"
     assert action.params == {"member_id": "123"}
     assert action.goal is None
+
+
+def test_chat_session_has_a_real_threading_lock():
+    session = ChatSessionManager().create()
+    assert isinstance(session.lock, type(threading.Lock()))
+
+
+def test_chat_session_lock_provides_mutual_exclusion_across_threads():
+    # Final-review finding: nothing serialized access to a single ChatSession's
+    # own mutable state once retrieved - two overlapping requests for the SAME
+    # session could both read pending_action, both get "confirm", and both
+    # start a run. This proves the lock actually blocks a second thread out of
+    # a critical section while the first thread holds it (same style as
+    # tests/test_transport.py's real-thread behavior tests).
+    session = ChatSessionManager().create()
+    events: list[str] = []
+
+    def first():
+        with session.lock:
+            events.append("first_acquired")
+            time.sleep(0.1)
+            events.append("first_released")
+
+    def second():
+        time.sleep(0.02)  # let `first` acquire the lock first
+        events.append("second_waiting")
+        with session.lock:
+            events.append("second_acquired")
+
+    t1 = threading.Thread(target=first)
+    t2 = threading.Thread(target=second)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # second must have started waiting before first released the lock, and
+    # must only acquire it after first released - proving mutual exclusion.
+    assert events.index("second_waiting") < events.index("first_released")
+    assert events.index("second_acquired") > events.index("first_released")

@@ -474,37 +474,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if session is None:
             raise HTTPException(status_code=404, detail=f"unknown session_id '{session_id}'")
 
-        catalog = build_chat_catalog(settings)
-        result = app.state.chat_agent.turn(session, body.message, catalog)
-
         run_id = None
-        pending = result.to_execute
-        if pending is not None:
-            if pending.kind == "invoke":
-                run_id = f"invoke_{int(time.time() * 1000)}"
+        reply_text = None
+        with session.lock:
+            catalog = build_chat_catalog(settings)
+            result = app.state.chat_agent.turn(session, body.message, catalog)
+            reply_text = result.reply_text
 
-                def target(transport, _name=pending.capability_name, _params=pending.params, _run_id=run_id):
-                    return run_replay(_name, _params, False, False, transport, run_id=_run_id)
+            pending = result.to_execute
+            if pending is not None:
+                if pending.kind == "invoke":
+                    # Re-validate before starting a run: the proposal happened one or
+                    # more conversational turns earlier against a catalog snapshot that
+                    # may now be stale (e.g. the capability was deleted from the
+                    # dashboard mid-conversation). Mirrors invoke_capability's own
+                    # pre-run checks above, so this degrades into a plain-language chat
+                    # reply instead of a raw FileNotFoundError surfacing as a run
+                    # "error" while the chat message still said "Starting invoke...".
+                    try:
+                        artifact = load_artifact(pending.capability_name, settings.artifacts_dir, version=None)
+                    except FileNotFoundError:
+                        reply_text = f"I can't run `{pending.capability_name}` anymore — it no longer exists."
+                    else:
+                        validation_error = validate_required_params(artifact, pending.params or {})
+                        if validation_error:
+                            reply_text = f"I can't run `{pending.capability_name}` anymore — {validation_error}."
+                        else:
+                            run_id = f"invoke_{int(time.time() * 1000)}"
 
-                app.state.run_manager.start("invoke", pending.capability_name, target, run_id=run_id)
-            else:
-                run_id = f"discover_{int(time.time() * 1000)}"
+                            def target(transport, _name=pending.capability_name, _params=pending.params, _run_id=run_id):
+                                return run_replay(_name, _params, False, False, transport, run_id=_run_id)
 
-                def target(
-                    transport, _name=pending.capability_name, _goal=pending.goal,
-                    _hints=pending.param_hints, _run_id=run_id, _start_url=session.target_site,
-                ):
-                    artifact = run_discover(
-                        _goal, _start_url, _name, False, transport, False,
-                        param_hints=_hints, run_id=_run_id,
-                    )
-                    if artifact is None:
-                        return {"succeeded": False, "artifact_version": None}
-                    return {"succeeded": True, "artifact_version": artifact.version}
+                            app.state.run_manager.start("invoke", pending.capability_name, target, run_id=run_id)
+                else:
+                    # Nothing meaningful to pre-validate for a discovery proposal -
+                    # discovery doesn't require an existing artifact.
+                    run_id = f"discover_{int(time.time() * 1000)}"
 
-                app.state.run_manager.start("discover", pending.capability_name, target, run_id=run_id)
-            session.last_run_id = run_id
+                    def target(
+                        transport, _name=pending.capability_name, _goal=pending.goal,
+                        _hints=pending.param_hints, _run_id=run_id, _start_url=session.target_site,
+                    ):
+                        artifact = run_discover(
+                            _goal, _start_url, _name, False, transport, False,
+                            param_hints=_hints, run_id=_run_id,
+                        )
+                        if artifact is None:
+                            return {"succeeded": False, "artifact_version": None}
+                        return {"succeeded": True, "artifact_version": artifact.version}
 
-        return {"reply": result.reply_text, "run_id": run_id}
+                    app.state.run_manager.start("discover", pending.capability_name, target, run_id=run_id)
+                if run_id is not None:
+                    session.last_run_id = run_id
+
+        return {"reply": reply_text, "run_id": run_id}
 
     return app

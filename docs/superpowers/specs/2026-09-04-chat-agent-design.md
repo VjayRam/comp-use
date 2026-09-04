@@ -130,7 +130,10 @@ live-run widget in the chat thread, keyed by `run_id`:
   stuck/loop/dead-end condition — the widget shows the reason plus a "Take
   control" / resume affordance inline, and the agent drops a short chat
   message ("This run needs your input — see below") so it isn't missed in
-  a scrolling thread.
+  a scrolling thread. (Deferred per the plan's "Cut from this plan" section:
+  `Chat.tsx` does not currently observe `RunPanel`'s status, so this chat
+  notice is not implemented — the escalation is still visible in the
+  embedded widget itself.)
 
 **Targeted refactor**: `RunDetailPanel`'s polling/status/escalation/feed
 logic is extracted into a shared `RunPanel` component, used both by the
@@ -151,6 +154,9 @@ duplicated.
 - A finished run's `ReplayResult` / discovery result is translated into a
   plain-language summary, but the embedded widget still shows the raw
   structured result underneath (§3.3's "surfacing the structured result").
+  (Deferred per the plan's "Cut from this plan" section: no plain-language
+  chat summary is posted when a run finishes — the raw structured result in
+  the embedded `RunPanel` is all that's shown today.)
 - If the model's tool call names a capability outside the site-scoped
   catalog it was given, or sends a malformed args shape, the agent rejects
   it locally rather than forwarding to the API.
