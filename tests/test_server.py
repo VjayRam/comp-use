@@ -16,6 +16,8 @@ from comp_use.schemas import (
 )
 from comp_use.server.app import create_app
 import comp_use.server.app as app_module
+from comp_use.chat.agent import ChatAgent
+from comp_use.llm_client import FakeLLMClient
 
 
 def _artifact(capability_name="lookup_member", version=1, status="approved", description="Looks up a member."):
@@ -638,6 +640,88 @@ def test_delete_endpoint_404s_for_an_unknown_capability(tmp_path):
     client, _ = _client(tmp_path)
     response = client.delete("/capabilities/does_not_exist")
     assert response.status_code == 404
+
+
+def test_create_chat_session_returns_a_session_id(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.post("/chat/sessions")
+    assert response.status_code == 201
+    assert response.json()["session_id"]
+
+
+def test_send_chat_message_404s_for_an_unknown_session_id(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.post("/chat/sessions/does_not_exist/message", json={"message": "hi"})
+    assert response.status_code == 404
+
+
+def test_send_chat_message_asks_for_a_target_site_on_the_first_turn(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="approved"), settings.artifacts_dir)
+    client.app.state.chat_agent = ChatAgent(FakeLLMClient())  # target-site turns never call the LLM
+
+    session_id = client.post("/chat/sessions").json()["session_id"]
+    response = client.post(f"/chat/sessions/{session_id}/message", json={"message": "check a balance"})
+
+    assert response.status_code == 200
+    assert "mock_bank" not in response.json()["reply"]  # sanity: not echoing internal target.app label
+    assert "http://localhost:5000" in response.json()["reply"]
+    assert response.json()["run_id"] is None
+
+
+def test_send_chat_message_starts_a_run_on_confirm(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="approved"), settings.artifacts_dir)
+    monkeypatch.setattr(
+        app_module, "run_replay",
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None:
+            ReplayResult(outcome=OutcomeType.SUCCESS, outputs={"balance": "100"}),
+    )
+    fake_llm = FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_invoke", "arguments": {"capability_name": "lookup_member", "params": {"member_id": "12345"}}},
+        {"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "confirm"}},
+    ])
+    client.app.state.chat_agent = ChatAgent(fake_llm)
+
+    session_id = client.post("/chat/sessions").json()["session_id"]
+    client.post(f"/chat/sessions/{session_id}/message", json={"message": "http://localhost:5000"})  # pick the site
+    client.post(f"/chat/sessions/{session_id}/message", json={"message": "check member 12345"})
+    response = client.post(f"/chat/sessions/{session_id}/message", json={"message": "yes"})
+
+    assert response.status_code == 200
+    run_id = response.json()["run_id"]
+    assert run_id is not None
+    body = _wait_for_status(client, run_id, "done")
+    assert body["result"]["outcome"] == "success"
+
+
+def test_send_chat_message_starts_a_discovery_run_on_confirm(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(status="approved"), settings.artifacts_dir)
+    started_with = {}
+
+    def fake_run_discover(goal, start_url, capability_name, confirm_risky, transport, interactive, param_hints=None, run_id=None):
+        started_with["start_url"] = start_url
+        started_with["goal"] = goal
+        return None  # discovery "failed" - fine, this test only checks the run got started with the right args
+
+    monkeypatch.setattr(app_module, "run_discover", fake_run_discover)
+    fake_llm = FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_discovery", "arguments": {"capability_name": "close_a_share", "goal": "close a share"}},
+        {"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "confirm"}},
+    ])
+    client.app.state.chat_agent = ChatAgent(fake_llm)
+
+    session_id = client.post("/chat/sessions").json()["session_id"]
+    client.post(f"/chat/sessions/{session_id}/message", json={"message": "http://localhost:5000"})
+    client.post(f"/chat/sessions/{session_id}/message", json={"message": "close a share"})
+    response = client.post(f"/chat/sessions/{session_id}/message", json={"message": "yes"})
+
+    run_id = response.json()["run_id"]
+    assert run_id is not None
+    _wait_for_status(client, run_id, "done")
+    assert started_with["start_url"] == "http://localhost:5000"
+    assert started_with["goal"] == "close a share"
 
 
 def test_delete_endpoint_leaves_run_history_intact(tmp_path, monkeypatch):

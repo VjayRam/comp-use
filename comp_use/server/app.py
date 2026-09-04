@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from comp_use.cli import (
     approve_artifact,
+    build_llm_client,
     clear_default_version,
     delete_capability,
     list_capability_names,
@@ -23,6 +24,9 @@ from comp_use.cli import (
     run_replay,
     set_default_version,
 )
+from comp_use.chat.agent import ChatAgent
+from comp_use.chat.catalog import build_chat_catalog
+from comp_use.chat.session import ChatSessionManager
 from comp_use.config import Settings, load_settings
 from comp_use.pg import store as pg_store
 from comp_use.replay.engine import validate_required_params
@@ -59,6 +63,10 @@ class ResumeRequest(BaseModel):
     note: str = ""
 
 
+class ChatMessageRequest(BaseModel):
+    message: str
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
     settings.evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +74,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="comp-use capability server")
     app.state.settings = settings
     app.state.run_manager = RunManager()
+    app.state.chat_sessions = ChatSessionManager()
+    app.state.chat_agent = ChatAgent(build_llm_client(settings))
     app.mount("/evidence", StaticFiles(directory=str(settings.evidence_dir)), name="evidence")
 
     # The dashboard (a separate Vite dev server / static build, not this process)
@@ -452,5 +462,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if deleted == 0:
             raise HTTPException(status_code=404, detail=f"no capability '{name}'")
         return {"capability_name": name, "versions_deleted": deleted}
+
+    @app.post("/chat/sessions", status_code=201)
+    def create_chat_session():
+        session = app.state.chat_sessions.create()
+        return {"session_id": session.session_id}
+
+    @app.post("/chat/sessions/{session_id}/message")
+    def send_chat_message(session_id: str, body: ChatMessageRequest):
+        session = app.state.chat_sessions.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"unknown session_id '{session_id}'")
+
+        catalog = build_chat_catalog(settings)
+        result = app.state.chat_agent.turn(session, body.message, catalog)
+
+        run_id = None
+        pending = result.to_execute
+        if pending is not None:
+            if pending.kind == "invoke":
+                run_id = f"invoke_{int(time.time() * 1000)}"
+
+                def target(transport, _name=pending.capability_name, _params=pending.params, _run_id=run_id):
+                    return run_replay(_name, _params, False, False, transport, run_id=_run_id)
+
+                app.state.run_manager.start("invoke", pending.capability_name, target, run_id=run_id)
+            else:
+                run_id = f"discover_{int(time.time() * 1000)}"
+
+                def target(
+                    transport, _name=pending.capability_name, _goal=pending.goal,
+                    _hints=pending.param_hints, _run_id=run_id, _start_url=session.target_site,
+                ):
+                    artifact = run_discover(
+                        _goal, _start_url, _name, False, transport, False,
+                        param_hints=_hints, run_id=_run_id,
+                    )
+                    if artifact is None:
+                        return {"succeeded": False, "artifact_version": None}
+                    return {"succeeded": True, "artifact_version": artifact.version}
+
+                app.state.run_manager.start("discover", pending.capability_name, target, run_id=run_id)
+            session.last_run_id = run_id
+
+        return {"reply": result.reply_text, "run_id": run_id}
 
     return app
