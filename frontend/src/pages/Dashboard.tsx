@@ -3,8 +3,6 @@ import { api, type CapabilitySummary, type RunSummary, type VersionSummary } fro
 import { RunPanel } from "../components/RunPanel";
 import type { Page } from "../components/Nav";
 
-const ACTIVE_STATUSES = new Set(["running", "escalated"]);
-
 function statusColor(status: string): string {
   if (status === "done") return "dot-green";
   if (status === "error") return "dot-red";
