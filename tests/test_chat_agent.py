@@ -1,5 +1,5 @@
-from comp_use.chat.agent import ChatAgent
-from comp_use.chat.session import ChatSessionManager
+from comp_use.chat.agent import ChatAgent, _RESOLVE_PENDING_TOOL as _RESOLVE_PENDING_TOOL_FOR_TEST
+from comp_use.chat.session import ChatSessionManager, PendingAction
 from comp_use.llm_client import FakeLLMClient
 
 _CATALOG = [
@@ -27,10 +27,12 @@ class _RecordingLLM:
         self.reply = reply
         self.seen_tools = None
         self.seen_messages = None
+        self.seen_tool_choice = None
 
     def chat(self, messages, tools, tool_choice="auto"):
         self.seen_messages = messages
         self.seen_tools = tools
+        self.seen_tool_choice = tool_choice
         return self.reply
 
 
@@ -225,3 +227,64 @@ def test_slugify_collapses_non_alphanumerics_and_lowercases():
     assert _slugify("Close a Share!") == "close_a_share"
     assert _slugify("  already_snake_case  ") == "already_snake_case"
     assert _slugify("!!!") == "capability"
+
+
+def test_confirm_clears_pending_and_returns_it_as_to_execute():
+    agent = ChatAgent(FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_invoke",
+         "arguments": {"capability_name": "lookup_member", "params": {"member_id": "100234"}}},
+        {"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "confirm"}},
+    ]))
+    session = _session_with_site()
+    agent.turn(session, "check member 100234", _ONE_SITE_CATALOG)
+
+    result = agent.turn(session, "yes", _ONE_SITE_CATALOG)
+
+    assert session.pending_action is None
+    assert result.to_execute is not None
+    assert result.to_execute.kind == "invoke"
+    assert result.to_execute.capability_name == "lookup_member"
+
+
+def test_cancel_clears_pending_without_executing_anything():
+    agent = ChatAgent(FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_invoke",
+         "arguments": {"capability_name": "lookup_member", "params": {"member_id": "100234"}}},
+        {"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "cancel"}},
+    ]))
+    session = _session_with_site()
+    agent.turn(session, "check member 100234", _ONE_SITE_CATALOG)
+
+    result = agent.turn(session, "no, never mind", _ONE_SITE_CATALOG)
+
+    assert session.pending_action is None
+    assert result.to_execute is None
+
+
+def test_amend_clears_pending_and_falls_through_to_a_normal_turn():
+    agent = ChatAgent(FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_invoke",
+         "arguments": {"capability_name": "lookup_member", "params": {"member_id": "100234"}}},
+        {"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "amend"}},
+        {"type": "tool_call", "name": "propose_invoke",
+         "arguments": {"capability_name": "lookup_member", "params": {"member_id": "999999"}}},
+    ]))
+    session = _session_with_site()
+    agent.turn(session, "check member 100234", _ONE_SITE_CATALOG)
+
+    result = agent.turn(session, "actually make it 999999", _ONE_SITE_CATALOG)
+
+    assert session.pending_action.params == {"member_id": "999999"}
+    assert result.to_execute is None
+
+
+def test_resolve_pending_is_called_with_a_forced_tool_choice():
+    llm = _RecordingLLM({"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "confirm"}})
+    agent = ChatAgent(llm)
+    session = _session_with_site()
+    session.pending_action = PendingAction(kind="invoke", capability_name="lookup_member", params={"member_id": "100234"})
+
+    agent.turn(session, "yes", _ONE_SITE_CATALOG)
+
+    assert llm.seen_tools == [_RESOLVE_PENDING_TOOL_FOR_TEST]
+    assert llm.seen_tool_choice == {"type": "function", "function": {"name": "resolve_pending"}}

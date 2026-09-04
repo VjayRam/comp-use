@@ -55,6 +55,19 @@ _PROPOSE_DISCOVERY_TOOL = {
     },
 }
 
+_RESOLVE_PENDING_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "resolve_pending",
+        "description": "Interpret the user's reply to a pending confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {"decision": {"type": "string", "enum": ["confirm", "cancel", "amend"]}},
+            "required": ["decision"],
+        },
+    },
+}
+
 
 def _system_prompt(session: ChatSession, site_catalog: list[dict]) -> str:
     return (
@@ -68,8 +81,19 @@ def _system_prompt(session: ChatSession, site_catalog: list[dict]) -> str:
     )
 
 
-def _build_messages(session: ChatSession, site_catalog: list[dict]) -> list[dict]:
-    return [{"role": "system", "content": _system_prompt(session, site_catalog)}] + session.messages
+def _pending_system_note(pending: PendingAction) -> str:
+    return (
+        f"There is a pending action awaiting the user's confirmation: {pending.kind} "
+        f"`{pending.capability_name}`. Call resolve_pending with decision=confirm if the user "
+        "agreed, cancel if they declined, or amend if they want to change something about the request."
+    )
+
+
+def _build_messages(session: ChatSession, site_catalog: list[dict], extra_system: str | None = None) -> list[dict]:
+    system = _system_prompt(session, site_catalog)
+    if extra_system:
+        system += "\n\n" + extra_system
+    return [{"role": "system", "content": system}] + session.messages
 
 
 def _known_sites(catalog: list[dict]) -> list[str]:
@@ -119,7 +143,7 @@ class ChatAgent:
             return self._handle_target_site_selection(session, user_message, catalog)
 
         if session.pending_action is not None:
-            raise NotImplementedError("pending-resolution handling lands in Task 8")
+            return self._handle_pending_resolution(session, user_message, catalog)
 
         return self._handle_normal_turn(session, catalog)
 
@@ -134,6 +158,31 @@ class ChatAgent:
         reply = f"Working against {chosen}. What would you like to do?"
         session.messages.append({"role": "assistant", "content": reply})
         return ChatTurnResult(reply_text=reply)
+
+    def _handle_pending_resolution(self, session: ChatSession, user_message: str, catalog: list[dict]) -> ChatTurnResult:
+        site_catalog = [c for c in catalog if c["target_base_url"] == session.target_site]
+        pending = session.pending_action
+        result = self.llm.chat(
+            messages=_build_messages(session, site_catalog, extra_system=_pending_system_note(pending)),
+            tools=[_RESOLVE_PENDING_TOOL],
+            tool_choice={"type": "function", "function": {"name": "resolve_pending"}},
+        )
+        decision = result["arguments"]["decision"] if result["type"] == "tool_call" else "amend"
+
+        if decision == "confirm":
+            session.pending_action = None
+            reply = f"Starting {pending.kind} for `{pending.capability_name}`..."
+            session.messages.append({"role": "assistant", "content": reply})
+            return ChatTurnResult(reply_text=reply, to_execute=pending)
+
+        if decision == "cancel":
+            session.pending_action = None
+            reply = "Okay, cancelled."
+            session.messages.append({"role": "assistant", "content": reply})
+            return ChatTurnResult(reply_text=reply)
+
+        session.pending_action = None
+        return self._handle_normal_turn(session, catalog)
 
     def _handle_normal_turn(self, session: ChatSession, catalog: list[dict]) -> ChatTurnResult:
         site_catalog = [c for c in catalog if c["target_base_url"] == session.target_site]
