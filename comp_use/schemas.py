@@ -141,7 +141,13 @@ class Artifact(BaseModel):
     steps: list[Step]
     success_checkpoint: Checkpoint
     outcome_patterns: list[OutcomePattern] = Field(default_factory=list)
-    status: Literal["draft", "approved", "rejected"] = "approved"
+    # "retired" is distinct from "rejected": a rejected draft was never approved
+    # for use, while a retired version WAS live in production and was
+    # deliberately withdrawn - approve_artifact() allows re-approving a retired
+    # version (but not a rejected one), which is the rollback path is_default
+    # exists for. Before "retired" existed, retire_artifact() set "rejected"
+    # too, making the two indistinguishable and rollback a one-way door.
+    status: Literal["draft", "approved", "rejected", "retired"] = "approved"
     created_from_run_id: str
     # When multiple versions of a capability are "approved" (e.g. after re-recording
     # a capability against a site change, the old one is kept approved for rollback

@@ -381,26 +381,47 @@ class DiscoveryAgent:
 
             risk_tier = _classify_risk(action, target, locator, current_url=self.surface.current_url())
 
+            escalated_for_this_step = False
             if self.guardrail.requires_confirmation(risk_tier, self.confirm_risky) and self.escalation is not None:
                 self._escalate(goal, step_index, f"step {step_index} is risk_tier=risky and confirm_risky is False")
+                escalated_for_this_step = True
 
             try:
                 self.surface.act(action, locator=locator, target=target, text=text)
                 if action == ActionType.SELECT_OPTION:
                     used_select_option = True
             except Exception as exc:
-                error_detail = f"{type(exc).__name__}: {exc}"
-                self._print(f"[discover] action failed: {action.value} raised {error_detail}")
-                history.append({**decision, "error": f"action failed: {error_detail}"})
-                self.evidence_logger.log_event(
-                    "skipped_decision", {"reason": "action_failed", "decision": decision, "error": error_detail}
-                )
-                # A locator that looked valid but didn't actually resolve is the same
-                # underlying problem the vision fallback exists for - give the model a
-                # screenshot on the very next attempt, same as a missing_locator skip.
-                needs_vision_fallback = True
-                consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
-                continue
+                if escalated_for_this_step:
+                    # The human almost certainly performed this exact action themselves
+                    # while control was handed over just above - by the time automation
+                    # gets a turn again the page has already moved on (the control that
+                    # would be clicked/typed into is simply gone), so re-attempting it
+                    # here always fails. The step still gets recorded below with
+                    # risk_tier=risky (matching why it escalated) rather than silently
+                    # dropped - the simplest version of "wherever discovery escalates,
+                    # replay escalates too": every step discovery paused a human for
+                    # ends up in the artifact as risky, whether or not automation's own
+                    # copy of that action succeeded afterward.
+                    self._print(
+                        f"[discover] {action.value} already performed manually during "
+                        f"escalation - recording step {step_index} without re-attempting it"
+                    )
+                    self.evidence_logger.log_event(
+                        "step_recorded_after_escalation", {"step_index": step_index, "action": action.value}
+                    )
+                else:
+                    error_detail = f"{type(exc).__name__}: {exc}"
+                    self._print(f"[discover] action failed: {action.value} raised {error_detail}")
+                    history.append({**decision, "error": f"action failed: {error_detail}"})
+                    self.evidence_logger.log_event(
+                        "skipped_decision", {"reason": "action_failed", "decision": decision, "error": error_detail}
+                    )
+                    # A locator that looked valid but didn't actually resolve is the same
+                    # underlying problem the vision fallback exists for - give the model a
+                    # screenshot on the very next attempt, same as a missing_locator skip.
+                    needs_vision_fallback = True
+                    consecutive_skips = self._note_skip(goal, step_index, consecutive_skips)
+                    continue
 
             # The action that just ran (most concretely a CLICK) may have navigated the
             # browser somewhere new. The allowlist check above only validated where we

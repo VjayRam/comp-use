@@ -141,6 +141,31 @@ function InvokeForm({ capability, onInvoked }: { capability: CapabilitySummary; 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    // capability.input_schema can go from [] (selected while still draft-only,
+    // before it's approved) to fully populated while this exact form instance
+    // stays mounted - Dashboard keys InvokeForm on capability_name alone, which
+    // does not change across that transition, so the lazy useState initializer
+    // above never re-runs. Without this, a newly-appeared required param has no
+    // key in `values` at all: it LOOKS filled in (its example renders as
+    // placeholder ghost text over an empty input) but is silently absent from
+    // the submitted params unless the user happens to click into that exact
+    // field - surfacing as a "missing required param" 400 on invoke for every
+    // field they didn't personally touch. Only fills in params not already
+    // present, so it never clobbers something the user already typed.
+    setValues((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const p of capability.input_schema) {
+        if (!(p.name in next)) {
+          next[p.name] = p.example != null ? String(p.example) : "";
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [capability.input_schema]);
+
   async function run() {
     setBusy(true);
     setError(null);
@@ -221,7 +246,16 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
   }, []);
 
   const sortedRuns = useMemo(
-    () => [...runs].sort((a, b) => (a.run_id < b.run_id ? 1 : -1)),
+    () =>
+      [...runs].sort((a, b) => {
+        // run_id's kind prefix ("discover_" vs "invoke_") sorts before actual
+        // recency if compared as plain strings, sinking newer discovery runs
+        // below older invoke runs - started_at reflects real chronology.
+        const aTime = a.started_at ?? "";
+        const bTime = b.started_at ?? "";
+        if (aTime !== bTime) return aTime < bTime ? 1 : -1;
+        return a.run_id < b.run_id ? 1 : -1;
+      }),
     [runs],
   );
 

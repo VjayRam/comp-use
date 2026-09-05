@@ -8,6 +8,28 @@ from comp_use.schemas import Artifact, InterventionRequest, OutcomePattern, Outc
 from comp_use.surface import safe_screenshot
 
 _CURRENCY_RE = re.compile(r"\$[\d,]+\.\d{2}")
+_NUMBER_RE = re.compile(r"^-?\d+(\.\d+)?$")
+
+
+def _value_matches_declared_type(value, declared_type: str) -> bool:
+    """A capability's input_schema declares a type per param, but nothing enforced
+    it end-to-end - an LLM tool call (chat's propose_invoke) could hand a live
+    Funds Transfer form an amount like "one hundred" and it would type straight
+    into the page. `bool` is checked before `int`/`float` since `isinstance(True, int)`
+    is True in Python and would otherwise let a boolean silently pass as a number."""
+    if declared_type == "string":
+        return isinstance(value, str)
+    if declared_type == "number":
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, (int, float)):
+            return True
+        return isinstance(value, str) and bool(_NUMBER_RE.match(value.strip()))
+    if declared_type == "boolean":
+        if isinstance(value, bool):
+            return True
+        return isinstance(value, str) and value.strip().lower() in ("true", "false")
+    return True
 
 
 def _resolve_derived_outputs(artifact: Artifact, outputs: dict) -> None:
@@ -28,12 +50,23 @@ def _resolve_derived_outputs(artifact: Artifact, outputs: dict) -> None:
 
 def validate_required_params(artifact: Artifact, params: dict) -> str | None:
     """Single source of truth for "does this params dict satisfy this artifact's
-    required input_schema" - used both by ReplayEngine.run() and by cli.py's
-    _run_replay (which needs a pre-browser answer, before ReplayEngine even
-    exists, to honor "skip launching Chromium on validation_error")."""
+    input_schema" - used both by ReplayEngine.run() and by cli.py's _run_replay
+    (which needs a pre-browser answer, before ReplayEngine even exists, to honor
+    "skip launching Chromium on validation_error"), and by the chat endpoint
+    before trusting an LLM tool call's params. Checks presence of every required
+    param AND, for any param actually supplied, that its value matches the type
+    declared in input_schema - never trust a caller's (especially an LLM's)
+    claimed types."""
     for input_param in artifact.input_schema:
         if input_param.required and input_param.name not in params:
             return f"missing required param '{input_param.name}'"
+        if input_param.name in params and not _value_matches_declared_type(
+            params[input_param.name], input_param.type
+        ):
+            return (
+                f"param '{input_param.name}' must be of type '{input_param.type}' "
+                f"(got {params[input_param.name]!r})"
+            )
     return None
 
 

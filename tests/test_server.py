@@ -560,14 +560,16 @@ def test_reject_endpoint_flips_draft_to_rejected(tmp_path):
     assert response.json()["status"] == "rejected"
 
 
-def test_retire_endpoint_flips_approved_to_rejected(tmp_path):
+def test_retire_endpoint_flips_approved_to_retired(tmp_path):
+    # "retired" is distinct from "rejected" - a retired version was live in
+    # production and was deliberately withdrawn, not a draft that never made it.
     client, settings = _client(tmp_path)
     save_artifact(_artifact(status="approved"), settings.artifacts_dir)
 
     response = client.post("/capabilities/lookup_member/versions/1/retire")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "rejected"
+    assert response.json()["status"] == "retired"
     # retired means no longer picked up as the default
     assert client.get("/capabilities/lookup_member").status_code == 404
 

@@ -1,8 +1,13 @@
 import json
+import time
 
 import requests
 
 from comp_use.config import Settings
+
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_RETRIES = 2
+_RETRY_BACKOFF_SECONDS = 1.0
 
 _TOOL_SCHEMA = {
     "type": "function",
@@ -333,20 +338,37 @@ class _OpenAICompatibleClient(LLMClient):
         raw = self._post_chat(self._vision_model(), messages, _DRIFT_TOOL_SCHEMA)
         return _normalize_drift_diagnosis(raw)
 
+    def _post_with_retry(self, payload: dict) -> requests.Response:
+        """A 429 (rate limit) or 5xx is a transient provider condition, not a
+        real decision failure - without a retry, FallbackLLMClient treated every
+        one exactly like a genuine failure and failed over to the OTHER
+        provider, and with only one provider configured it counted as a skipped
+        decision toward DiscoveryAgent's dead-end threshold, so a few rate
+        limits in a row looked like the agent was stuck when it wasn't. Only
+        _RETRYABLE_STATUS_CODES get a retry; anything else (4xx auth/shape
+        errors) fails immediately, same as before."""
+        last_response = None
+        for attempt in range(_MAX_RETRIES + 1):
+            response = requests.post(
+                self._endpoint(), headers=self._headers(), json=payload, timeout=60,
+            )
+            if response.status_code not in _RETRYABLE_STATUS_CODES:
+                response.raise_for_status()
+                return response
+            last_response = response
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_BACKOFF_SECONDS * (2 ** attempt))
+        last_response.raise_for_status()
+        return last_response
+
     def chat(self, messages: list[dict], tools: list[dict], tool_choice: dict | str = "auto") -> dict:
         print(f"[chat] asking {self._provider_label()}:{self._text_model()} ...", flush=True)
-        response = requests.post(
-            self._endpoint(),
-            headers=self._headers(),
-            json={
-                "model": self._text_model(),
-                "messages": messages,
-                "tools": tools,
-                "tool_choice": tool_choice,
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
+        response = self._post_with_retry({
+            "model": self._text_model(),
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+        })
         return parse_chat_message(response.json()["choices"][0]["message"])
 
     def _post_chat(self, model: str, messages: list[dict], tool_schema: dict) -> dict:
@@ -359,18 +381,12 @@ class _OpenAICompatibleClient(LLMClient):
         # hardcoded name) since this same method also serves the drift-diagnosis
         # tool call, which has a different function name.
         tool_choice = {"type": "function", "function": {"name": tool_schema["function"]["name"]}}
-        response = requests.post(
-            self._endpoint(),
-            headers=self._headers(),
-            json={
-                "model": model,
-                "messages": messages,
-                "tools": [tool_schema],
-                "tool_choice": tool_choice,
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
+        response = self._post_with_retry({
+            "model": model,
+            "messages": messages,
+            "tools": [tool_schema],
+            "tool_choice": tool_choice,
+        })
         return parse_decision(response.json())
 
 

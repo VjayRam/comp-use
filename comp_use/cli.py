@@ -163,8 +163,16 @@ def load_artifact(capability_name: str, artifacts_dir: Path, version: int | None
 
 def approve_artifact(capability_name: str, version: int, artifacts_dir: Path) -> Artifact:
     artifact = load_artifact(capability_name, artifacts_dir, version=version)
-    if artifact.status != "draft":
-        raise ValueError(f"version {version} is '{artifact.status}', not 'draft' - only a draft can be approved")
+    # A "retired" version was live in production once and was deliberately
+    # withdrawn (not rejected outright) - re-approving it is the rollback path
+    # is_default exists for, so it's allowed here alongside the normal
+    # draft-to-approved flow. A "rejected" draft was never approved and stays
+    # a one-way door.
+    if artifact.status not in ("draft", "retired"):
+        raise ValueError(
+            f"version {version} is '{artifact.status}', not 'draft' or 'retired' - "
+            "only a draft or a retired version can be approved"
+        )
     artifact.status = "approved"
     save_artifact(artifact, artifacts_dir)
     return artifact
@@ -183,7 +191,7 @@ def retire_artifact(capability_name: str, version: int, artifacts_dir: Path) -> 
     artifact = load_artifact(capability_name, artifacts_dir, version=version)
     if artifact.status != "approved":
         raise ValueError(f"version {version} is '{artifact.status}', not 'approved' - only an approved version can be retired")
-    artifact.status = "rejected"
+    artifact.status = "retired"
     save_artifact(artifact, artifacts_dir)
     return artifact
 
@@ -407,106 +415,117 @@ def run_discover(
         flush=True,
     )
 
-    with _browser_session(start_url, sandbox) as (page, novnc_url):
-        if novnc_url:
-            evidence.log_event("sandbox_started", {"novnc_url": novnc_url})
-            pg_store.set_novnc_url(run_id, novnc_url, container_name="")
-            transport.on_novnc_url(novnc_url)
-        # _browser_session's own finally (browser.close(), and stop() in sandbox mode)
-        # already guarantees cleanup even if agent.run() raises - e.g. a non-interactive-
-        # stdin RuntimeError from an escalation - so nothing here needs its own
-        # try/finally the way the old inline sync_playwright block did.
-        surface = PlaywrightSurface(page)
-        escalation = EscalationController(evidence, transport, surface=surface)
-        agent = DiscoveryAgent(
-            surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps,
-            escalation=escalation, confirm_risky=confirm_risky,
-        )
-        trace = agent.run(goal=goal, start_url=start_url, param_hints=param_hints)
+    # Everything below can raise (browser/CDP failure, an LLM call inside agent.run(),
+    # _derive_success_checkpoint, artifact compilation) - without this try/except, any
+    # such exception propagated straight out of run_discover, skipping finish_run()
+    # entirely and leaving the run's Postgres row (and hence the dashboard) stuck at
+    # status='running' forever, indistinguishable from a run still genuinely in
+    # progress. Re-raised after recording so the caller (RunManager.worker) still sees
+    # the real exception and sets its own in-memory record to status='error' too.
+    try:
+        with _browser_session(start_url, sandbox) as (page, novnc_url):
+            if novnc_url:
+                evidence.log_event("sandbox_started", {"novnc_url": novnc_url})
+                pg_store.set_novnc_url(run_id, novnc_url, container_name="")
+                transport.on_novnc_url(novnc_url)
+            # _browser_session's own finally (browser.close(), and stop() in sandbox mode)
+            # already guarantees cleanup even if agent.run() raises - e.g. a non-interactive-
+            # stdin RuntimeError from an escalation - so nothing here needs its own
+            # try/finally the way the old inline sync_playwright block did.
+            surface = PlaywrightSurface(page)
+            escalation = EscalationController(evidence, transport, surface=surface)
+            agent = DiscoveryAgent(
+                surface, llm, guardrail, evidence, max_steps=settings.max_discovery_steps,
+                escalation=escalation, confirm_risky=confirm_risky,
+            )
+            trace = agent.run(goal=goal, start_url=start_url, param_hints=param_hints)
+            if not trace.succeeded:
+                evidence.save_screenshot(safe_screenshot(surface), "final")
+            else:
+                success_checkpoint = _derive_success_checkpoint(surface, fallback_url=trace.final_url)
+
         if not trace.succeeded:
-            evidence.save_screenshot(safe_screenshot(surface), "final")
-        else:
-            success_checkpoint = _derive_success_checkpoint(surface, fallback_url=trace.final_url)
+            print(f"Discovery did not reach 'finish' within {settings.max_discovery_steps} steps.")
+            pg_store.finish_run(run_id, status="failed", result={"succeeded": False})
+            return None
 
-    if not trace.succeeded:
-        print(f"Discovery did not reach 'finish' within {settings.max_discovery_steps} steps.")
-        pg_store.finish_run(run_id, status="failed", result={"succeeded": False})
-        return None
-
-    # Derive the target descriptor from start_url's own host/scheme rather than a
-    # hardcoded "mock_bank" label + a "/member"-split base_url - both were written for
-    # the original take-home's mock app specifically and silently produced wrong
-    # values (a leftover mock_bank label, and a base_url that still included the path,
-    # e.g. ".../signon") against MERIDIAN CORE, whose start_url has no "/member"
-    # segment to split on. See EXT_TASK_FIXES.md #8.
-    parsed_start_url = urlparse(start_url)
-    artifact = compile_artifact(
-        trace,
-        capability_name=capability_name,
-        target={
-            "app": parsed_start_url.hostname or start_url,
-            "base_url": f"{parsed_start_url.scheme}://{parsed_start_url.netloc}",
-        },
-        success_checkpoint=success_checkpoint,
-        output_schema=derived_outputs or [],
-    )
-    if not any(step.action == ActionType.NAVIGATE for step in artifact.steps):
-        artifact.steps.insert(
-            0,
-            Step(action=ActionType.NAVIGATE, target=start_url, risk_tier=RiskTier.SAFE),
+        # Derive the target descriptor from start_url's own host/scheme rather than a
+        # hardcoded "mock_bank" label + a "/member"-split base_url - both were written for
+        # the original take-home's mock app specifically and silently produced wrong
+        # values (a leftover mock_bank label, and a base_url that still included the path,
+        # e.g. ".../signon") against MERIDIAN CORE, whose start_url has no "/member"
+        # segment to split on. See EXT_TASK_FIXES.md #8.
+        parsed_start_url = urlparse(start_url)
+        artifact = compile_artifact(
+            trace,
+            capability_name=capability_name,
+            target={
+                "app": parsed_start_url.hostname or start_url,
+                "base_url": f"{parsed_start_url.scheme}://{parsed_start_url.netloc}",
+            },
+            success_checkpoint=success_checkpoint,
+            output_schema=derived_outputs or [],
         )
-    artifact.status = "draft"
+        if not any(step.action == ActionType.NAVIGATE for step in artifact.steps):
+            artifact.steps.insert(
+                0,
+                Step(action=ActionType.NAVIGATE, target=start_url, risk_tier=RiskTier.SAFE),
+            )
+        artifact.status = "draft"
 
-    # Ask for approval *before* touching version numbers so the version-lock
-    # below never has to be held across this blocking call - see the comment
-    # on _version_lock.
-    if interactive:
-        try:
-            answer = input("Approve as new default? [y/N]: ").strip().lower()
-        except (EOFError, OSError):
-            # OSError covers pytest's captured-stdin guard (and any other
-            # environment where stdin isn't readable) - treat it the same as
-            # EOFError: no answer given, artifact stays a draft.
-            answer = ""
-        if answer == "y":
-            artifact.status = "approved"
-
-    # Never silently overwrite a previous discovery run's artifact - bump the
-    # version instead, so an existing (possibly still-working) artifact isn't
-    # destroyed by re-running discovery for the same capability name. The
-    # version read and the save must happen atomically with respect to other
-    # threads (e.g. concurrent HTTP discover requests for the same capability
-    # via the capability server), otherwise two threads can compute the same
-    # "next version" and the second save silently clobbers the first's
-    # artifact - see _version_lock.
-    with _version_lock:
-        artifact.version = next_artifact_version(capability_name, settings.artifacts_dir)
-        # A fresh discovery run has no way to observe outcome_patterns - they're
-        # hand-authored from watching real business/recoverable outcomes, not
-        # something the agent infers from a single successful trace. Without this,
-        # every re-discovery silently drops any hand-authored patterns from the
-        # previous version, since replay always loads the latest version.
-        if artifact.version > 1:
+        # Ask for approval *before* touching version numbers so the version-lock
+        # below never has to be held across this blocking call - see the comment
+        # on _version_lock.
+        if interactive:
             try:
-                prev_artifact = load_artifact(capability_name, settings.artifacts_dir, version=artifact.version - 1)
-                if prev_artifact.outcome_patterns:
-                    artifact.outcome_patterns = prev_artifact.outcome_patterns
-                    print(
-                        f"[discover] carried forward {len(prev_artifact.outcome_patterns)} "
-                        f"outcome_patterns(s) from v{prev_artifact.version}",
-                        flush=True,
-                    )
-            except (FileNotFoundError, ValueError):
-                pass
+                answer = input("Approve as new default? [y/N]: ").strip().lower()
+            except (EOFError, OSError):
+                # OSError covers pytest's captured-stdin guard (and any other
+                # environment where stdin isn't readable) - treat it the same as
+                # EOFError: no answer given, artifact stays a draft.
+                answer = ""
+            if answer == "y":
+                artifact.status = "approved"
 
-        path = save_artifact(artifact, settings.artifacts_dir)
+        # Never silently overwrite a previous discovery run's artifact - bump the
+        # version instead, so an existing (possibly still-working) artifact isn't
+        # destroyed by re-running discovery for the same capability name. The
+        # version read and the save must happen atomically with respect to other
+        # threads (e.g. concurrent HTTP discover requests for the same capability
+        # via the capability server), otherwise two threads can compute the same
+        # "next version" and the second save silently clobbers the first's
+        # artifact - see _version_lock.
+        with _version_lock:
+            artifact.version = next_artifact_version(capability_name, settings.artifacts_dir)
+            # A fresh discovery run has no way to observe outcome_patterns - they're
+            # hand-authored from watching real business/recoverable outcomes, not
+            # something the agent infers from a single successful trace. Without this,
+            # every re-discovery silently drops any hand-authored patterns from the
+            # previous version, since replay always loads the latest version.
+            if artifact.version > 1:
+                try:
+                    prev_artifact = load_artifact(capability_name, settings.artifacts_dir, version=artifact.version - 1)
+                    if prev_artifact.outcome_patterns:
+                        artifact.outcome_patterns = prev_artifact.outcome_patterns
+                        print(
+                            f"[discover] carried forward {len(prev_artifact.outcome_patterns)} "
+                            f"outcome_patterns(s) from v{prev_artifact.version}",
+                            flush=True,
+                        )
+                except (FileNotFoundError, ValueError):
+                    pass
 
-    print(f"Saved artifact to {path} (status={artifact.status})")
-    pg_store.finish_run(
-        run_id, status="done",
-        result={"succeeded": True, "artifact_version": artifact.version, "artifact_status": artifact.status},
-    )
-    return artifact
+            path = save_artifact(artifact, settings.artifacts_dir)
+
+        print(f"Saved artifact to {path} (status={artifact.status})")
+        pg_store.finish_run(
+            run_id, status="done",
+            result={"succeeded": True, "artifact_version": artifact.version, "artifact_status": artifact.status},
+        )
+        return artifact
+    except Exception as exc:
+        pg_store.finish_run(run_id, status="error", result={"error": f"{type(exc).__name__}: {exc}"})
+        raise
 
 
 def _run_discover(args) -> None:
@@ -661,22 +680,31 @@ def run_replay(
     # page so a human watching via noVNC sees something meaningful immediately, rather
     # than a blank tab until the first recorded navigate runs.
     sandbox_start_url = artifact.target.get("base_url", "about:blank") if sandbox else "about:blank"
-    with _browser_session(sandbox_start_url, sandbox) as (page, novnc_url):
-        if novnc_url:
-            evidence.log_event("sandbox_started", {"novnc_url": novnc_url})
-            pg_store.set_novnc_url(run_id, novnc_url, container_name="")
-            transport.on_novnc_url(novnc_url)
-        surface = PlaywrightSurface(page)
-        escalation = EscalationController(evidence, transport, surface=surface)
-        engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
-        result = engine.run(artifact, params, confirm_risky=confirm_risky)
-        if result.outcome != OutcomeType.SUCCESS:
-            evidence.save_screenshot(safe_screenshot(surface), "final")
-        if diagnose_drift_on_failure and result.outcome == OutcomeType.HARD_FAILURE:
-            _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifact, result)
+    # Same reasoning as run_discover()'s matching try/except: without this, an
+    # exception from engine.run(), a screenshot, or drift diagnosis propagated
+    # straight out of run_replay, skipping finish_run() and leaving the run's
+    # Postgres row stuck at status='running' forever even though the browser
+    # session (and its real ReplayResult, if one was computed) is long gone.
+    try:
+        with _browser_session(sandbox_start_url, sandbox) as (page, novnc_url):
+            if novnc_url:
+                evidence.log_event("sandbox_started", {"novnc_url": novnc_url})
+                pg_store.set_novnc_url(run_id, novnc_url, container_name="")
+                transport.on_novnc_url(novnc_url)
+            surface = PlaywrightSurface(page)
+            escalation = EscalationController(evidence, transport, surface=surface)
+            engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+            result = engine.run(artifact, params, confirm_risky=confirm_risky)
+            if result.outcome != OutcomeType.SUCCESS:
+                evidence.save_screenshot(safe_screenshot(surface), "final")
+            if diagnose_drift_on_failure and result.outcome == OutcomeType.HARD_FAILURE:
+                _diagnose_and_propose_patch(settings, evidence, escalation, surface, artifact, result)
 
-    pg_store.finish_run(run_id, status=result.outcome.value, result=result.model_dump(mode="json"))
-    return result
+        pg_store.finish_run(run_id, status=result.outcome.value, result=result.model_dump(mode="json"))
+        return result
+    except Exception as exc:
+        pg_store.finish_run(run_id, status="error", result={"error": f"{type(exc).__name__}: {exc}"})
+        raise
 
 
 def _run_replay(args) -> None:

@@ -13,11 +13,22 @@ class ControlState(str, Enum):
     NONE = "none"
 
 
+_MAX_DIFF_LINES = 200
+
+
 def _diff_trees(before: str, after: str) -> str:
-    diff = difflib.unified_diff(
+    diff = list(difflib.unified_diff(
         before.splitlines(), after.splitlines(), lineterm="", n=0,
         fromfile="before_handoff", tofile="after_handoff",
-    )
+    ))
+    if len(diff) > _MAX_DIFF_LINES:
+        # A human handoff onto an entirely different page (e.g. a table-heavy
+        # MERIDIAN screen) produces a diff that's essentially both trees
+        # concatenated - multiple MB into a single evidence event/JSONB row with
+        # no bound. Truncate rather than let one escalation's diff dominate the
+        # whole evidence log.
+        omitted = len(diff) - _MAX_DIFF_LINES
+        diff = diff[:_MAX_DIFF_LINES] + [f"... ({omitted} more lines omitted)"]
     return "\n".join(diff)
 
 
@@ -46,43 +57,49 @@ class EscalationController:
 
     def escalate(self, request: InterventionRequest) -> None:
         self.control = ControlState.HUMAN
-        # Whatever triggered this escalate() call (a risky step, loop detection, or a
-        # voluntary takeover request), any pending takeover request is now being
-        # honored - clear it so it can't also fire a second, redundant escalation
-        # right after this one resumes.
-        self.transport.clear_takeover()
-        self.evidence_logger.log_event("escalation_requested", request.model_dump())
+        try:
+            # Whatever triggered this escalate() call (a risky step, loop detection, or a
+            # voluntary takeover request), any pending takeover request is now being
+            # honored - clear it so it can't also fire a second, redundant escalation
+            # right after this one resumes.
+            self.transport.clear_takeover()
+            self.evidence_logger.log_event("escalation_requested", request.model_dump())
 
-        before_tree = None
-        before_screenshot_path = None
-        if self.surface is not None:
-            before_tree = _safe_observe_tree(self.surface)
-            before_screenshot_path = self.evidence_logger.save_screenshot(
-                safe_screenshot(self.surface), f"escalation_before_step{request.current_step}"
+            before_tree = None
+            before_screenshot_path = None
+            if self.surface is not None:
+                before_tree = _safe_observe_tree(self.surface)
+                before_screenshot_path = self.evidence_logger.save_screenshot(
+                    safe_screenshot(self.surface), f"escalation_before_step{request.current_step}"
+                )
+
+            self.transport.notify(request)
+            human_note = self.transport.wait_for_resume()
+            self.evidence_logger.log_event("escalation_resumed", {"run_id": request.run_id})
+
+            tree_diff = None
+            after_screenshot_path = None
+            if self.surface is not None:
+                after_tree = _safe_observe_tree(self.surface)
+                if before_tree is not None and after_tree is not None:
+                    tree_diff = _diff_trees(before_tree, after_tree)
+                after_screenshot_path = self.evidence_logger.save_screenshot(
+                    safe_screenshot(self.surface), f"escalation_after_step{request.current_step}"
+                )
+
+            self.evidence_logger.log_event(
+                "escalation_human_action",
+                {
+                    "run_id": request.run_id,
+                    "note": human_note or "",
+                    "tree_diff": tree_diff,
+                    "before_screenshot_path": before_screenshot_path,
+                    "after_screenshot_path": after_screenshot_path,
+                },
             )
-
-        self.transport.notify(request)
-        human_note = self.transport.wait_for_resume()
-        self.evidence_logger.log_event("escalation_resumed", {"run_id": request.run_id})
-
-        tree_diff = None
-        after_screenshot_path = None
-        if self.surface is not None:
-            after_tree = _safe_observe_tree(self.surface)
-            if before_tree is not None and after_tree is not None:
-                tree_diff = _diff_trees(before_tree, after_tree)
-            after_screenshot_path = self.evidence_logger.save_screenshot(
-                safe_screenshot(self.surface), f"escalation_after_step{request.current_step}"
-            )
-
-        self.evidence_logger.log_event(
-            "escalation_human_action",
-            {
-                "run_id": request.run_id,
-                "note": human_note or "",
-                "tree_diff": tree_diff,
-                "before_screenshot_path": before_screenshot_path,
-                "after_screenshot_path": after_screenshot_path,
-            },
-        )
-        self.control = ControlState.AGENT
+        finally:
+            # Always restore control to AGENT, even if notify()/wait_for_resume() or
+            # any surrounding evidence call raises - otherwise a single failed
+            # notification leaves `control` stuck at HUMAN with no way back, and the
+            # "who is in control" bookkeeping starts lying for the rest of the run.
+            self.control = ControlState.AGENT

@@ -3,10 +3,11 @@ import logging
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -17,6 +18,7 @@ from comp_use.cli import (
     clear_default_version,
     delete_capability,
     list_capability_names,
+    list_versions as _cli_list_versions,
     load_artifact,
     reject_artifact,
     retire_artifact,
@@ -33,6 +35,7 @@ from comp_use.replay.engine import validate_required_params
 from comp_use.server.run_manager import RunManager
 
 _CAPABILITY_NAME_RE = re.compile(r"^[a-z0-9_]+$")
+_RUN_ID_RE = re.compile(r"^[a-z0-9_]+$")
 
 
 def _validate_capability_name(name: str) -> None:
@@ -46,6 +49,31 @@ def _validate_capability_name(name: str) -> None:
             status_code=400,
             detail=f"invalid capability name {name!r}: must match {_CAPABILITY_NAME_RE.pattern}",
         )
+
+
+def _validate_run_id(run_id: str) -> None:
+    """`run_id` is used to build a filesystem path (`evidence_dir / run_id`) in
+    several routes below - most notably DELETE /runs/{run_id}, which calls
+    shutil.rmtree() on the result. Same path-traversal exposure
+    _validate_capability_name exists to prevent (e.g. a run_id of
+    "../../artifacts" would let a caller delete an arbitrary directory this
+    process can write to) - reject anything that isn't a plain lowercase/digits/
+    underscore token before it ever reaches Path()."""
+    if not _RUN_ID_RE.match(run_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid run_id {run_id!r}: must match {_RUN_ID_RE.pattern}",
+        )
+
+
+def _mint_run_id(kind: str) -> str:
+    """A millisecond timestamp alone collides under real concurrency (two
+    invokes - or an invoke and a chat-triggered invoke - landing in the same
+    millisecond), silently overwriting one run's RunManager record and
+    interleaving both runs' evidence/Postgres rows under one id. The uuid
+    suffix makes that practically impossible; RunManager.start() also now
+    rejects a collision outright rather than overwriting."""
+    return f"{kind}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
 
 
 class InvokeRequest(BaseModel):
@@ -94,12 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return list_capability_names(settings.artifacts_dir)
 
     def _capability_versions(name: str) -> list[int]:
-        if pg_store.db_enabled():
-            return sorted(v["version"] for v in pg_store.list_artifact_versions(name))
-        capability_dir = settings.artifacts_dir / name
-        if not capability_dir.exists():
-            return []
-        return sorted(int(p.stem[1:]) for p in capability_dir.glob("v*.json"))
+        return _cli_list_versions(name, settings.artifacts_dir)
 
     @app.get("/capabilities")
     def list_capabilities():
@@ -160,7 +183,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"no capability '{name}'")
         out = []
         for v in versions:
-            artifact = load_artifact(name, settings.artifacts_dir, version=v)
+            try:
+                artifact = load_artifact(name, settings.artifacts_dir, version=v)
+            except Exception as exc:
+                # Same reasoning as list_capabilities() above: one malformed/legacy
+                # artifact file must not 500 this endpoint for every other version of
+                # the same capability.
+                logging.getLogger(__name__).warning(
+                    "skipping unloadable artifact %s v%s: %s", name, v, exc
+                )
+                continue
             out.append({
                 "version": v, "status": artifact.status,
                 "created_from_run_id": artifact.created_from_run_id, "is_default": artifact.is_default,
@@ -193,7 +225,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # records run_replay writes land under the SAME id the frontend is polling -
         # previously each generated its own independent timestamp id and the two never
         # matched, so the events panel always showed nothing.
-        run_id = f"invoke_{int(time.time() * 1000)}"
+        run_id = _mint_run_id("invoke")
 
         def target(transport):
             return run_replay(name, body.params, False, False, transport, version=body.version, run_id=run_id)
@@ -205,7 +237,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def discover_capability(name: str, body: DiscoverRequest):
         _validate_capability_name(name)
 
-        run_id = f"discover_{int(time.time() * 1000)}"
+        run_id = _mint_run_id("discover")
 
         def target(transport):
             artifact = run_discover(
@@ -220,7 +252,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"run_id": run_id, "status": "running"}
 
     @app.get("/runs")
-    def list_runs(limit: int = 50):
+    def list_runs(limit: int = Query(50, ge=1, le=500)):
         # Postgres-backed when configured (persists across server restarts, which is
         # the whole point of comp_use/pg - see EXT_TASK_FIXES.md). Falls back to
         # RunManager's in-memory records (this process's runs only, lost on restart)
@@ -256,6 +288,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/runs/{run_id}/events")
     def get_run_events(run_id: str):
+        _validate_run_id(run_id)
         # Same Postgres-first, file-fallback shape as list_runs() above - falls back
         # to the JSONL evidence log (EvidenceLogger's own source of truth) rather than
         # RunManager, since RunManager never held per-step events at all, only the
@@ -273,12 +306,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for line in log_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            record = json.loads(line)
-            events.append({"event_type": record["event_type"], "data": record["data"], "created_at": None})
+            try:
+                record = json.loads(line)
+                event = {"event_type": record["event_type"], "data": record["data"], "created_at": None}
+            except (json.JSONDecodeError, KeyError) as exc:
+                # A truncated final line (a run killed mid-write leaves one) must not
+                # 500 the whole events panel for every OTHER event this run logged.
+                logging.getLogger(__name__).warning(
+                    "skipping malformed event line in %s: %s", log_path, exc
+                )
+                continue
+            events.append(event)
         return events
 
     @app.get("/runs/{run_id}/screenshots/{label}")
     def get_screenshot(run_id: str, label: str):
+        _validate_run_id(run_id)
         # Counterpart to the /evidence static mount above, for the Postgres-backed
         # screenshot path (EvidenceLogger.save_screenshot() when COMP_USE_DB_URL is
         # configured - see comp_use/pg/schema.sql's run_screenshots table).
@@ -289,6 +332,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/runs/{run_id}")
     def get_run(run_id: str):
+        _validate_run_id(run_id)
         record = app.state.run_manager.get(run_id)
         if record is None:
             # Same Postgres-first-... well here, Postgres-ONLY fallback as list_runs/
@@ -342,6 +386,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/runs/{run_id}/takeover", status_code=202)
     def takeover_run(run_id: str):
+        _validate_run_id(run_id)
         # Voluntary human takeover - the run isn't stuck or risky, an operator just
         # wants to drive the live browser for a moment. Reuses the exact same
         # escalate()/resume() handshake as an agent-triggered escalation (see
@@ -360,6 +405,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/runs/{run_id}/resume", status_code=202)
     def resume_run(run_id: str, body: ResumeRequest):
+        _validate_run_id(run_id)
         resumed = app.state.run_manager.resume(run_id, body.note)
         if not resumed:
             record = app.state.run_manager.get(run_id)
@@ -369,13 +415,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "running"}
 
     @app.delete("/runs/{run_id}")
-    def delete_run(run_id: str):
+    def delete_run(run_id: str, force: bool = False):
+        _validate_run_id(run_id)
         # An active run's background thread/transport is still live and referenced
         # from RunManager's own record - refuse to delete out from under it, same
-        # gate takeover uses in reverse.
+        # gate takeover uses in reverse. `force=true` is the escape hatch for a run
+        # stuck on an abandoned escalation nobody is ever going to resume: it
+        # force-cancels the wait (RunManager.cancel / QueueTransport.cancel) rather
+        # than deleting immediately, since the worker thread/browser still needs to
+        # unwind first - retry the DELETE once status is no longer
+        # 'running'/'escalated' to actually remove the record.
         record = app.state.run_manager.get(run_id)
         if record is not None and record.status in ("running", "escalated"):
-            raise HTTPException(status_code=409, detail=f"run is '{record.status}' - cannot delete an active run")
+            if not force:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"run is '{record.status}' - cannot delete an active run "
+                    "(pass ?force=true to cancel an abandoned escalation first)",
+                )
+            app.state.run_manager.cancel(run_id)
+            return {"run_id": run_id, "deleted": False, "cancel_requested": True}
 
         removed_from_memory = app.state.run_manager.delete(run_id)
         removed_from_pg = bool(pg_store.delete_run(run_id)) if pg_store.db_enabled() else False
@@ -500,7 +559,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         if validation_error:
                             reply_text = f"I can't run `{pending.capability_name}` anymore — {validation_error}."
                         else:
-                            run_id = f"invoke_{int(time.time() * 1000)}"
+                            run_id = _mint_run_id("invoke")
 
                             def target(transport, _name=pending.capability_name, _params=pending.params, _run_id=run_id):
                                 return run_replay(_name, _params, False, False, transport, run_id=_run_id)
@@ -509,7 +568,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 else:
                     # Nothing meaningful to pre-validate for a discovery proposal -
                     # discovery doesn't require an existing artifact.
-                    run_id = f"discover_{int(time.time() * 1000)}"
+                    run_id = _mint_run_id("discover")
 
                     def target(
                         transport, _name=pending.capability_name, _goal=pending.goal,

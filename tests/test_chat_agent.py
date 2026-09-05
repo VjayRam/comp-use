@@ -279,12 +279,46 @@ def test_amend_clears_pending_and_falls_through_to_a_normal_turn():
 
 
 def test_resolve_pending_is_called_with_a_forced_tool_choice():
+    # An exact "yes" is now resolved deterministically without ever touching the
+    # LLM (see _parse_explicit_decision) - only a reply that isn't an exact
+    # affirmative/negative reaches this forced tool call, so this test uses one.
     llm = _RecordingLLM({"type": "tool_call", "name": "resolve_pending", "arguments": {"decision": "confirm"}})
     agent = ChatAgent(llm)
     session = _session_with_site()
     session.pending_action = PendingAction(kind="invoke", capability_name="lookup_member", params={"member_id": "100234"})
 
-    agent.turn(session, "yes", _ONE_SITE_CATALOG)
+    agent.turn(session, "sure, go for it", _ONE_SITE_CATALOG)
 
     assert llm.seen_tools == [_RESOLVE_PENDING_TOOL_FOR_TEST]
     assert llm.seen_tool_choice == {"type": "function", "function": {"name": "resolve_pending"}}
+
+
+def test_exact_yes_confirms_without_calling_the_llm():
+    # The core of the fix: a free-tier model not honoring the forced resolve_pending
+    # tool call previously meant "yes" could loop forever (decision defaulted to
+    # "amend"). An exact "yes"/"y"/"confirm"/etc. must resolve to "confirm" without
+    # ever reaching the LLM, so model flakiness can't affect it at all.
+    llm = _RecordingLLM({"type": "text", "text": "unused"})
+    agent = ChatAgent(llm)
+    session = _session_with_site()
+    session.pending_action = PendingAction(kind="invoke", capability_name="lookup_member", params={"member_id": "100234"})
+
+    result = agent.turn(session, "yes", _ONE_SITE_CATALOG)
+
+    assert llm.seen_tools is None
+    assert session.pending_action is None
+    assert result.to_execute is not None
+    assert result.to_execute.capability_name == "lookup_member"
+
+
+def test_exact_no_cancels_without_calling_the_llm():
+    llm = _RecordingLLM({"type": "text", "text": "unused"})
+    agent = ChatAgent(llm)
+    session = _session_with_site()
+    session.pending_action = PendingAction(kind="invoke", capability_name="lookup_member", params={"member_id": "100234"})
+
+    result = agent.turn(session, "no", _ONE_SITE_CATALOG)
+
+    assert llm.seen_tools is None
+    assert session.pending_action is None
+    assert result.to_execute is None

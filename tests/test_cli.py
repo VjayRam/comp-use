@@ -185,16 +185,27 @@ def test_reject_artifact_rejects_a_version_that_is_not_a_draft(tmp_path):
         reject_artifact("lookup_member", 1, tmp_path)
 
 
-def test_retire_artifact_flips_approved_to_rejected(tmp_path):
+def test_retire_artifact_flips_approved_to_retired(tmp_path):
+    # "retired" is distinct from "rejected" - a retired version was live in
+    # production and was deliberately withdrawn, not a draft that never made it;
+    # see approve_artifact's re-approval-of-retired path just below.
     save_artifact(_artifact(version=1), tmp_path)  # approved
     retired = retire_artifact("lookup_member", 1, tmp_path)
-    assert retired.status == "rejected"
+    assert retired.status == "retired"
 
 
 def test_retire_artifact_rejects_a_version_that_is_not_approved(tmp_path):
     save_artifact(_artifact(version=1, status="draft"), tmp_path)
     with pytest.raises(ValueError, match="not 'approved'"):
         retire_artifact("lookup_member", 1, tmp_path)
+
+
+def test_approve_artifact_allows_re_approving_a_retired_version(tmp_path):
+    # The rollback path is_default exists for: a retired version was live once
+    # and can be brought back, unlike a rejected draft (a one-way door).
+    save_artifact(_artifact(version=1, status="retired"), tmp_path)
+    approved = approve_artifact("lookup_member", 1, tmp_path)
+    assert approved.status == "approved"
 
 
 def test_delete_capability_removes_every_version_and_reports_the_count(tmp_path):

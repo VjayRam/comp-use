@@ -5,6 +5,18 @@ from typing import Callable
 from comp_use.schemas import InterventionRequest
 
 
+class EscalationAbandoned(RuntimeError):
+    """Raised by QueueTransport.wait_for_resume() when a run's escalation is
+    force-cancelled (see RunManager.cancel() / DELETE /runs/{run_id}?force=true)
+    rather than ever being resumed by a human. Without this, an abandoned
+    escalation blocked its worker thread - and the live browser/Docker container
+    underneath it - forever, with DELETE explicitly refusing to touch a
+    'running'/'escalated' run. ReplayEngine.run() and DiscoveryAgent._escalate()
+    already catch any exception out of escalate() and turn it into a clean,
+    reported failure, so this needs no special handling there - it just needs a
+    way to actually fire."""
+
+
 class ControlTransport:
     def notify(self, request: InterventionRequest) -> None:
         raise NotImplementedError
@@ -42,6 +54,14 @@ class ControlTransport:
         the HTTP API) learns where to watch/control the live session, whether
         or not escalation ever actually happens. Default is a no-op - only
         sandbox-mode runs ever call this at all."""
+        pass
+
+    def cancel(self) -> None:
+        """Force-unblocks a pending wait_for_resume() with EscalationAbandoned
+        instead of a real resume note - see DELETE /runs/{run_id}?force=true.
+        Default is a no-op: a CLI-local run (LocalSharedBrowserTransport) has no
+        server-side "force cancel" button to wire this to, only QueueTransport
+        (the capability server's HTTP-driven runs) supports it."""
         pass
 
 
@@ -90,12 +110,37 @@ class QueueTransport(ControlTransport):
         self._on_novnc_url = on_novnc_url
         self._resume_queue: "queue.Queue[str]" = queue.Queue()
         self._takeover_event = threading.Event()
+        self._cancel_event = threading.Event()
 
     def notify(self, request: InterventionRequest) -> None:
         self._on_notify(request)
 
     def wait_for_resume(self) -> str:
-        return self._resume_queue.get()
+        # A duplicate resume() call (e.g. a double-clicked "Resume" button firing
+        # two HTTP requests) can leave a leftover item in the queue after the
+        # escalation it was meant for already consumed one and moved on - RunManager
+        # only gates resume() on status=="escalated", which a LATER escalation in
+        # the same run also satisfies. Without draining first, that stale item
+        # would satisfy the next escalation's wait_for_resume() immediately, with
+        # no human having looked at it - silently no-opping the confirmation gate.
+        while True:
+            try:
+                self._resume_queue.get_nowait()
+            except queue.Empty:
+                break
+        # Polls in bounded slices rather than an untimed queue.get() - an
+        # abandoned escalation (nobody ever resumes it) previously blocked this
+        # thread, and the browser/Docker container underneath it, forever. The
+        # slice length only affects how quickly cancel() is noticed, not
+        # normal-path latency (a real resume() still wakes this up within one
+        # slice at most).
+        while True:
+            if self._cancel_event.is_set():
+                raise EscalationAbandoned("escalation was force-cancelled before a human resumed it")
+            try:
+                return self._resume_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
 
     def resume(self, note: str) -> None:
         self._resume_queue.put(note)
@@ -112,3 +157,6 @@ class QueueTransport(ControlTransport):
     def on_novnc_url(self, url: str) -> None:
         if self._on_novnc_url is not None:
             self._on_novnc_url(url)
+
+    def cancel(self) -> None:
+        self._cancel_event.set()

@@ -596,6 +596,53 @@ def test_agent_escalates_before_acting_on_a_risky_decision(tmp_path):
     assert trace.steps[0].risk_tier.value == "risky"
 
 
+def test_agent_records_risky_step_even_when_the_action_fails_after_escalation(tmp_path):
+    # Reproduces a real live gap: a human takes control during the escalation pause
+    # and performs the risky action themselves (e.g. clicking the real "Apply Hold"
+    # button) - by the time the agent's own turn resumes, that control is gone from
+    # the page, so re-attempting the identical click always raises. Before this fix,
+    # that raise was treated as an ordinary failed decision and the step was never
+    # recorded at all, so the artifact silently ended up with NO risky step anywhere
+    # - replay would then never escalate for the one action discovery specifically
+    # stopped a human for. The fix: still record the step (risk_tier=risky) when the
+    # failure happens on a step that just escalated, since discovery escalating and
+    # replay escalating on the same step should always agree.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    # act call #1 is the initial NAVIGATE; call #2 is the risky click, which raises -
+    # simulating the human having already clicked it during the escalation pause.
+    surface = FakeSurface(raise_on_action_call=2)
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {
+                "action": "click",
+                "locator": {"strategy": "role", "value": {"role": "button", "name": "Confirm Transfer"}},
+                "done": False,
+            },
+            {"action": "finish", "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_risky_manual_escalation")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10, escalation=escalation)
+
+    trace = agent.run(goal="Transfer funds", start_url="http://localhost:5000/member/search")
+
+    assert len(transport.notified) == 1
+    assert len(trace.steps) == 1
+    assert trace.steps[0].action == ActionType.CLICK
+    assert trace.steps[0].risk_tier.value == "risky"
+
+    log_path = evidence.run_dir / "log.jsonl"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert not [e for e in events if e["event_type"] == "skipped_decision"]
+    recorded = [e for e in events if e["event_type"] == "step_recorded_after_escalation"]
+    assert len(recorded) == 1
+    assert recorded[0]["data"]["step_index"] == 0
+
+
 def test_agent_skips_risky_escalation_when_confirm_risky_is_true(tmp_path):
     settings = load_settings()
     settings.evidence_dir = tmp_path / "evidence"

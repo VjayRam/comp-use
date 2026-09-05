@@ -132,6 +132,32 @@ def _match_site_choice(user_message: str, sites: list[str]) -> str | None:
     return next((s for s in sites if s == text), None)
 
 
+_AFFIRMATIVE_REPLIES = {"yes", "y", "yeah", "yep", "yup", "confirm", "confirmed", "proceed", "ok", "okay", "sure", "go ahead", "do it"}
+_NEGATIVE_REPLIES = {"no", "n", "nope", "cancel", "stop", "abort", "don't", "do not"}
+
+
+def _parse_explicit_decision(user_message: str) -> str | None:
+    """Deterministic yes/no parse for a pending confirmation, checked BEFORE ever
+    asking the model. This is the single most safety-critical gate in the chat
+    surface - the only thing standing between a user's reply and a real, possibly
+    irreversible capability run - and relying solely on an LLM tool call to
+    interpret it has two failure modes: the model can misread an ambiguous reply,
+    and a free-tier model (observed live: minimax/minimax-m3:free via OpenRouter)
+    may not honor the forced tool_choice at all, in which case _handle_pending_
+    resolution's fallback ("amend") silently clears the pending action and loops
+    the user back to square one no matter how many times they say "yes".
+    Only an exact-match short reply resolves here; anything else (including a
+    reply that merely contains "yes" inside a longer sentence, e.g. "yes but
+    change the amount") falls through to the LLM, which is exactly where the
+    nuance of confirm/cancel/amend belongs."""
+    normalized = user_message.strip().lower().rstrip(".!")
+    if normalized in _AFFIRMATIVE_REPLIES:
+        return "confirm"
+    if normalized in _NEGATIVE_REPLIES:
+        return "cancel"
+    return None
+
+
 class ChatAgent:
     def __init__(self, llm: LLMClient):
         self.llm = llm
@@ -160,14 +186,21 @@ class ChatAgent:
         return ChatTurnResult(reply_text=reply)
 
     def _handle_pending_resolution(self, session: ChatSession, user_message: str, catalog: list[dict]) -> ChatTurnResult:
-        site_catalog = [c for c in catalog if c["target_base_url"] == session.target_site]
         pending = session.pending_action
-        result = self.llm.chat(
-            messages=_build_messages(session, site_catalog, extra_system=_pending_system_note(pending)),
-            tools=[_RESOLVE_PENDING_TOOL],
-            tool_choice={"type": "function", "function": {"name": "resolve_pending"}},
-        )
-        decision = result["arguments"]["decision"] if result["type"] == "tool_call" else "amend"
+        decision = _parse_explicit_decision(user_message)
+        if decision is None:
+            # Only reached for a reply that isn't an exact "yes"/"no" - the model
+            # genuinely needs to interpret something ambiguous here (e.g. "actually,
+            # use my other account"), which is what resolve_pending's tool call is
+            # for. A malformed/unhonored tool call still fails closed to "amend",
+            # never "confirm".
+            site_catalog = [c for c in catalog if c["target_base_url"] == session.target_site]
+            result = self.llm.chat(
+                messages=_build_messages(session, site_catalog, extra_system=_pending_system_note(pending)),
+                tools=[_RESOLVE_PENDING_TOOL],
+                tool_choice={"type": "function", "function": {"name": "resolve_pending"}},
+            )
+            decision = result["arguments"]["decision"] if result["type"] == "tool_call" else "amend"
 
         if decision == "confirm":
             session.pending_action = None

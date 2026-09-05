@@ -40,20 +40,35 @@ class RunManager:
                 run_id = f"{kind}_{int(time.time() * 1000)}"
                 while run_id in self._runs:
                     run_id = f"{kind}_{int(time.time() * 1000)}"
+            elif run_id in self._runs:
+                # Callers now mint ids with a uuid suffix (see app.py's
+                # _mint_run_id), so this should never actually trigger - but
+                # silently overwriting a live run's record here previously made
+                # the evicted run unpollable/undeletable while its browser kept
+                # running. Fail loudly instead of clobbering.
+                raise ValueError(f"run_id {run_id!r} is already in use by an active or finished run")
+
             record = RunRecord(run_id=run_id, kind=kind, capability_name=capability_name)
+
+            def on_notify(request: InterventionRequest) -> None:
+                with self._lock:
+                    record.status = "escalated"
+                    record.escalation = request
+
+            def on_novnc_url(url: str) -> None:
+                with self._lock:
+                    record.novnc_url = url
+
+            # transport is constructed and assigned to the record BEFORE the record
+            # is published into self._runs, and all of this happens under the same
+            # lock acquisition as the collision check above - otherwise a
+            # concurrent request_takeover()/resume() could observe the record (via
+            # self._runs.get()) with transport still None and crash with an
+            # AttributeError on the most safety-critical control surface in the
+            # system.
+            transport = QueueTransport(on_notify=on_notify, on_novnc_url=on_novnc_url)
+            record.transport = transport
             self._runs[run_id] = record
-
-        def on_notify(request: InterventionRequest) -> None:
-            with self._lock:
-                record.status = "escalated"
-                record.escalation = request
-
-        def on_novnc_url(url: str) -> None:
-            with self._lock:
-                record.novnc_url = url
-
-        transport = QueueTransport(on_notify=on_notify, on_novnc_url=on_novnc_url)
-        record.transport = transport
 
         def worker() -> None:
             try:
@@ -120,5 +135,34 @@ class RunManager:
             if record is None or record.status != "escalated":
                 return False
             record.status = "running"
+            # Without this, GET /runs/{run_id} keeps returning the stale escalation
+            # (reason/screenshot/current_step) forever, even once the run resumes
+            # and finishes cleanly - the dashboard/chat then keeps showing the
+            # "Escalated... Resume" banner and input box on top of a run that
+            # already succeeded, which reads as the run being stuck when it isn't
+            # (observed live: a discovery run that succeeded still showed its old
+            # escalation prompt, and a stray extra "Resume" click 409'd against it).
+            record.escalation = None
         record.transport.resume(note)
+        return True
+
+    def cancel(self, run_id: str) -> bool:
+        """Force-cancels a run stuck on an abandoned escalation nobody is ever
+        going to resume - the escape hatch DELETE /runs/{run_id}?force=true uses
+        instead of deleting a 'running'/'escalated' run out from under its still-
+        live worker thread. Unblocks QueueTransport.wait_for_resume() with
+        EscalationAbandoned, which ReplayEngine/DiscoveryAgent already catch and
+        turn into a clean, reported failure - the worker thread then finishes
+        normally and flips status to 'error' on its own, at which point a
+        follow-up DELETE (without force) can actually remove the record. Valid
+        for 'running' too (not just 'escalated'): a takeover request or a future
+        escalation could otherwise still land on a transport that's already
+        being torn down. Returns False if the run isn't known or already
+        finished."""
+        with self._lock:
+            record = self._runs.get(run_id)
+            if record is None or record.status not in ("running", "escalated"):
+                return False
+            transport = record.transport
+        transport.cancel()
         return True

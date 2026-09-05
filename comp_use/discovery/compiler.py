@@ -1,4 +1,5 @@
 from comp_use.discovery.agent import RunTrace
+from comp_use.discovery.outcome_library import outcome_patterns_for_target
 from comp_use.schemas import ActionType, Artifact, Checkpoint, InputParam, OutputParam, Step
 
 
@@ -58,5 +59,10 @@ def compile_artifact(
         output_schema=output_schema,
         steps=_dedup_consecutive_steps(trace.steps),
         success_checkpoint=success_checkpoint,
+        # A target-level library, not per-capability - see outcome_patterns_for_target's
+        # docstring. Without this, every fresh discovery started with an empty list and
+        # stayed that way until someone hand-authored a pattern after separately
+        # observing that exact business/recoverable state live.
+        outcome_patterns=outcome_patterns_for_target(target),
         created_from_run_id=trace.run_id,
     )
