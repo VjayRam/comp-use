@@ -42,19 +42,22 @@ class Settings(BaseModel):
     # OTHER provider is still used as an automatic fallback if its own API key
     # is configured (see build_llm_client in comp_use/cli.py) - this only
     # picks which one goes first, not whether fallback is available at all.
-    model_provider: Literal["openrouter", "nvidia"] = "openrouter"
+    # NVIDIA first: OpenRouter's free tier caps the whole ACCOUNT at 50 model
+    # requests a day across every free model, and one discovery run spends 15-20
+    # of them, so a couple of recordings exhaust it and every later run fails on
+    # HTTP 429 regardless of which free model is named.
+    model_provider: Literal["openrouter", "nvidia"] = "nvidia"
     openrouter_api_key: str = ""
     openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
     # Used only as a vision fallback, when the accessibility tree alone hasn't been
     # enough to produce a usable locator (see DiscoveryAgent's needs_vision_fallback).
     # Must be a vision-capable model - the default text model above isn't.
     openrouter_vision_model: str = "google/gemma-4-26b-a4b-it:free"
-    # Second provider, tried only when OpenRouter fails (rate limit, timeout, ...) -
-    # see FallbackLLMClient. Empty by default: no NVIDIA_API_KEY means no fallback,
-    # identical to the previous OpenRouter-only behavior.
+    # The default provider (see model_provider above); OpenRouter is the automatic
+    # fallback when this one fails, and only when its own key is configured.
     nvidia_api_key: str = ""
-    nvidia_model: str = "meta/llama-3.1-8b-instruct"
-    nvidia_vision_model: str = "meta/llama-3.2-11b-vision-instruct"
+    nvidia_model: str = "meta/muse-glimmer-30b"
+    nvidia_vision_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
     max_discovery_steps: int = 25
     artifacts_dir: Path = Path("artifacts")
     evidence_dir: Path = Path("evidence")
@@ -69,7 +72,7 @@ def load_settings() -> Settings:
         ]
     return Settings(
         **kwargs,
-        model_provider=os.environ.get("MODEL_PROVIDER", "openrouter").strip().lower(),
+        model_provider=os.environ.get("MODEL_PROVIDER", "nvidia").strip().lower(),
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         openrouter_model=os.environ.get(
             "OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free"
@@ -78,8 +81,8 @@ def load_settings() -> Settings:
             "OPENROUTER_VISION_MODEL", "google/gemma-4-26b-a4b-it:free"
         ),
         nvidia_api_key=os.environ.get("NVIDIA_API_KEY", ""),
-        nvidia_model=os.environ.get("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"),
+        nvidia_model=os.environ.get("NVIDIA_MODEL", "meta/muse-glimmer-30b"),
         nvidia_vision_model=os.environ.get(
-            "NVIDIA_VISION_MODEL", "meta/llama-3.2-11b-vision-instruct"
+            "NVIDIA_VISION_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
         ),
     )

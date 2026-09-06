@@ -23,10 +23,24 @@ _TOOL_SCHEMA = {
                     "description": "Required for click/type_text/select_option/extract.",
                     "properties": {
                         "strategy": {"type": "string", "enum": ["role", "text", "css"]},
+                        # Naming the keys and forbidding {} in the SCHEMA, not just in
+                        # the prompt text: as a bare {"type": "object"} this accepted an
+                        # empty object, so `{"strategy":"text","value":{}}` was valid
+                        # output. Two different models emitted exactly that, repeatedly,
+                        # until the run dead-ended - they were not disobeying the rules,
+                        # they were satisfying the schema they were given.
                         "value": {
                             "type": "object",
                             "description": "For strategy=role: {\"role\":..., \"name\":...}. "
-                            "For strategy=text: {\"text\":...}. For strategy=css: {\"css\":...}.",
+                            "For strategy=text: {\"text\":...}. For strategy=css: {\"css\":...}. "
+                            "Must never be empty.",
+                            "properties": {
+                                "role": {"type": "string", "description": "ARIA role, for strategy=role."},
+                                "name": {"type": "string", "description": "Accessible name, for strategy=role."},
+                                "text": {"type": "string", "description": "Visible text to match, for strategy=text."},
+                                "css": {"type": "string", "description": "CSS selector, for strategy=css."},
+                            },
+                            "minProperties": 1,
                         },
                         "fallback": {"type": ["object", "null"], "description": "A second Locator to try if this one fails."},
                     },
@@ -55,6 +69,22 @@ _TOOL_SCHEMA = {
                     "description": "Only for action=extract: a short snake_case name for the value being "
                     "read off the page (e.g. 'confirmation_number', 'txn_id'), so the caller can retrieve it later.",
                 },
+                "derive_as": {
+                    "type": ["string", "null"],
+                    "description": "Only for action=extract, and only when the goal asks for a computed "
+                    "value this page does NOT show directly (e.g. a 'total' summed from individual line "
+                    "items with no total row of their own) - a short snake_case name for that computed "
+                    "value (e.g. 'total_balance'). Leave null when the page already shows the value you "
+                    "need directly extract that instead, with a normal extract_as. Never compute the "
+                    "arithmetic yourself and put the answer in extract_as - pair derive_as with derive_op "
+                    "so the real replay engine computes it deterministically from what you extracted.",
+                },
+                "derive_op": {
+                    "type": ["string", "null"],
+                    "enum": ["sum_currency", None],
+                    "description": "Required when derive_as is set: 'sum_currency' sums every "
+                    "$X,XXX.XX-shaped amount found in this same extract_as's text.",
+                },
                 "done": {"type": "boolean"},
             },
             "required": ["action", "done"],
@@ -76,11 +106,22 @@ point at the VALUE itself, not its label; a CSS locator like this one, matching 
 cell right after a label cell, is often the most reliable way to do that):
 {"action":"extract","locator":{"strategy":"css","value":{"css":"td:text-is('Confirmation Number') + td"}},"target":null,"text":null,"value_source":null,"extract_as":"confirmation_number","done":false}
 
+extract-with-derive example (use this when the goal asks for a computed value the
+page never shows as a single number itself - e.g. "read the balances and report the
+total" against a table that only lists individual line items, no total row):
+{"action":"extract","locator":{"strategy":"css","value":{"css":"table.shares"}},"target":null,"text":null,"value_source":null,"extract_as":"shares_table","derive_as":"total_balance","derive_op":"sum_currency","done":false}
+
 finish example:
 {"action":"finish","locator":null,"target":null,"text":null,"value_source":null,"done":true}
 
 Rules:
 - locator MUST include strategy and value. Never send locator as {}.
+- value MUST NOT be empty either, and MUST carry the one key its strategy needs:
+  strategy="role" -> {"role":...} (plus "name" unless the role is unique on the page),
+  strategy="text" -> {"text":"the visible text to match"},
+  strategy="css"  -> {"css":"a CSS selector"}.
+  {"strategy":"text","value":{}} is rejected and wastes a turn - if you cannot name the
+  text you want, use a css locator instead.
 - click/type_text/select_option/extract require a complete locator.
 - type_text/select_option require text (the value being typed/selected).
 - value_source is binary: leave it null for a value that is genuinely always the
@@ -95,6 +136,10 @@ Rules:
   fixed makes the whole capability unusable for anyone/anything else, which is worse.
 - value_source.type must be exactly "goal_parameter" - there is no other value.
 - strategy must be exactly "role", "text", or "css" - no other value (never "xpath").
+- "text" is a STRATEGY, not an ARIA role. To match visible text use
+  {"strategy":"text","value":{"text":"Signed on as ..."}}. Never send
+  {"strategy":"role","value":{"role":"text",...}} - no element has role "text", so it
+  matches nothing and costs a 30-second timeout before failing.
 - A role locator with an empty or missing name is only safe when exactly one element on
   the page has that role. Legacy table-based forms often have multiple unlabeled inputs
   with the same role (e.g. two textboxes for username and password, with the label as
@@ -111,11 +156,74 @@ Rules:
 - If a page has a dropdown (combobox) whose choice matters to the goal (e.g. a share
   to act on, a reason code, a category), you MUST select_option on it explicitly - do
   not leave it at whatever option happens to be pre-selected and move on. Only skip a
-  dropdown if the goal genuinely doesn't care what it's set to.
+  dropdown if the goal genuinely doesn't care what it's set to. This holds for EVERY
+  such dropdown on the form, not just the first one you act on.
+- A FIELD THAT ALREADY CONTAINS A VALUE IS NOT ALREADY DONE. Edit forms arrive
+  pre-filled with the record's current data (an e-mail box already showing the member's
+  current e-mail, a reason-code dropdown already on some default). If the goal says to
+  set that field, you MUST type/select the new value into it anyway - what is sitting
+  there now belongs to the record you happen to be looking at today, and on the next
+  run it will be a different record's data. Skipping a pre-filled field because it
+  "looks right" records a capability that submits the form unchanged: it reports
+  success and changes nothing, which is worse than failing.
+- Before you submit a form (Save/Continue/Post), check the goal for EVERY value it said
+  would vary per call, and make sure you have actually typed or selected each one on
+  this form. If the goal names an e-mail, a phone, an address, a reason code and an
+  amount, all five must have been entered before you submit.
 - extract requires extract_as (a short snake_case name for the value being read).
+- NEVER anchor an extract locator on the VALUE you are trying to read. Anchor it on the
+  stable LABEL or structure next to that value, which is the same on every run. The
+  value itself is different every time, so a locator built from it matches nothing on
+  the very next run and the capability fails at its final and most important step.
+  WRONG: {"strategy":"text","value":{"text":"CN480332"}} - the next confirmation number
+  is not CN480332.
+  RIGHT: {"strategy":"css","value":{"css":"td:text-is('Confirmation:') + td"}} - reads
+  whatever sits beside the "Confirmation:" label, whatever its value happens to be.
+  The same applies to any other captured value: a new account/share id, a balance, a
+  name, a date, a reference code.
+- Do NOT extract with a whole-page locator like "body", "html" or a top-level wrapper.
+  That returns the entire screen - navigation, headers, footers and all - as one blob,
+  when what the caller asked for is one specific value or table. Target the smallest
+  element that contains exactly what the goal asked to report.
+- A generic class/tag selector (e.g. "table.box", "div.panel") is often reused by a
+  legacy page for SEVERAL unrelated widgets on the same screen - a search-results
+  page, for example, may re-render the search form itself (now empty, ready for a
+  new query) above the actual results, sharing the same wrapper class as the
+  results table below it. A bare "table.box" locator resolves to whichever
+  instance appears FIRST, which may not be the one you want. Before extracting,
+  check the observed tree for whether more than one element could plausibly match
+  your selector; if so, anchor it to something that uniquely identifies the DATA
+  you actually want - a `:has-text("...")` on something you expect to see there
+  (the member number you searched for, a column header only the real results
+  have), a more specific descendant path, or an nth-of-type - not just the
+  generic wrapper class.
+- After an extract, look at what you actually captured (it's echoed back to you
+  on the next turn's history) - if it looks like an empty form (field labels with
+  no values) rather than real data, your locator matched the wrong instance;
+  refine it and extract again before finishing. Never finish believing an
+  extract succeeded just because the action itself didn't error - a locator can
+  resolve to the WRONG element without ever raising.
+- If the goal explicitly asks for a computed/aggregate value (a "total", a "sum") and
+  the page shows only individual line items with no total of its own, do NOT add up
+  the numbers yourself and extract that as if it were on the page - extract the raw
+  content (extract_as) AND set derive_as (a name for the computed value) + derive_op
+  (currently only "sum_currency") on that same extract decision. The real replay
+  engine performs the arithmetic deterministically from what you extracted; you are
+  only ever declaring which computation to run, never producing the number.
 - After a successful extract that captured everything the goal asked for, your NEXT
   action must be finish (action=finish, done=true) - do not repeat the same extract.
-- When the goal is done, action=finish and done=true.
+- Before you send action=finish, ask yourself: does the goal ask to find, look up,
+  search for, check, read, view, or report ANY information (a balance, a list, a
+  status, a record, search results, a confirmation)? If yes, and you have not yet
+  extracted that information with extract_as, you are not done - extract it FIRST,
+  then finish on the turn after. Reaching the right page and stopping there is NOT
+  the same as completing the goal - the caller only ever receives what you
+  extracted, nothing else. A goal that is purely an action with nothing to report
+  back (e.g. "sign on", "submit this form") has nothing to extract - only skip
+  extraction for goals like that, never for a goal that asks you to find or view
+  something.
+- When the goal is done (including, where applicable, extracting its result),
+  action=finish and done=true.
 """
 
 
@@ -223,6 +331,15 @@ def parse_chat_message(message: dict) -> dict:
 
 
 class LLMClient:
+    # Set by decide_next_action/chat/diagnose_drift after a real HTTP call - the
+    # provider's own reported {"prompt_tokens", "completion_tokens", "total_tokens"}
+    # for the call that just completed, or None (FakeLLMClient in tests, or a
+    # provider response that omitted usage). A side-channel attribute rather than a
+    # richer return type so every existing call site (DiscoveryAgent, ChatAgent,
+    # tests) keeps working unchanged - callers that care read this right after the
+    # call that produced it.
+    last_usage: dict | None = None
+
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
         raise NotImplementedError
 
@@ -248,7 +365,12 @@ class FakeLLMClient(LLMClient):
         self._chat_index = 0
 
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
-        action = self._actions[self._index]
+        # Past the end of the script, keep returning its last action. The agent can
+        # legitimately ask again after declining a decision once (see the finish/extract
+        # push-back in DiscoveryAgent), and a real model asked to reconsider and still
+        # sure of its answer just repeats it. Without this, every scripted test ending
+        # in `finish` would have to spell that repeat out.
+        action = self._actions[min(self._index, len(self._actions) - 1)]
         self._index += 1
         return action
 
@@ -369,7 +491,9 @@ class _OpenAICompatibleClient(LLMClient):
             "tools": tools,
             "tool_choice": tool_choice,
         })
-        return parse_chat_message(response.json()["choices"][0]["message"])
+        data = response.json()
+        self.last_usage = data.get("usage")
+        return parse_chat_message(data["choices"][0]["message"])
 
     def _post_chat(self, model: str, messages: list[dict], tool_schema: dict) -> dict:
         print(f"[discover] asking {self._provider_label()}:{model} ...", flush=True)
@@ -387,7 +511,9 @@ class _OpenAICompatibleClient(LLMClient):
             "tools": [tool_schema],
             "tool_choice": tool_choice,
         })
-        return parse_decision(response.json())
+        data = response.json()
+        self.last_usage = data.get("usage")
+        return parse_decision(data)
 
 
 class OpenRouterClient(_OpenAICompatibleClient):
@@ -458,16 +584,27 @@ class FallbackLLMClient(LLMClient):
         self.primary = primary
         self.fallback = fallback
 
+    @property
+    def last_usage(self) -> dict | None:
+        # Reflects whichever client actually served the most recent call - a plain
+        # instance attribute would need updating at every call site below, so this
+        # just defers to the same attribute on the client that ran last.
+        return self._last_used.last_usage if getattr(self, "_last_used", None) is not None else None
+
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
         try:
-            return self.primary.decide_next_action(
+            result = self.primary.decide_next_action(
                 goal=goal, observed_tree=observed_tree, screenshot_b64=screenshot_b64, history=history
             )
+            self._last_used = self.primary
+            return result
         except Exception as exc:
             print(f"[discover] primary provider failed ({type(exc).__name__}: {exc}); falling back...", flush=True)
-            return self.fallback.decide_next_action(
+            result = self.fallback.decide_next_action(
                 goal=goal, observed_tree=observed_tree, screenshot_b64=screenshot_b64, history=history
             )
+            self._last_used = self.fallback
+            return result
 
     def diagnose_drift(self, expected_locator: dict, screenshot_b64: str) -> dict:
         try:

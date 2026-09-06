@@ -121,11 +121,22 @@ class OutcomePattern(BaseModel):
     is exactly "the condition may clear on its own a moment later"), so every
     RECOVERABLE pattern gets that for free rather than requiring every artifact author
     to opt in explicitly. Set `max_retries=0` on a specific pattern to opt back out and
-    always report immediately - e.g. a condition you know retrying can never clear."""
+    always report immediately - e.g. a condition you know retrying can never clear.
 
-    outcome: Literal[OutcomeType.BUSINESS_OUTCOME, OutcomeType.RECOVERABLE]
+    HARD_FAILURE is allowed here so a target's own "something broke on our side" page
+    (MERIDIAN's APPLICATION ERROR screen) can be RECOGNISED and reported in those words
+    rather than surfacing as whatever locator happened to time out next - it is still a
+    hard failure, just a legible one."""
+
+    outcome: Literal[OutcomeType.BUSINESS_OUTCOME, OutcomeType.RECOVERABLE, OutcomeType.HARD_FAILURE]
     checkpoint: Checkpoint
     detail: str = ""
+    # Where the live, specific reason sits on the matched page, when the target renders
+    # one. MERIDIAN names the actual rule that failed ("Insufficient available balance
+    # in the source share") in a list under a generic "could not be validated" banner:
+    # without this the caller is told only the category, which for a rejected request is
+    # the least useful half of the answer. Read at match time and appended to `detail`.
+    detail_locator: Locator | None = None
     max_retries: int = 3
     retry_delay_seconds: float = 0
     recovery_action: Step | None = None

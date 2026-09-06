@@ -7,7 +7,7 @@ from comp_use.escalation.transport import ControlTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
 from comp_use.llm_client import FakeLLMClient
-from comp_use.schemas import ActionType
+from comp_use.schemas import ActionType, CheckpointType
 
 
 class FakeTransport(ControlTransport):
@@ -79,6 +79,98 @@ def test_agent_runs_until_finish_and_records_steps(tmp_path):
     assert trace.succeeded is True
     assert len(trace.steps) == 2
     assert trace.steps[1].value_source.param_name == "member_id"
+
+
+def test_agent_pushes_back_once_on_a_finish_that_extracted_nothing(tmp_path):
+    # A capability that never extracts anything compiles to an empty output_schema,
+    # and replay then reports "success" with nothing to show for a goal like "search
+    # for a member and view the results," where the result WAS the point. Observed
+    # live on three read-only capabilities at once, so the model now gets told and
+    # given another turn - but only once: a goal with genuinely nothing to report
+    # ("sign on") must still be able to finish, so a repeated finish is accepted.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Search"}},
+             "target": None, "text": None, "value_source": None, "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_no_extract_warning")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Search for a member and view the results", start_url="http://localhost:5000/member/search")
+
+    # The scripted model stands by its answer, so the run still completes.
+    assert trace.succeeded is True
+    log_path = evidence.run_dir / "log.jsonl"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    rejections = [e for e in events if e["event_type"] == "finish_rejected_no_extract"]
+    assert len(rejections) == 1, "the model should be asked exactly once, never trapped"
+
+
+def test_agent_does_not_warn_about_missing_extract_when_one_was_performed(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "extract", "locator": {"strategy": "role", "value": {"role": "generic", "name": "balance"}},
+             "target": None, "text": None, "value_source": None, "extract_as": "balance", "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_extract_present_no_warning")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    agent.run(goal="Check the balance", start_url="http://localhost:5000/member/search")
+
+    log_path = evidence.run_dir / "log.jsonl"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    warnings = [
+        e for e in events
+        if e["event_type"] == "possible_incomplete_capability" and e["data"]["reason"] == "no_extract_performed"
+    ]
+    assert len(warnings) == 0
+
+
+def test_agent_records_a_derived_output_declared_alongside_extract(tmp_path):
+    # The goal asks for a computed "total" the page never shows as a single number -
+    # the model declares derive_as/derive_op on the same extract decision instead of
+    # computing the arithmetic itself; the agent must record this as a real
+    # OutputParam(derive=...) request on the trace for compile_artifact() to pick up.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {
+                "action": "extract",
+                "locator": {"strategy": "css", "value": {"css": "table.shares"}},
+                "target": None, "text": None, "value_source": None,
+                "extract_as": "shares_table", "derive_as": "total_balance", "derive_op": "sum_currency",
+                "done": False,
+            },
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_derive_test")
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Read the shares and report the total balance", start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is True
+    assert len(trace.derived_outputs) == 1
+    derived = trace.derived_outputs[0]
+    assert derived.name == "total_balance"
+    assert derived.derive is not None
+    assert derived.derive.from_output == "shares_table"
+    assert derived.derive.op == "sum_currency"
 
 
 def test_agent_skips_step_instead_of_baking_in_literal_when_value_source_is_malformed(tmp_path):
@@ -875,3 +967,400 @@ def test_sensitive_values_are_tokenized_to_the_llm_but_real_to_the_browser(tmp_p
     # actions[0] is the agent's initial navigate; actions[1] is the click under test.
     assert surface.actions[1][1].value["text"] == "ACC-000123"
     assert trace.steps[0].locator.value["text"] == "ACC-000123"
+
+
+def test_extract_locator_keyed_on_the_value_it_read_is_rejected_once(tmp_path):
+    # Observed across five freshly-recorded capabilities at once: the model anchored
+    # each extract on the value it had just read ({"text": "CN480332"} for a
+    # confirmation number). That records perfectly and then matches nothing on the
+    # very next run, because the next confirmation number is a different string - so
+    # the capability fails at its final and most important step, on first real use.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+
+    class ConfirmationSurface(FakeSurface):
+        def act(self, action, locator, target, text):
+            super().act(action, locator, target, text)
+            return "CN480332" if action == ActionType.EXTRACT else None
+
+    llm = FakeLLMClient(
+        scripted_actions=[
+            # Keyed on the value it is about to read - must be refused.
+            {"action": "extract", "locator": {"strategy": "text", "value": {"text": "CN480332"}},
+             "target": None, "text": None, "value_source": None, "extract_as": "confirmation_number",
+             "done": False},
+            # The label-anchored retry, which must be accepted.
+            {"action": "extract",
+             "locator": {"strategy": "css", "value": {"css": "td:text-is('Confirmation:') + td"}},
+             "target": None, "text": None, "value_source": None, "extract_as": "confirmation_number",
+             "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None,
+             "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_value_keyed_extract")
+    agent = DiscoveryAgent(ConfirmationSurface(), llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Post the transfer and report the confirmation number",
+                      start_url="http://localhost:5000/member/search")
+
+    assert trace.succeeded is True
+    extracts = [s for s in trace.steps if s.action == ActionType.EXTRACT]
+    assert len(extracts) == 1, "the value-keyed extract must not have been recorded"
+    assert extracts[0].locator.value == {"css": "td:text-is('Confirmation:') + td"}
+
+    events = [json.loads(line) for line in
+              (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len([e for e in events if e["event_type"] == "extract_locator_rejected"]) == 1
+
+
+def test_whole_page_extract_locator_is_rejected_once(tmp_path):
+    # "body" returns the entire screen - nav, headers, footers - as one blob, when the
+    # caller asked for one table. Observed on a freshly-recorded balance capability.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "extract", "locator": {"strategy": "css", "value": {"css": "body"}},
+             "target": None, "text": None, "value_source": None, "extract_as": "shares", "done": False},
+            {"action": "extract", "locator": {"strategy": "css", "value": {"css": "table.shares"}},
+             "target": None, "text": None, "value_source": None, "extract_as": "shares", "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None,
+             "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_whole_page_extract")
+    agent = DiscoveryAgent(FakeSurface(), llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Read the member's shares and balances",
+                      start_url="http://localhost:5000/member/12345")
+
+    extracts = [s for s in trace.steps if s.action == ActionType.EXTRACT]
+    assert len(extracts) == 1
+    assert extracts[0].locator.value == {"css": "table.shares"}
+
+
+def test_a_stable_extract_locator_is_accepted_first_time(tmp_path):
+    # The counterpart: a locator anchored on a label must pass straight through, with
+    # no push-back and no wasted turn.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "extract",
+             "locator": {"strategy": "css", "value": {"css": "td:text-is('Confirmation:') + td"}},
+             "target": None, "text": None, "value_source": None, "extract_as": "confirmation_number",
+             "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None,
+             "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_stable_extract")
+    agent = DiscoveryAgent(FakeSurface(), llm, guardrail, evidence, max_steps=10)
+
+    trace = agent.run(goal="Report the confirmation number",
+                      start_url="http://localhost:5000/member/12345")
+
+    assert len([s for s in trace.steps if s.action == ActionType.EXTRACT]) == 1
+    events = [json.loads(line) for line in
+              (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert not [e for e in events if e["event_type"] == "extract_locator_rejected"]
+
+
+def test_finish_is_rejected_once_when_a_declared_param_was_never_entered(tmp_path):
+    # Live-observed on Update Member Information: MERIDIAN pre-fills the edit form with
+    # the member's current data, so the model opened the form and went straight to
+    # "Save Changes" without typing anything. The recording submitted the record
+    # unchanged and still reported MEMBER INFORMATION UPDATED - a capability that
+    # silently does nothing, which is worse than one that fails outright.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    llm = FakeLLMClient(
+        scripted_actions=[
+            # Straight to Save, having entered nothing.
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Save Changes"}},
+             "target": None, "text": None, "value_source": None, "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+            # After the push-back, it actually enters the value it was asked for.
+            {"action": "type_text", "locator": {"strategy": "css", "value": {"css": "input[name='email']"}},
+             "target": None, "text": "new@example.test",
+             "value_source": {"type": "goal_parameter", "param_name": "email", "param_type": "string"},
+             "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_missing_params")
+    agent = DiscoveryAgent(FakeSurface(), llm, guardrail, evidence, max_steps=12)
+
+    trace = agent.run(
+        goal="Update the member's e-mail address",
+        start_url="http://localhost:5000/member/12345",
+        param_hints=["email"],
+    )
+
+    assert trace.succeeded is True
+    assert "email" in {s.value_source.param_name for s in trace.steps if s.value_source is not None}
+    events = [json.loads(line) for line in
+              (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len([e for e in events if e["event_type"] == "finish_rejected_missing_params"]) == 1
+
+
+def test_finish_is_accepted_when_every_declared_param_was_entered(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    llm = FakeLLMClient(
+        scripted_actions=[
+            {"action": "type_text", "locator": {"strategy": "css", "value": {"css": "input[name='email']"}},
+             "target": None, "text": "new@example.test",
+             "value_source": {"type": "goal_parameter", "param_name": "email", "param_type": "string"},
+             "done": False},
+            {"action": "extract", "locator": {"strategy": "css", "value": {"css": "td.result"}},
+             "target": None, "text": None, "value_source": None, "extract_as": "confirmation", "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_params_present")
+    agent = DiscoveryAgent(FakeSurface(), llm, guardrail, evidence, max_steps=12)
+
+    trace = agent.run(
+        goal="Update the member's e-mail address",
+        start_url="http://localhost:5000/member/12345",
+        param_hints=["email"],
+    )
+
+    assert trace.succeeded is True
+    events = [json.loads(line) for line in
+              (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert not [e for e in events if e["event_type"] == "finish_rejected_missing_params"]
+
+
+class _FaultPageSurface(FakeSurface):
+    """Serves a recognised MERIDIAN error page after the first action, so the agent's
+    fault handling can be exercised without a browser."""
+
+    def __init__(self, page_text, **kwargs):
+        super().__init__(**kwargs)
+        self.page_text = page_text
+        self.recovered = False
+
+    def check_checkpoint(self, checkpoint):
+        if checkpoint.type == CheckpointType.TEXT_PRESENT:
+            return checkpoint.text in self.page_text
+        return True
+
+    def act(self, action, locator, target, text):
+        super().act(action, locator, target, text)
+        # A "Continue" click is the maintenance interstitial's own recovery link.
+        if locator is not None and (locator.value or {}).get("name") == "Continue":
+            self.recovered = True
+            self.page_text = "MAIN MENU Signed on as J. TELLER"
+
+
+def _fault_agent(surface, tmp_path, run_id, actions, transport=None):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    # The outcome library is keyed on the target's host, so these tests have to run
+    # against the real MERIDIAN hostname - which the default test allowlist excludes.
+    settings.allowed_url_prefixes = [*settings.allowed_url_prefixes, "https://web-sample.interface-hiring.com"]
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
+    escalation = EscalationController(evidence, transport) if transport is not None else None
+    agent = DiscoveryAgent(
+        surface, FakeLLMClient(scripted_actions=actions), guardrail, evidence,
+        max_steps=8, escalation=escalation,
+    )
+    return agent, evidence
+
+
+MERIDIAN_URL = "https://web-sample.interface-hiring.com/signon"
+
+
+def test_discovery_does_not_record_a_step_that_landed_on_a_business_outcome_page(tmp_path):
+    # Issue B. Discovery had no fault classification at all: it drove on through
+    # rejections as if the error screen were just an unfamiliar page, and whatever the
+    # model improvised next was recorded as a canonical step - an early
+    # meridian_check_balance recording contained a failed sign-on AND its retry that way.
+    surface = _FaultPageSurface(
+        "SUPERVISOR OVERRIDE REQUIRED Operator profile teller1 is not authorized to "
+        "perform this function."
+    )
+    transport = FakeTransport()
+    actions = [
+        {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Apply Hold"}},
+         "target": None, "text": None, "value_source": None, "done": False},
+        {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+    ]
+    agent, evidence = _fault_agent(surface, tmp_path, "run_fault_business", actions, transport)
+
+    trace = agent.run(goal="Place a hold on a share", start_url=MERIDIAN_URL)
+
+    assert trace.steps == [], "the step that landed on the denial page must not be recorded"
+    # The human is told what the host actually said, not just that something failed.
+    assert len(transport.notified) == 1
+    assert "not authorized" in transport.notified[0].reason
+
+    events = [json.loads(line) for line in
+              (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    faults = [e for e in events if e["event_type"] == "fault_detected"]
+    assert len(faults) == 1
+    assert faults[0]["data"]["outcome"] == "business_outcome"
+
+
+def test_discovery_recovers_from_an_interstitial_without_recording_it(tmp_path):
+    # The interstitial is a property of the host being briefly unwell today, not of the
+    # capability being learned - so it is dismissed and the recovery click is NOT
+    # recorded as one of the capability's steps.
+    surface = _FaultPageSurface("SCHEDULED MAINTENANCE IN PROGRESS The host is temporarily unavailable")
+    actions = [
+        {"action": "click", "locator": {"strategy": "role", "value": {"role": "link", "name": "Member Inquiry"}},
+         "target": None, "text": None, "value_source": None, "done": False},
+        {"action": "extract", "locator": {"strategy": "css", "value": {"css": "td.result"}},
+         "target": None, "text": None, "value_source": None, "extract_as": "result", "done": False},
+        {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+    ]
+    agent, evidence = _fault_agent(surface, tmp_path, "run_fault_recoverable", actions)
+
+    trace = agent.run(goal="Look up a member", start_url=MERIDIAN_URL)
+
+    assert surface.recovered is True, "the interstitial's own Continue link should have been clicked"
+    assert not [s for s in trace.steps if (s.locator.value or {}).get("name") == "Continue" if s.locator], \
+        "the recovery click is not part of the capability"
+
+    events = [json.loads(line) for line in
+              (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    faults = [e for e in events if e["event_type"] == "fault_detected"]
+    assert faults and faults[0]["data"]["outcome"] == "recoverable"
+
+
+def test_discovery_on_a_healthy_page_is_unaffected_by_fault_checking(tmp_path):
+    # The counterpart: a normal page must classify as nothing and record normally.
+    surface = _FaultPageSurface("MAIN MENU Signed on as J. TELLER 1. Member Inquiry / Selection")
+    actions = [
+        {"action": "click", "locator": {"strategy": "role", "value": {"role": "link", "name": "Member Inquiry / Selection"}},
+         "target": None, "text": None, "value_source": None, "done": False},
+        {"action": "extract", "locator": {"strategy": "css", "value": {"css": "td.result"}},
+         "target": None, "text": None, "value_source": None, "extract_as": "result", "done": False},
+        {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+    ]
+    agent, evidence = _fault_agent(surface, tmp_path, "run_fault_none", actions)
+
+    trace = agent.run(goal="Look up a member", start_url=MERIDIAN_URL)
+
+    assert trace.succeeded is True
+    assert len(trace.steps) == 2
+    events = [json.loads(line) for line in
+              (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert not [e for e in events if e["event_type"] == "fault_detected"]
+
+
+def test_a_label_that_prefixes_the_extracted_value_is_a_valid_anchor():
+    # The bug this guards, caught live: the value-keyed check used `anchor in captured`,
+    # which also rejected the CORRECT answer. "Signed on as" is the stable label and is
+    # legitimately a substring of "Signed on as J. TELLER (TELLER)". Refusing it left
+    # discovery oscillating between the locator it had just been refused and table
+    # selectors that matched nothing, because the right answer had been ruled out.
+    from comp_use.discovery.agent import _unusable_extract_reason
+    from comp_use.schemas import Locator, LocatorStrategy
+
+    label = Locator(strategy=LocatorStrategy.TEXT, value={"text": "Signed on as"})
+    assert _unusable_extract_reason(label, "Signed on as J. TELLER (TELLER)") is None
+
+
+def test_an_anchor_restating_the_whole_value_is_still_rejected():
+    from comp_use.discovery.agent import _unusable_extract_reason
+    from comp_use.schemas import Locator, LocatorStrategy
+
+    whole = Locator(strategy=LocatorStrategy.TEXT, value={"text": "CN480332"})
+    reason = _unusable_extract_reason(whole, "CN480332")
+    assert reason is not None and "different on every run" in reason
+
+
+def test_a_redacted_extract_preview_tells_the_model_the_extract_worked(tmp_path):
+    # Live-observed on the balance capability: redaction_patterns masks every dollar
+    # amount, so the model got back a table whose Balance column was entirely
+    # [[TOK...]], could not tell it had captured the balances, and tried ten
+    # progressively more elaborate selectors over six minutes - each of which had
+    # already succeeded. The values must stay masked (they are regulated financial
+    # data and never go to the provider); what was missing was saying what the tokens
+    # mean.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+
+    class BalanceSurface(FakeSurface):
+        def act(self, action, locator, target, text):
+            super().act(action, locator, target, text)
+            return "Share ID Type Balance 103001-S0001 Regular Shares $760.50" if action == ActionType.EXTRACT else None
+
+    captured_history = []
+
+    class HistoryRecordingLLM(FakeLLMClient):
+        def decide_next_action(self, goal, observed_tree, screenshot_b64, history):
+            captured_history.append([dict(h) for h in history])
+            return super().decide_next_action(
+                goal=goal, observed_tree=observed_tree, screenshot_b64=screenshot_b64, history=history
+            )
+
+    llm = HistoryRecordingLLM(
+        scripted_actions=[
+            {"action": "extract", "locator": {"strategy": "css", "value": {"css": "table.shares"}},
+             "target": None, "text": None, "value_source": None, "extract_as": "shares", "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_redacted_preview")
+    agent = DiscoveryAgent(BalanceSurface(), llm, guardrail, evidence, max_steps=6)
+
+    agent.run(goal="Read the member's shares and balances", start_url="http://localhost:5000/member/12345")
+
+    extract_entries = [h for turn in captured_history for h in turn if "extracted" in h]
+    assert extract_entries, "the extract result must reach the model at all"
+    entry = extract_entries[-1]
+    # The real amount never reaches the model...
+    assert "760.50" not in entry["extracted"]
+    # ...but it is told the masked value was genuinely captured, so it can stop.
+    assert "extracted_note" in entry
+    assert "worked" in entry["extracted_note"]
+
+
+def test_finish_is_never_pushed_back_once_an_irreversible_step_has_run(tmp_path):
+    # Safety, observed live: a funds transfer had POSTED (confirmation in hand) when the
+    # missing-param gate refused its finish over an un-entered memo. The agent went back
+    # to the member record, reopened Funds Transfer and began selecting shares for a
+    # SECOND transfer, stopping only because it ran out of steps. An incomplete
+    # recording is a bad artifact; a duplicated financial transaction is a different
+    # category of problem. Once something irreversible has run, finish is final.
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    llm = FakeLLMClient(
+        scripted_actions=[
+            # Classified risky by _classify_risk (a "Post ..." control).
+            {"action": "click", "locator": {"strategy": "role", "value": {"role": "button", "name": "Post Transfer"}},
+             "target": None, "text": None, "value_source": None, "done": False},
+            {"action": "extract", "locator": {"strategy": "css", "value": {"css": "td.confirmation"}},
+             "target": None, "text": None, "value_source": None, "extract_as": "confirmation", "done": False},
+            {"action": "finish", "locator": None, "target": None, "text": None, "value_source": None, "done": True},
+        ]
+    )
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_finish_after_commit")
+    agent = DiscoveryAgent(FakeSurface(), llm, guardrail, evidence, max_steps=10, confirm_risky=True)
+
+    # `memo` is declared but never entered - exactly the condition that triggered the
+    # push-back live.
+    trace = agent.run(
+        goal="Post the transfer and report the confirmation",
+        start_url="http://localhost:5000/member/12345",
+        param_hints=["memo"],
+    )
+
+    assert trace.succeeded is True, "the finish must be accepted, not re-run"
+    events = [json.loads(line) for line in
+              (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert not [e for e in events if e["event_type"] == "finish_rejected_missing_params"]
+    assert [e for e in events if e["event_type"] == "finish_accepted_after_commit"]

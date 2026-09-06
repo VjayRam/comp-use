@@ -18,7 +18,9 @@ def test_defaults(monkeypatch):
     assert settings.evidence_dir.name == "evidence"
     # no NVIDIA_API_KEY means no fallback provider configured, by default
     assert settings.nvidia_api_key == ""
-    assert settings.model_provider == "openrouter"
+    # NVIDIA is the default provider - OpenRouter's free tier caps the whole account
+    # at 50 model requests a day, which a couple of discovery runs exhaust.
+    assert settings.model_provider == "nvidia"
 
 
 def test_env_override(monkeypatch):

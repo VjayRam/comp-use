@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Literal
 
+from comp_use.tokenizer import SensitiveValueTokenizer
+
 
 @dataclass
 class PendingAction:
@@ -38,15 +40,26 @@ class ChatSession:
     # feature shouldn't depend on requests never actually overlapping.
     # threading.Lock is neither picklable nor comparable, hence compare=False.
     lock: threading.Lock = field(default_factory=threading.Lock, compare=False)
+    # Same mechanism DiscoveryAgent uses (comp_use/tokenizer.py), one instance per
+    # session so token->value mappings stay stable across a whole conversation:
+    # reversibly replaces sensitive value shapes (dollar amounts, structured
+    # financial identifiers) in outgoing messages before they reach the LLM
+    # provider. Without this, chat was the one path to the same model that sent
+    # such values in the clear - DiscoveryAgent has always tokenized before this.
+    tokenizer: SensitiveValueTokenizer | None = field(default=None, compare=False)
 
 
 class ChatSessionManager:
-    def __init__(self):
+    def __init__(self, redaction_patterns: list[str] | None = None):
         self._lock = threading.Lock()
         self._sessions: dict[str, ChatSession] = {}
+        self._redaction_patterns = redaction_patterns or []
 
     def create(self) -> ChatSession:
-        session = ChatSession(session_id=uuid.uuid4().hex)
+        session = ChatSession(
+            session_id=uuid.uuid4().hex,
+            tokenizer=SensitiveValueTokenizer(self._redaction_patterns),
+        )
         with self._lock:
             self._sessions[session.session_id] = session
         return session

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, type ChatMessage } from "../api";
-import { RunPanel } from "../components/RunPanel";
+import { RunPanel, type RunUsage } from "../components/RunPanel";
 
 // Presets for the target-app dropdown. Selecting one auto-sends its base URL
 // as the first chat message - reuses the existing deterministic target-site
@@ -45,6 +45,10 @@ export function Chat() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Live tool-call/token usage for the most recent run in this conversation - only
+  // that one RunPanel is wired to report it (see the .map below), so this always
+  // tracks "the run currently in progress," not a stale earlier one.
+  const [liveUsage, setLiveUsage] = useState<RunUsage | null>(null);
 
   async function ensureSession(): Promise<string> {
     if (sessionId) return sessionId;
@@ -56,6 +60,7 @@ export function Chat() {
   async function sendRaw(text: string, sessionIdOverride?: string) {
     setBusy(true);
     setError(null);
+    setLiveUsage(null);
     setMessages((m) => [...m, { role: "user", content: text, run_id: null }]);
     try {
       const id = sessionIdOverride ?? (await ensureSession());
@@ -114,6 +119,16 @@ export function Chat() {
   }
 
   const suggestions = selectedBaseUrl ? SUGGESTED_PROMPTS[selectedBaseUrl] : undefined;
+  // Only the most recent message carrying a run_id is "the run currently in
+  // progress" - that's the one instance of RunPanel wired to update the top bar,
+  // so switching to an older run_id's own detail (if the user scrolls up) never
+  // fights with it.
+  const latestRunMessageIndex = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].run_id) return i;
+    }
+    return -1;
+  })();
 
   return (
     <div className="chat-page">
@@ -134,6 +149,11 @@ export function Chat() {
           ))}
           <option value={ADD_NEW_VALUE}>+ Add new site…</option>
         </select>
+        {liveUsage && (
+          <span className="chat-usage-badge" title="LLM tool calls and token usage for the current run">
+            {liveUsage.toolCalls} call{liveUsage.toolCalls === 1 ? "" : "s"} · {liveUsage.totalTokens} tokens
+          </span>
+        )}
         {addingNewApp && (
           <span className="chat-app-add-row">
             <input
@@ -159,7 +179,9 @@ export function Chat() {
         {messages.map((m, i) => (
           <div key={i} className={`chat-bubble chat-${m.role}`}>
             <p>{m.content}</p>
-            {m.run_id && <RunPanel runId={m.run_id} />}
+            {m.run_id && (
+              <RunPanel runId={m.run_id} onUsageUpdate={i === latestRunMessageIndex ? setLiveUsage : undefined} />
+            )}
           </div>
         ))}
         {error && <p className="error">{error}</p>}

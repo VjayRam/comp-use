@@ -766,7 +766,7 @@ def test_build_llm_client_is_openrouter_only_without_an_nvidia_key():
 
 
 def test_build_llm_client_wraps_openrouter_with_nvidia_fallback_when_key_present():
-    settings = Settings(nvidia_api_key="nvidia-test-key")
+    settings = Settings(model_provider="openrouter", nvidia_api_key="nvidia-test-key")
     client = build_llm_client(settings)
     assert isinstance(client, FallbackLLMClient)
     assert isinstance(client.primary, OpenRouterClient)

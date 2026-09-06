@@ -93,7 +93,17 @@ def _build_messages(session: ChatSession, site_catalog: list[dict], extra_system
     system = _system_prompt(session, site_catalog)
     if extra_system:
         system += "\n\n" + extra_system
-    return [{"role": "system", "content": system}] + session.messages
+    # session.messages holds the real, untokenized conversation (needed for our own
+    # bookkeeping/display) - only the copy actually sent to the LLM provider gets
+    # tokenized here, matching DiscoveryAgent's boundary: the model reasons over
+    # tokens, never raw sensitive values, and anything it echoes back is detokenized
+    # before use (see _handle_normal_turn/_propose_invoke below).
+    tokenized_messages = (
+        [{**m, "content": session.tokenizer.tokenize(m["content"])} for m in session.messages]
+        if session.tokenizer is not None
+        else session.messages
+    )
+    return [{"role": "system", "content": system}] + tokenized_messages
 
 
 def _known_sites(catalog: list[dict]) -> list[str]:
@@ -225,16 +235,26 @@ class ChatAgent:
             tool_choice="auto",
         )
 
+        # The model only ever saw tokens for sensitive values (see _build_messages) -
+        # detokenize anything it echoes back before it's stored, shown, or used to
+        # start a run, same boundary DiscoveryAgent applies to a decision's
+        # locator/target/text.
+        detokenize = session.tokenizer.detokenize if session.tokenizer is not None else (lambda x: x)
+        detokenize_value = session.tokenizer.detokenize_value if session.tokenizer is not None else (lambda x: x)
+
         if result["type"] == "text":
-            reply = result["text"]
+            reply = detokenize(result["text"])
             session.messages.append({"role": "assistant", "content": reply})
             return ChatTurnResult(reply_text=reply)
 
         args = result["arguments"]
         if result["name"] == "propose_invoke":
-            return self._propose_invoke(session, site_catalog, args["capability_name"], args.get("params") or {})
+            params = detokenize_value(args.get("params") or {})
+            return self._propose_invoke(session, site_catalog, args["capability_name"], params)
         if result["name"] == "propose_discovery":
-            return self._propose_discovery(session, args["capability_name"], args["goal"], args.get("param_hints"))
+            return self._propose_discovery(
+                session, args["capability_name"], detokenize(args["goal"]), args.get("param_hints")
+            )
 
         reply = "Sorry, I couldn't figure out how to help with that - could you rephrase?"
         session.messages.append({"role": "assistant", "content": reply})

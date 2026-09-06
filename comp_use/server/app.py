@@ -102,7 +102,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="comp-use capability server")
     app.state.settings = settings
     app.state.run_manager = RunManager()
-    app.state.chat_sessions = ChatSessionManager()
+    # This process owns no runs from a previous one, so anything Postgres still shows
+    # as open is a run whose process died before its `finally` could write a terminal
+    # status. Left alone they show as live on the dashboard forever.
+    if pg_store.db_enabled():
+        pg_store.abandon_orphaned_runs()
+    app.state.chat_sessions = ChatSessionManager(redaction_patterns=settings.redaction_patterns)
     app.state.chat_agent = ChatAgent(build_llm_client(settings))
     app.mount("/evidence", StaticFiles(directory=str(settings.evidence_dir)), name="evidence")
 

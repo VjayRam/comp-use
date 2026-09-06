@@ -215,3 +215,110 @@ def test_safe_screenshot_returns_none_when_capture_raises():
 
 def test_safe_screenshot_returns_bytes_when_capture_succeeds():
     assert safe_screenshot(_WorkingSurface()) == b"realpng"
+
+
+def test_act_select_option_matches_by_label_when_value_attribute_differs(surface, live_server):
+    # Discovery only ever sees a <select>'s options through the accessibility tree,
+    # which exposes visible labels, not raw HTML value attributes - so the text it
+    # records for a select_option step is always a label. Playwright's
+    # select_option(str) matches by value attribute, not label, by default: on a
+    # page where value != label (e.g. an internal id vs. a human-readable share
+    # name, as seen live on MERIDIAN's fund-transfer share dropdowns), the old
+    # implementation timed out after ~30s with "did not find some options" on an
+    # otherwise entirely correct step. _select_option_robust must try label first.
+    surface.page.set_content(
+        "<select name='share'>"
+        "<option value='7781'>01 - REGULAR SHARES</option>"
+        "<option value='7782'>02 - CHRISTMAS CLUB</option>"
+        "</select>"
+    )
+    surface.act(
+        ActionType.SELECT_OPTION,
+        locator=Locator(strategy=LocatorStrategy.CSS, value={"css": "select[name='share']"}),
+        target=None,
+        text="02 - CHRISTMAS CLUB",
+    )
+    selected = surface.page.eval_on_selector("select[name='share']", "el => el.value")
+    assert selected == "7782"
+
+
+def test_act_select_option_matches_when_only_a_trailing_balance_has_moved(surface, live_server):
+    # Live-observed MERIDIAN failure: a share dropdown's option labels embed the
+    # share's CURRENT BALANCE ("100234-S0001-13 - Regular Shares ($13.00)"). By
+    # replay time the balance has moved (interest posted, another transfer ran),
+    # so neither the recorded label nor its value attribute matches any live
+    # option - a step that is otherwise entirely correct times out. The stable
+    # identifying text (share id + type) still matches once the volatile
+    # trailing "($amount)" is stripped from both sides.
+    surface.page.set_content(
+        "<select name='share'>"
+        "<option value='s1'>100234-S0001-13 - Regular Shares ($13.00)</option>"
+        "<option value='s2'>100234-S0001-18 - Regular Shares ($33.00)</option>"
+        "</select>"
+    )
+    surface.act(
+        ActionType.SELECT_OPTION,
+        locator=Locator(strategy=LocatorStrategy.CSS, value={"css": "select[name='share']"}),
+        target=None,
+        # Recorded with a now-stale balance - the live option's balance has since
+        # moved to ($33.00), but the share id/type text is unchanged.
+        text="100234-S0001-18 - Regular Shares ($30.50)",
+    )
+    selected = surface.page.eval_on_selector("select[name='share']", "el => el.value")
+    assert selected == "s2"
+
+
+def test_text_present_matches_a_sentence_that_wraps_across_markup(surface, live_server):
+    # The live shape this fixes, copied from MERIDIAN's 403 page: the sentence carries a
+    # tag mid-way and a line break with indentation between "this" and "function", so
+    # matching page.content() (the SOURCE) never found it. Two edge cases - an injected
+    # permission fault and a teller attempting a supervisor-only Place Hold - were
+    # reported as bare hard_failures purely because of this.
+    surface.page.set_content(
+        "<div class='box'>"
+        "<font class='err'>SUPERVISOR OVERRIDE REQUIRED</font><br><br>\n"
+        "             Operator profile <b>teller1</b> is not authorized to perform this\n"
+        "             function. A supervisor must sign on to complete this request."
+        "</div>"
+    )
+    # Sanity: this is exactly why the old implementation failed.
+    assert "is not authorized to perform this function" not in surface.page.content()
+
+    checkpoint = Checkpoint(
+        type=CheckpointType.TEXT_PRESENT, text="is not authorized to perform this function"
+    )
+    assert surface.check_checkpoint(checkpoint) is True
+
+
+def test_text_present_is_false_for_text_that_is_not_on_the_page(surface, live_server):
+    surface.page.set_content("<div><h1>MEMBER RECORD</h1><p>Nothing is wrong here.</p></div>")
+    assert surface.check_checkpoint(
+        Checkpoint(type=CheckpointType.TEXT_PRESENT, text="SUPERVISOR OVERRIDE REQUIRED")
+    ) is False
+
+
+def test_text_present_ignores_text_that_is_not_rendered(surface, live_server):
+    # Deliberate consequence of matching rendered text: a phrase that exists only in
+    # markup a reader never sees must NOT count as present. Matching the source made
+    # hidden or commented-out copy indistinguishable from a real error banner.
+    surface.page.set_content(
+        "<div><h1>MEMBER RECORD</h1>"
+        "<div style='display:none'>RECORD NOT FOUND</div></div>"
+    )
+    assert surface.check_checkpoint(
+        Checkpoint(type=CheckpointType.TEXT_PRESENT, text="RECORD NOT FOUND")
+    ) is False
+
+
+def test_type_text_with_an_empty_value_clears_the_field(surface, live_server):
+    # An empty value is a real intention - clearing a pre-filled field, or leaving an
+    # optional memo blank. Passing None through to Playwright raised "Frame.fill()
+    # missing 1 required positional argument: 'value'", which reads like an internal
+    # bug rather than anything about the page; live-observed on a funds-transfer
+    # recording where it burned the whole loop-detector budget on one optional field.
+    surface.page.set_content("<input name='memo' value='prefilled text'>")
+    locator = Locator(strategy=LocatorStrategy.CSS, value={"css": "input[name='memo']"})
+
+    surface.act(ActionType.TYPE_TEXT, locator=locator, target=None, text=None)
+
+    assert surface.page.eval_on_selector("input[name='memo']", "el => el.value") == ""

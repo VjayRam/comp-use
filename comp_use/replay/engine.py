@@ -1,10 +1,19 @@
 import re
 import time
 
+from comp_use.discovery.outcome_library import outcome_patterns_for_target
 from comp_use.escalation.controller import EscalationController
 from comp_use.evidence import EvidenceLogger
-from comp_use.guardrail import AllowlistViolation, Guardrail
-from comp_use.schemas import Artifact, InterventionRequest, OutcomePattern, OutcomeType, ReplayResult
+from comp_use.guardrail import AllowlistViolation, Guardrail, is_sensitive_param_name
+from comp_use.schemas import (
+    ActionType,
+    Artifact,
+    InterventionRequest,
+    OutcomePattern,
+    OutcomeType,
+    ReplayResult,
+    RiskTier,
+)
 from comp_use.surface import safe_screenshot
 
 _CURRENCY_RE = re.compile(r"\$[\d,]+\.\d{2}")
@@ -71,17 +80,105 @@ def validate_required_params(artifact: Artifact, params: dict) -> str | None:
 
 
 class ReplayEngine:
+    def _finish_if_already_succeeded(self, artifact: Artifact, outputs: dict) -> ReplayResult | None:
+        """Checked right after every escalation resumes, before ever attempting
+        another recorded step. A human taking over during an escalation has full
+        control of the browser and no obligation to stop at exactly the point
+        automation was stuck - they may complete the ENTIRE remaining flow
+        themselves (confirmed live: a "supervisor override" denial resolved by the
+        operator finishing the whole Place Account Hold there and then, not just
+        clicking past the denial screen). Without this check, the next recorded
+        step (e.g. selecting a share from a dropdown that no longer exists once
+        the hold is already applied) is attempted against a page that has already
+        moved past it, and fails - `HARD_FAILURE` for a run that, in fact,
+        succeeded. Returns a SUCCESS result if the artifact's own success
+        checkpoint is already satisfied, else None (continue automating
+        normally)."""
+        if self.surface.check_checkpoint(artifact.success_checkpoint):
+            _resolve_derived_outputs(artifact, outputs)
+            return ReplayResult(outcome=OutcomeType.SUCCESS, outputs=outputs)
+        return None
+
     def __init__(self, surface, guardrail: Guardrail, evidence_logger: EvidenceLogger, escalation: EscalationController | None = None):
         self.surface = surface
         self.guardrail = guardrail
         self.evidence_logger = evidence_logger
         self.escalation = escalation
 
+    def _unclassified_failure(
+        self,
+        outputs: dict,
+        recovered_from: OutcomePattern | None,
+        *,
+        step_index: int,
+        expected: str,
+        detail: str = "",
+    ) -> ReplayResult:
+        """The result for a failure no outcome pattern explains.
+
+        Normally HARD_FAILURE - but not if a RECOVERABLE condition was already met and
+        its recovery action performed earlier in this run. Live-observed: an injected
+        maintenance interstitial appeared right after sign-on, was correctly matched,
+        and its "Continue" link was clicked - which returned the host to a SIGNED-OUT
+        sign-on page. Replay resumed at the step it was on, but the interruption had
+        cost it the session, so every later step failed against a page showing no error
+        at all. Reporting that as a hard failure blames the automation for a transient
+        host condition it recognised and handled correctly.
+
+        Deliberately NOT solved by restarting the capability from step 0: a flow whose
+        earlier steps are irreversible (post a transfer, apply a hold) must never be
+        silently re-run. Recoverable is the honest report - the caller re-invokes.
+
+        Outputs collected before the failure travel with every result: a run that read
+        three values and then died still knows those three values, and dropping them
+        made a partial answer indistinguishable from no answer."""
+        if recovered_from is not None:
+            return ReplayResult(
+                outcome=OutcomeType.RECOVERABLE,
+                step_index=step_index,
+                detail=(
+                    f"{recovered_from.detail} It was dismissed, but the interruption left the "
+                    "host in a state this capability cannot resume from mid-flow (typically "
+                    "signed out). Re-invoke the capability to run it from the start."
+                ),
+                expected=expected,
+                observed=self.surface.current_url(),
+                outputs=outputs,
+            )
+        return ReplayResult(
+            outcome=OutcomeType.HARD_FAILURE,
+            step_index=step_index,
+            detail=detail,
+            expected=expected,
+            observed=self.surface.current_url(),
+            outputs=outputs,
+        )
+
     def _match_outcome_pattern(self, artifact: Artifact) -> OutcomePattern | None:
-        for pattern in artifact.outcome_patterns:
+        # The artifact's own patterns first: anything hand-authored for THIS capability
+        # is more specific than the shared, host-wide taxonomy behind it.
+        for pattern in artifact.outcome_patterns + outcome_patterns_for_target(artifact.target):
             if self.surface.check_checkpoint(pattern.checkpoint):
                 return pattern
         return None
+
+    def _pattern_detail(self, pattern: OutcomePattern) -> str:
+        """The pattern's category text, plus the live reason off the matched page when
+        the pattern declares where that sits. "The transaction could not be validated"
+        tells a caller only which category their request fell into; "Insufficient
+        available balance in the source share" tells them what to do about it. Reading
+        it is best-effort - a page that no longer renders the reason must not turn a
+        clean business-outcome report into a crash."""
+        if pattern.detail_locator is None:
+            return pattern.detail
+        try:
+            reason = self.surface.act(
+                ActionType.EXTRACT, locator=pattern.detail_locator, target=None, text=None
+            )
+        except Exception:
+            return pattern.detail
+        reason = " ".join((reason or "").split())
+        return f"{pattern.detail} {reason}".strip() if reason else pattern.detail
 
     def _attempt_recovery(self, artifact: Artifact, index: int, pattern: OutcomePattern, confirm_risky: bool) -> None:
         """Best-effort: perform the pattern's declared recovery_action (e.g. dismiss an
@@ -196,7 +293,12 @@ class ReplayEngine:
                 expected="recovery_action's escalation to complete",
                 observed=self.surface.current_url(),
             )
-        return ReplayResult(outcome=pattern.outcome, detail=pattern.detail)
+        return ReplayResult(
+            outcome=pattern.outcome,
+            detail=self._pattern_detail(pattern),
+            step_index=index,
+            observed=self.surface.current_url(),
+        )
 
     def run(self, artifact: Artifact, params: dict, confirm_risky: bool = False) -> ReplayResult:
         validation_error = validate_required_params(artifact, params)
@@ -206,6 +308,10 @@ class ReplayEngine:
 
         outputs: dict = {}
         retries_used: dict[int, int] = {}
+        # The last RECOVERABLE condition this run met and acted on, if any. Remembered
+        # because its after-effects can outlive the page that showed it - see
+        # _unclassified_failure.
+        recovered_from: OutcomePattern | None = None
         index = 0
         while index < len(artifact.steps):
             step = artifact.steps[index]
@@ -233,6 +339,9 @@ class ReplayEngine:
                         expected="escalation to complete (manual takeover)",
                         observed=self.surface.current_url(),
                     )
+                already_succeeded = self._finish_if_already_succeeded(artifact, outputs)
+                if already_succeeded is not None:
+                    return already_succeeded
 
             # The app may have already diverged onto a business/recoverable outcome
             # page after a previous step (e.g. "insufficient funds" instead of the
@@ -242,11 +351,64 @@ class ReplayEngine:
             # is not advanced) rather than giving up immediately.
             pattern = self._match_outcome_pattern(artifact)
             if pattern is not None:
+                # A BUSINESS_OUTCOME match here would otherwise short-circuit the run
+                # before ever reaching a step discovery itself flagged risky - meaning
+                # a human confirmed, during discovery, that this exact artifact
+                # legitimately needs judgment further down the line. An unexpected
+                # outcome page on the way there deserves the same scrutiny, not an
+                # automatic, unappealable give-up: escalate first and let a human
+                # look at the live page. If they resolve it (the human's own action
+                # during the handoff clears the condition - e.g. this was a stale
+                # page, a transient state, or something only a human could push
+                # past), the SAME step is re-attempted normally; if the condition is
+                # still there after resume, it's reported exactly as before - the
+                # human's own judgment that this is a genuine dead end, not the
+                # engine's.
+                has_pending_risky_step = any(
+                    s.risk_tier == RiskTier.RISKY for s in artifact.steps[index:]
+                )
+                if (
+                    pattern.outcome == OutcomeType.BUSINESS_OUTCOME
+                    and has_pending_risky_step
+                    and self.escalation is not None
+                ):
+                    try:
+                        self.escalation.escalate(
+                            InterventionRequest(
+                                run_id=self.evidence_logger.run_id,
+                                capability_or_goal=artifact.capability_name,
+                                current_step=index,
+                                screenshot_path=self.evidence_logger.save_screenshot(
+                                    safe_screenshot(self.surface), f"escalation_step{index}"
+                                ),
+                                reason=f"unexpected outcome '{pattern.detail}' matched before reaching a "
+                                "step this artifact records as risky (which a human already confirmed "
+                                "during discovery) - confirm this is a genuine business outcome, or "
+                                "resolve it live and resume to continue",
+                            )
+                        )
+                    except Exception as exc:
+                        return ReplayResult(
+                            outcome=OutcomeType.HARD_FAILURE,
+                            step_index=index,
+                            detail=f"{type(exc).__name__}: {exc}",
+                            expected="escalation to complete (unexpected outcome before a risky step)",
+                            observed=self.surface.current_url(),
+                        )
+                    already_succeeded = self._finish_if_already_succeeded(artifact, outputs)
+                    if already_succeeded is not None:
+                        return already_succeeded
+                    pattern = self._match_outcome_pattern(artifact)
+                    if pattern is None:
+                        continue
+                if pattern.outcome == OutcomeType.RECOVERABLE:
+                    recovered_from = pattern
                 result = self._handle_matched_pattern(artifact, pattern, index, retries_used, confirm_risky)
                 if result is not None:
                     return result
                 continue
 
+            escalated_for_this_step = False
             if self.guardrail.requires_confirmation(step.risk_tier, confirm_risky) and self.escalation is not None:
                 try:
                     self.escalation.escalate(
@@ -260,6 +422,7 @@ class ReplayEngine:
                             reason=f"step {index} is risk_tier=risky and confirm_risky is False",
                         )
                     )
+                    escalated_for_this_step = True
                 except Exception as exc:
                     # A transport failure (e.g. non-interactive stdin) must never
                     # surface as a raw traceback - without human confirmation there's
@@ -272,6 +435,15 @@ class ReplayEngine:
                         expected="escalation to complete (human confirmation for a risky step)",
                         observed=self.surface.current_url(),
                     )
+                # The human may have completed this risky step AND everything after
+                # it themselves during the handoff, not just confirmed it's safe to
+                # proceed - checking for overall success now, before ever attempting
+                # this (or a later) recorded step, is what makes "hand back control
+                # once you're done, whether or not you did more than strictly
+                # necessary" actually work.
+                already_succeeded = self._finish_if_already_succeeded(artifact, outputs)
+                if already_succeeded is not None:
+                    return already_succeeded
 
             text = step.value
             if step.value_source is not None and step.value_source.type == "goal_parameter":
@@ -308,20 +480,60 @@ class ReplayEngine:
                 if step.extract_as:
                     outputs[step.extract_as] = extracted
             except Exception as exc:
+                # A recognised outcome page explains the failure outright, so it is
+                # checked FIRST - before the escalated_for_this_step assumption below.
+                # Live-observed why: a transfer whose source share was on HOLD escalated
+                # at its risky step (correctly), the human resumed without fixing
+                # anything, and the "Post Transfer" click then failed simply because the
+                # rejection page has no such button. Assuming "the human must have done
+                # it" recorded a success-shaped event for a transfer that never posted,
+                # and the run limped on to die at the next step with a locator timeout
+                # that named nothing real. The rejection itself is the answer.
                 pattern = self._match_outcome_pattern(artifact)
                 if pattern is not None:
+                    if pattern.outcome == OutcomeType.RECOVERABLE:
+                        recovered_from = pattern
                     result = self._handle_matched_pattern(artifact, pattern, index, retries_used, confirm_risky)
                     if result is not None:
                         return result
                     continue
-                return ReplayResult(
-                    outcome=OutcomeType.HARD_FAILURE,
-                    step_index=index,
-                    detail=f"{type(exc).__name__}: {exc}",
-                    expected=f"{step.action.value} to succeed",
-                    observed=self.surface.current_url(),
-                )
-            self.evidence_logger.log_event("replay_step", {"index": index, "action": step.action.value})
+                if escalated_for_this_step:
+                    # No recognised outcome page, and control was handed to a human at
+                    # this exact step: they almost certainly performed the action
+                    # themselves, so by the time replay gets a turn again the control it
+                    # targeted is gone from the page and re-attempting it always fails.
+                    # Same gap already fixed in DiscoveryAgent (ENHANCEMENTS.md #16):
+                    # treat it as "already done manually" and fall through to the normal
+                    # post-action checks below (allowlist/checkpoint) against whatever
+                    # state the human actually left the page in.
+                    self.evidence_logger.log_event(
+                        "step_completed_during_escalation", {"step_index": index, "action": step.action.value}
+                    )
+                else:
+                    return self._unclassified_failure(
+                        outputs,
+                        recovered_from,
+                        step_index=index,
+                        expected=f"{step.action.value} to succeed",
+                        detail=f"{type(exc).__name__}: {exc}",
+                    )
+            # Surfaced on the dashboard/chat's run log (what got typed/clicked, not just
+            # "type_text happened") - masked by param name, not by value shape, since a
+            # substituted param here is the caller's real data (unlike discovery's decision
+            # log, which only ever sees a value the LLM itself chose/typed).
+            is_sensitive = (
+                step.value_source is not None and is_sensitive_param_name(step.value_source.param_name)
+            )
+            self.evidence_logger.log_event(
+                "replay_step",
+                {
+                    "index": index,
+                    "action": step.action.value,
+                    "locator": step.locator.model_dump(mode="json") if step.locator else None,
+                    "target": target_url,
+                    "value": ("••••••" if is_sensitive else text) if text is not None else None,
+                },
+            )
 
             # The action that just ran (most concretely a CLICK, but any action could
             # trigger a redirect) may have navigated the browser somewhere new. The
@@ -343,15 +555,14 @@ class ReplayEngine:
             if step.checkpoint is not None and not self.surface.check_checkpoint(step.checkpoint):
                 pattern = self._match_outcome_pattern(artifact)
                 if pattern is not None:
+                    if pattern.outcome == OutcomeType.RECOVERABLE:
+                        recovered_from = pattern
                     result = self._handle_matched_pattern(artifact, pattern, index, retries_used, confirm_risky)
                     if result is not None:
                         return result
                     continue
-                return ReplayResult(
-                    outcome=OutcomeType.HARD_FAILURE,
-                    step_index=index,
-                    expected=str(step.checkpoint),
-                    observed=self.surface.current_url(),
+                return self._unclassified_failure(
+                    outputs, recovered_from, step_index=index, expected=str(step.checkpoint)
                 )
 
             index += 1
@@ -359,17 +570,19 @@ class ReplayEngine:
         while not self.surface.check_checkpoint(artifact.success_checkpoint):
             pattern = self._match_outcome_pattern(artifact)
             if pattern is not None:
+                if pattern.outcome == OutcomeType.RECOVERABLE:
+                    recovered_from = pattern
                 result = self._handle_matched_pattern(
                     artifact, pattern, len(artifact.steps) - 1, retries_used, confirm_risky
                 )
                 if result is not None:
                     return result
                 continue
-            return ReplayResult(
-                outcome=OutcomeType.HARD_FAILURE,
+            return self._unclassified_failure(
+                outputs,
+                recovered_from,
                 step_index=len(artifact.steps) - 1,
                 expected=str(artifact.success_checkpoint),
-                observed=self.surface.current_url(),
             )
 
         _resolve_derived_outputs(artifact, outputs)

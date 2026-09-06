@@ -87,6 +87,31 @@ def finish_run(run_id: str, status: str, result: dict[str, Any] | None) -> None:
     )
 
 
+def abandon_orphaned_runs() -> None:
+    """Mark every still-open run as interrupted. Safe to call ONLY at server startup.
+
+    A run's terminal status is written by the worker thread's own `finally`, so a
+    process that is killed (or crashes) leaves its rows saying `running`/`escalated`
+    forever - they show as live on the dashboard, block their capability, and can
+    only be cleared by hand. This was live-observed as five phantom runs whose
+    browsers had not existed for hours.
+
+    A freshly started process owns no threads from a previous one, so anything still
+    open at startup is by definition orphaned - there is no race to lose here."""
+    _execute(
+        """
+        UPDATE runs SET status = 'interrupted',
+                        result = %s::jsonb,
+                        finished_at = now()
+        WHERE status IN ('running', 'escalated')
+        """,
+        (json.dumps({
+            "outcome": "hard_failure",
+            "detail": "the server process exited while this run was in progress",
+        }),),
+    )
+
+
 def delete_run(run_id: str) -> int:
     """run_events and run_screenshots both FK run_id -> runs.id ON DELETE CASCADE
     (see schema.sql), so deleting the runs row is enough to remove a run's full

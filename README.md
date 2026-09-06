@@ -37,6 +37,279 @@ complete.** Setup and demo commands below; full design rationale is in
    signaled over HTTP instead of a terminal prompt. See
    [Capability server](#capability-server-optional-agent-facing-api) below.
 
+## MERIDIAN CORE adaptation — chatbot, dashboard, and a live legacy target
+
+This same core also drives **MERIDIAN CORE**
+(`https://web-sample.interface-hiring.com`), a hosted, real, legacy-styled
+credit-union member-servicing console (`Adaptation Project — MERIDIAN CORE.pdf`) —
+wrapped with a callable capability API, a chatbot, and a dashboard so the
+whole thing is demoable end to end, not just runnable from the CLI. **Status:
+implementation complete** for all 7 required functions (check balance, member
+inquiry — by number *and* by last name, funds transfer, open new share, update
+member info, place account hold) plus sign-on, each recorded as a real,
+replayable capability against the live target. Full write-up (what adapting
+took, the API's shape, exceptional-state handling, how the safety/evidence/
+escalation guarantees survive the new surface, and what's cut):
+[`ADAPTATION_WRITEUP.md`](ADAPTATION_WRITEUP.md). Deeper engineering detail
+lives in [`CODEMAP.md`](CODEMAP.md) (per-file walkthrough),
+[`ENHANCEMENTS.md`](ENHANCEMENTS.md) (every fix, why), and
+[`IMPACTS.md`](IMPACTS.md) (design decisions vs. their effect on cost/latency/
+reliability).
+
+### Extra setup (on top of the Setup section above)
+
+**Docker Desktop** — used for two things: a dedicated Postgres container (the
+primary store for artifacts/runs/evidence once the chatbot/dashboard are in
+the picture — a discovery/replay run through the server writes both there),
+and, optionally, an isolated sandbox container per run (headed Chromium +
+noVNC) so the dashboard/chat can stream a live, human-controllable view of
+the browser instead of a window on the server's own machine.
+
+```bash
+docker run -d --name comp-use-postgres \
+  -p 127.0.0.1:51504:5432 \
+  -v comp-use-pgdata:/var/lib/postgresql/data \
+  -e POSTGRES_USER=compuse -e POSTGRES_PASSWORD=compuse -e POSTGRES_DB=compuse \
+  postgres:16-alpine
+```
+
+`-p 127.0.0.1:51504:5432` **pins the host port** — without an explicit host
+port, Docker assigns a random one on every container restart, and `.env`'s
+`COMP_USE_DB_URL` below would need updating each time (data itself is safe
+either way — it lives in the `comp-use-pgdata` named volume, independent of
+the container).
+
+Add to `.env` (see `.env.example` for the full annotated block):
+
+```bash
+COMP_USE_DB_URL=postgresql://compuse:compuse@127.0.0.1:51504/compuse
+COMP_USE_SANDBOX=1   # omit/unset to run a local Playwright browser instead
+```
+
+Postgres applies its schema on first connection
+(`comp_use/pg/schema.sql` via `comp_use/pg/store.py`) — no separate migration
+step. Unset `COMP_USE_DB_URL` and the server falls back to the on-disk
+`artifacts/`/`evidence/` layout the original take-home uses (fine for CLI-only
+use against the mock app; the chatbot/dashboard expect Postgres).
+
+**Frontend** (dashboard + chatbot, a Vite/React app under `frontend/`):
+
+```bash
+cd frontend
+npm install
+copy .env.local.example .env.local   # Windows; Unix: cp ...  (or just create it)
+```
+
+`frontend/.env.local`:
+
+```
+VITE_API_BASE=http://127.0.0.1:8126
+```
+
+### Running it
+
+Three processes, each in its own terminal (Postgres from the `docker run`
+above is a fourth, already running in the background):
+
+```bash
+# Terminal 1 — capability server (also serves the chatbot/dashboard's API)
+.venv\Scripts\python -m comp_use.cli serve --port 8126     # Windows
+# or: python -m comp_use.cli serve --port 8126               # Unix / uv run
+
+# Terminal 2 — dashboard + chatbot dev server
+cd frontend && npm run dev
+```
+
+Open the URL Vite prints (typically `http://localhost:5173`) — the **Dashboard**
+tab shows the capability catalog and run history; **+ New workflow** opens the
+**Chat** tab, which asks which target site to work against (pick "Meridian" or
+paste a URL), then takes natural-language requests and maps them to an
+existing capability (with a confirm step before it runs) or proposes recording
+a new one via discovery.
+
+### Demo path (MERIDIAN CORE, via the API — mirrors what the chatbot/dashboard do)
+
+All 7 required functions plus sign-on are already recorded and approved as
+capabilities. Invoke any of them directly:
+
+```bash
+# Read a member's shares and balances (total_balance is computed by replay's own
+# sum_currency, never by a model)
+curl -s -X POST http://127.0.0.1:8126/capabilities/meridian_member_balance/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"params": {"operator_id":"teller1","password":"password","branch":"MAIN-001 - Main Office","member_number":"103001"}}'
+# -> {"run_id": "invoke_...", "status": "running"}
+
+curl -s http://127.0.0.1:8126/runs/<run_id>   # poll until "done"
+# -> {"status": "done", "result": {"outcome": "success",
+#     "outputs": {"shares_and_balances": "Share ID\tType\tBalance\tStatus\n...",
+#                 "total_balance": "$1,215.50"}}}
+
+# Transfer funds — a risky/irreversible step, always pauses for confirmation
+curl -s -X POST http://127.0.0.1:8126/capabilities/meridian_transfer_funds/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"params": {"operator_id":"teller1","password":"password","branch":"MAIN-001 - Main Office","member_number":"103001","source_share_id":"103001-MMKT-11","destination_share_id":"103001-MMKT-10","amount":"1.00","memo":"demo"}}'
+# poll -> {"status": "escalated", "escalation": {"reason": "step N is risk_tier=risky...", "screenshot_url": "..."}}
+
+curl -s -X POST http://127.0.0.1:8126/runs/<run_id>/resume \
+  -H "Content-Type: application/json" -d '{"note": "confirmed the transfer"}'
+# poll again -> {"status": "done", "result": {"outcome": "success", "outputs": {"confirmation_number": "CN..."}}}
+
+# The brief's own named exceptional-state example: a teller attempting a
+# supervisor-only action
+curl -s -X POST http://127.0.0.1:8126/capabilities/meridian_place_account_hold/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"params": {"operator_id":"teller1","password":"password","branch":"MAIN-001 - Main Office","member_number":"102777","share_id":"102777-MMKT-3","reason_code":"FRAUD","notes":"demo"}}'
+# -> {"status": "done", "result": {"outcome": "business_outcome", "detail": "...is not authorized to perform this function..."}}
+```
+
+The remaining capabilities: `meridian_sign_on`,
+`meridian_member_inquiry_by_number`, `meridian_member_inquiry_by_name` (by last
+name), `meridian_open_new_share`, `meridian_update_member_info` — same
+`POST /capabilities/{name}/invoke` shape; `GET /capabilities` lists every one
+with its current typed `input_schema`/`output_schema`.
+
+**Recording a new one** (discovery — needs a model provider key, `NVIDIA_API_KEY`
+by default; see [Setup](#setup) — replay never calls a model at all; runs inside
+the sandbox if `COMP_USE_SANDBOX=1`, watchable live at the `novnc_url` the run
+reports):
+
+```bash
+curl -s -X POST http://127.0.0.1:8126/capabilities/meridian_place_hold_v2/discover \
+  -H "Content-Type: application/json" \
+  -d '{"goal": "Sign on as a specified operator, place a hold on a specified share for a specified reason, and report the confirmation.", "start_url": "https://web-sample.interface-hiring.com"}'
+# poll GET /runs/<run_id> -> discover_result.succeeded, then:
+curl -s -X POST http://127.0.0.1:8126/capabilities/meridian_place_hold_v2/versions/1/approve
+```
+
+Same flow from the chatbot: describe the task in plain language; if no
+existing capability matches, it proposes recording a new one (stating the
+goal it will use) and asks for confirmation before starting discovery.
+
+#### The goals used to record the current catalogue
+
+These are the exact `goal` strings behind the eight approved capabilities, so
+the catalogue can be rebuilt from scratch. `param_hints` is not decoration:
+discovery refuses to finish while a declared input was never actually entered
+(a pre-filled edit form is otherwise easy to submit unchanged), so the hints
+are what make the recording complete rather than merely successful.
+
+Four things in the wording earn their place, each after a recording went wrong
+without them:
+
+- **State the credentials outright.** A goal that only says "a specified
+  operator" gets a capability whose recorded example operator id is the literal
+  string `operator_id`.
+- **Say "using a select_option action"** for dropdowns. Otherwise a `<select>`
+  gets *clicked*, the branch stays at its default, and sign-on is recorded
+  twice — once failing, once working.
+- **Say what to report back, by name.** Without it three read-only capabilities
+  recorded no `extract` at all and replayed "successfully" with nothing to show.
+- **Use values that are live-valid, and amounts well within balance.** A share
+  that is on `HOLD`, or an amount over the balance, sends discovery onto the
+  rejection page instead of the flow being recorded.
+
+```bash
+BASE=https://web-sample.interface-hiring.com
+SIGNON="Sign on to the MERIDIAN-style web application at $BASE as operator teller1 \
+with password 'password'. Choose 'MAIN-001 - Main Office' from the branch dropdown \
+using a select_option action (operator_id, password and branch will each vary per \
+call), then submit the sign-on form."
+
+# 1. meridian_sign_on
+#    hints: operator_id, password, branch
+"$SIGNON Confirm you have arrived at the MAIN MENU, and extract the line that states
+ which operator is signed on. Do not perform any other action."
+
+# 2. meridian_member_inquiry_by_number
+#    hints: + member_number
+"$SIGNON Open 'Member Inquiry / Selection'. Search by member number for member 103001
+ (member_number will vary per call). Then extract the search RESULTS table listing the
+ matched member - the table containing the member number and name, not the search form
+ above it. Do not open the member's record."
+
+# 3. meridian_member_inquiry_by_name
+#    hints: + last_name
+"$SIGNON Open 'Member Inquiry / Selection'. Use a select_option action to change the
+ 'Search by' dropdown to Last Name, then search for last name 'Vaughan' (last_name will
+ vary per call). Then extract the search RESULTS table listing the matched member(s) -
+ the table containing member numbers and names, not the search form above it."
+
+# 4. meridian_member_balance
+#    hints: + member_number
+"$SIGNON Open 'Member Inquiry / Selection', search by member number for member 103001
+ (member_number will vary per call), and open that member's record. Extract the SHARES /
+ BALANCES table showing every share id, type, balance and status, as an output named
+ shares_and_balances. Then, using derive_as/derive_op, also report the sum of all the
+ share balances as an output named total_balance."
+
+# 5. meridian_transfer_funds   (risky: escalates at Post Transfer)
+#    hints: + member_number, source_share_id, destination_share_id, amount, memo
+"$SIGNON Open 'Member Inquiry / Selection', search by member number for member 103001
+ (member_number will vary per call), open that member's record, and choose 'Funds
+ Transfer'. Select source share '103001-MMKT-11' and destination share '103001-MMKT-10'
+ (source_share_id and destination_share_id will vary per call), enter an amount of 1.00
+ (amount will vary per call, always well within the source share's balance) and a memo
+ (memo will vary per call). Click Continue to reach the confirmation screen, then click
+ 'Post Transfer' to actually commit the transfer. Finally extract the confirmation
+ number shown on the TRANSFER POSTED screen."
+
+# 6. meridian_open_new_share   (risky: escalates at Open Share)
+#    hints: + member_number, share_type, initial_deposit
+"$SIGNON Open 'Member Inquiry / Selection', search by member number for member 102777
+ (member_number will vary per call), open that member's record, and choose 'Open New
+ Share'. Use a select_option action to choose the Regular Shares share type (share_type
+ will vary per call) and enter an initial deposit of 5.00 (initial_deposit will vary per
+ call). Continue to the review screen and then post it to actually open the share.
+ Finally extract the confirmation number and the new share id from the resulting screen."
+
+# 7. meridian_update_member_info
+#    hints: + member_number, email, phone, address
+"$SIGNON Open 'Member Inquiry / Selection', search by member number for member 102777
+ (member_number will vary per call), open that member's record, and choose 'Update Member
+ Information'. Set the e-mail to 'katherine.johnson@example.com', the phone to '555-0187'
+ and the mailing address to '14 Cornerstone Ave, Springfield' (email, phone and address
+ will each vary per call). Save the changes, then extract the confirmation message or the
+ updated contact details shown afterwards."
+
+# 8. meridian_place_account_hold   (supervisor-only; risky: escalates at Apply Hold)
+#    hints: + member_number, share_id, reason_code, notes
+"Sign on to the MERIDIAN-style web application at $BASE as operator super1 with password
+ 'password' - this is a supervisor-only function, so a teller cannot complete it. Choose
+ 'MAIN-001 - Main Office' from the branch dropdown using a select_option action
+ (operator_id, password and branch will each vary per call), then submit the sign-on form.
+ Open 'Member Inquiry / Selection', search by member number for member 102777
+ (member_number will vary per call), open that member's record, and choose 'Place Account
+ Hold'. Use select_option actions to choose share '102777-MMKT-13' (share_id will vary per
+ call) and reason code FRAUD (reason_code will vary per call), and enter notes (notes will
+ vary per call). Continue to the review screen, then post the hold to actually place it.
+ Finally extract the confirmation number shown afterwards."
+```
+
+Each is submitted the same way, with its hints:
+
+```bash
+curl -s -X POST http://127.0.0.1:8126/capabilities/meridian_member_balance/discover \
+  -H "Content-Type: application/json" \
+  -d "{\"goal\": \"$GOAL\", \"start_url\": \"$BASE\",
+       \"param_hints\": [\"operator_id\",\"password\",\"branch\",\"member_number\"]}"
+```
+
+The three risky capabilities (5, 6, 8) pause at their commit step during
+recording exactly as they do during replay — resume to record the step, and it
+is marked `risk_tier=risky` in the artifact so every future replay pauses there
+too.
+
+### Running offline / mocked
+
+`python -m pytest -v` never touches the live target, Postgres, or a real LLM —
+every test spins up its own throwaway fixture and uses `FakeLLMClient`.
+Against MERIDIAN CORE specifically: `replay` never calls an LLM (only
+`discover` needs `OPENROUTER_API_KEY`, and the sample app's public demo
+credentials, already checked into `.env` — no real credentials or PII
+involved), so every capability above can be exercised with only the
+capability server running, no live LLM call in the loop.
+
 ## System design
 
 ```mermaid
@@ -137,10 +410,19 @@ Every command later in this README (`python -m pytest`, `python -m comp_use.cli 
 (`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on Unix) and drop
 the prefix entirely.
 
-Edit `.env` and set `OPENROUTER_API_KEY` (required only for `discover`; replay never
-calls the LLM). `OPENROUTER_VISION_MODEL` has a working default and rarely needs
-changing — it's a fallback for when the accessibility tree alone isn't enough for
-the model to locate an element (see REPORT.md's Heterogeneity section).
+Edit `.env` and set a model provider key — required only for `discover`; replay
+never calls a model at all. `MODEL_PROVIDER` defaults to `nvidia`, so
+`NVIDIA_API_KEY` (from build.nvidia.com) is the one to set; whichever provider you
+do not choose is used as an automatic fallback when its key is present.
+
+`MODEL_PROVIDER=openrouter` works too, but note OpenRouter's free tier caps the
+whole **account** at 50 model requests per day across every free model, and a
+single discovery run spends 15–20 of them — two or three recordings exhaust it and
+everything afterwards fails with HTTP 429 regardless of which free model is named.
+
+The `*_VISION_MODEL` settings have working defaults and rarely need changing —
+they are a fallback for when the accessibility tree alone isn't enough for the
+model to locate an element (see REPORT.md's Heterogeneity section).
 
 **Optional second provider.** Set `NVIDIA_API_KEY` ([build.nvidia.com](https://build.nvidia.com))
 to add NVIDIA NIM as an automatic fallback on any LLM-call failure (rate limit,
@@ -540,15 +822,21 @@ python -m pytest -v
 ## Project layout
 
 ```
-/mock_app/          legacy-styled Flask target application
+/mock_app/          legacy-styled Flask target application (original take-home)
 /comp_use/          discovery, replay, guardrails, CLI
-/comp_use/server/   optional FastAPI capability server (discover/invoke over HTTP)
-/artifacts/         saved capability artifacts (JSON)
-/evidence/          logs + screenshots from discovery and replay runs
+/comp_use/server/   FastAPI capability server (discover/invoke over HTTP; chat endpoints)
+/comp_use/chat/     chat agent - natural-language front door onto the capability API
+/comp_use/pg/       Postgres store (artifacts/runs/evidence) - primary once configured
+/comp_use/sandbox*  isolated Docker sandbox (headed Chromium + noVNC) for live-watchable runs
+/frontend/          dashboard + chatbot UI (Vite/React)
+/artifacts/         saved capability artifacts (JSON) - fallback store, Postgres primary
+/evidence/          logs + screenshots - fallback store, Postgres primary
 /docs/              design specs and implementation plans
-run_mock_app.py     start the mock bank app on :5000
+run_mock_app.py     start the mock bank app on :5000 (original take-home target)
 demo_edge_cases.py  live demo: Locator.fallback + recoverable auto-retry (see "Exercising every outcome" step 8)
-REPORT.md           design write-up (architecture, schema, determinism, etc.)
+REPORT.md           original take-home design write-up (architecture, schema, determinism, etc.)
+ADAPTATION_WRITEUP.md   MERIDIAN CORE adaptation write-up (what changed, why, what's cut)
+CODEMAP.md / ENHANCEMENTS.md / IMPACTS.md   full engineering log for the adaptation
 ```
 
 ## Contact

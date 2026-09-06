@@ -39,6 +39,64 @@ def _resolve(page: Page, locator: Locator):
 # uses Playwright's normal default, since after that there's nothing left to try.
 _FALLBACK_PROBE_TIMEOUT_MS = 3000
 
+# Split budget for each of select_option's match attempts (see
+# _select_option_robust) when no shorter fallback-probe timeout applies. Kept
+# below Playwright's own ~30s default so a genuinely wrong value still fails in
+# roughly one normal timeout, not several.
+_SELECT_OPTION_ATTEMPT_TIMEOUT_MS = 15000
+
+# Matches a trailing "($13.00)" / "($1,204.55)" style balance shown inline in an
+# option's label (e.g. "100234-S0001-13 - Regular Shares ($13.00)"). Some legacy
+# forms render a share/account's CURRENT BALANCE as part of the dropdown option
+# text itself - a live, mutable value with no stable counterpart anywhere else on
+# the option (unlike a form field's value, this can't be swapped for a stable
+# name/id attribute; the option's only identifying text already contains it).
+# Between the moment discovery/a caller recorded this label and the moment
+# replay runs, that balance can have moved (interest posted, another transfer
+# happened), leaving neither the recorded label NOR its value attribute matching
+# any live option. See _select_option_robust.
+_TRAILING_BALANCE_RE = re.compile(r"\s*\(\$[\d,]+\.\d{2}\)\s*$")
+
+
+def _select_option_robust(l, text: str, timeout: float | None) -> None:
+    """Discovery picks a <select> option by its visible label - the only
+    representation the model's accessibility-tree view exposes - and records
+    that label text as the step's value. Playwright's `select_option(str)`
+    matches the option's raw HTML `value` attribute, not its label. The two
+    happen to coincide for some fields (e.g. a branch code baked into its
+    label) but diverge for others (e.g. a share/account dropdown, where the
+    value attribute is an internal id distinct from its human-readable label),
+    causing a spurious "did not find some options" timeout on a step that is
+    otherwise entirely correct. Try matching by label first (what discovery
+    actually saw), then by raw value, then - if the text carries a trailing
+    balance suffix - by every live option's label with that same suffix
+    stripped from both sides, so a moved balance doesn't sink an otherwise
+    exact match on the share/account's stable identifying text."""
+    attempt_timeout = timeout if timeout is not None else _SELECT_OPTION_ATTEMPT_TIMEOUT_MS
+    try:
+        l.select_option(label=text, timeout=attempt_timeout)
+        return
+    except Exception as exc:
+        last_error = exc
+    try:
+        l.select_option(text, timeout=attempt_timeout)
+        return
+    except Exception as exc:
+        last_error = exc
+
+    stripped_target = _TRAILING_BALANCE_RE.sub("", text).strip()
+    if stripped_target != text.strip():
+        try:
+            option_labels = l.evaluate("el => Array.from(el.options).map(o => o.label)")
+        except Exception:
+            option_labels = []
+        for option_label in option_labels:
+            if _TRAILING_BALANCE_RE.sub("", option_label).strip() == stripped_target:
+                l.select_option(label=option_label, timeout=attempt_timeout)
+                return
+
+    raise last_error
+
 
 def _resolve_with_fallback(page: Page, locator: Locator, perform, is_success=lambda result: True):
     """Resolve `locator` and call `perform(resolved_locator, timeout_ms)` on it; if
@@ -78,6 +136,40 @@ def _resolve_with_fallback(page: Page, locator: Locator, perform, is_success=lam
     if primary_error is not None:
         raise primary_error
     return result
+
+
+def _collapse_whitespace(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _text_is_present(page: Page, needle: str) -> bool:
+    """Is `needle` visible on the page, as a reader would see it?
+
+    Matches the page's RENDERED text, not its HTML source, and compares with runs
+    of whitespace collapsed on both sides. Source matching is a trap that fails
+    silently and looks like a missing error state: MERIDIAN's permission page
+    carries the sentence
+
+        Operator profile <b>teller1</b> is not authorized to perform this
+                     function.
+
+    so `"is not authorized to perform this function" in page.content()` is False -
+    the source has a newline and indentation between "this" and "function", and a
+    tag mid-sentence. Two live edge cases (an injected 403, and a teller attempting
+    a supervisor-only Place Hold) were reported as bare hard_failures for exactly
+    this reason, and every future anchor crossing a tag, entity or line wrap would
+    have failed the same way.
+
+    Falls back to source matching only if the rendered text can't be read at all,
+    so a page mid-navigation degrades to the old behaviour rather than raising."""
+    try:
+        rendered = page.inner_text("body")
+    except Exception:
+        try:
+            return needle in page.content()
+        except Exception:
+            return False
+    return _collapse_whitespace(needle) in _collapse_whitespace(rendered)
 
 
 def safe_screenshot(surface: "Surface") -> bytes | None:
@@ -174,11 +266,26 @@ class PlaywrightSurface(Surface):
         elif action == ActionType.CLICK:
             _resolve_with_fallback(self.page, locator, lambda l, timeout: l.click(timeout=timeout))
         elif action == ActionType.TYPE_TEXT:
-            _resolve_with_fallback(self.page, locator, lambda l, timeout: l.fill(text, timeout=timeout))
+            # `text or ""` because an empty value is a real intention - clearing a
+            # pre-filled field, or leaving an optional memo blank. Passing None through
+            # instead raised "Frame.fill() missing 1 required positional argument:
+            # 'value'", which reads like an internal bug rather than anything about the
+            # page: live-observed on a funds-transfer recording, where the model asked
+            # for an empty memo, got that TypeError, retried with a space, got it
+            # again, and burned its whole loop-detector budget on one optional field.
+            _resolve_with_fallback(
+                self.page, locator, lambda l, timeout: l.fill(text or "", timeout=timeout)
+            )
         elif action == ActionType.SELECT_OPTION:
-            _resolve_with_fallback(self.page, locator, lambda l, timeout: l.select_option(text, timeout=timeout))
+            _resolve_with_fallback(self.page, locator, lambda l, timeout: _select_option_robust(l, text, timeout))
         elif action == ActionType.EXTRACT:
-            return _resolve_with_fallback(self.page, locator, lambda l, timeout: l.text_content(timeout=timeout))
+            # inner_text(), not text_content(): text_content() concatenates raw text
+            # nodes with nothing between them, so a shares table comes back as
+            # "103001-S0001Regular Shares$760.50HOLD103001-MMKT-2Money Market$4.00..."
+            # - technically the right characters, unreadable as an answer. inner_text()
+            # returns it as the screen lays it out, rows on their own lines and cells
+            # tab-separated, which is what a caller asked to "read the balances" wants.
+            return _resolve_with_fallback(self.page, locator, lambda l, timeout: l.inner_text(timeout=timeout))
         else:
             raise ValueError(f"unknown action: {action}")
         return None
@@ -191,7 +298,7 @@ class PlaywrightSurface(Surface):
                 is_success=lambda result: result is True,
             )
         if checkpoint.type == CheckpointType.TEXT_PRESENT:
-            return checkpoint.text in self.page.content()
+            return _text_is_present(self.page, checkpoint.text)
         if checkpoint.type == CheckpointType.URL_MATCHES:
             # url_pattern may contain "*" wildcard segments (see
             # cli._derive_success_checkpoint's numeric-segment substitution) - convert

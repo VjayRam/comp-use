@@ -598,6 +598,190 @@ def test_risky_step_escalation_transport_failure_returns_hard_failure_not_a_cras
     assert surface.acted == [(ActionType.NAVIGATE, "http://localhost:5000/member/search", None)]  # the risky step never ran
 
 
+class _RisksJustOneStepSurface(FakeSurface):
+    """Raises exactly once, on the first TYPE_TEXT attempt (simulating a human
+    having already handled that one risky step during a takeover), then
+    behaves normally for everything else - unlike raise_on_step (keyed on
+    len(acted), which stays frozen at the same count after a raise that never
+    appends, so it would otherwise also raise on the NEXT action attempted).
+    The artifact's own success checkpoint only reads True once a trailing safe
+    step has also actually run - modeling a human who completed ONLY the risky
+    step they were handed control for, not the whole remaining flow, so
+    automation still has to carry out what comes after it."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._raised_once = False
+
+    def act(self, action, locator, target, text):
+        if action == ActionType.TYPE_TEXT and not self._raised_once:
+            self._raised_once = True
+            raise TimeoutError("locator not found for type_text")
+        super().act(action, locator, target, text)
+
+    def check_checkpoint(self, checkpoint):
+        return len(self.acted) >= 2
+
+
+def test_replay_treats_risky_step_as_succeeded_when_the_action_fails_after_escalation(tmp_path):
+    # Mirrors a fix already made in DiscoveryAgent (ENHANCEMENTS.md #16/#17) - ported
+    # here because replay has the exact same gap: a human takes control during the
+    # escalation pause and performs the risky action themselves (e.g. the real "Post
+    # Transfer" click) - by the time replay's own act() call runs, the control it
+    # targeted is already gone from the page, so it always raises. Before this fix,
+    # that raise was reported as HARD_FAILURE for a step that, in fact, succeeded.
+    artifact = _make_artifact()
+    artifact.steps[1].risk_tier = RiskTier.RISKY
+    # A trailing safe step the human did NOT also do - only the one risky step was
+    # handled during the takeover, so the artifact's success state genuinely isn't
+    # reached until automation carries out this last step itself. Without it, "the
+    # human did exactly the risky step and nothing more" is indistinguishable from
+    # "the human finished everything," and the broader _finish_if_already_succeeded
+    # check (added alongside this one) would correctly short-circuit before this
+    # specific action-failure-handling mechanism ever got exercised.
+    artifact.steps.append(
+        Step(action=ActionType.CLICK, locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Done"}))
+    )
+    # act call #0 = NAVIGATE (succeeds, acted len 1); the risky TYPE_TEXT at index 1
+    # raises once (simulating the human having already handled it during the
+    # escalation pause) - success only once the trailing CLICK also runs (len 2).
+    surface = _RisksJustOneStepSurface()
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_risky_manual_escalation")
+    transport = FakeTransport()
+    escalation = EscalationController(evidence, transport)
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    result = engine.run(artifact, params={"member_id": "12345"}, confirm_risky=False)
+
+    assert len(transport.notified) == 1
+    assert result.outcome == OutcomeType.SUCCESS
+
+    log_path = evidence.run_dir / "log.jsonl"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert not [e for e in events if e["event_type"] == "validation_error"]
+    recorded = [e for e in events if e["event_type"] == "step_completed_during_escalation"]
+    assert len(recorded) == 1
+
+
+class _ResolvableTransport(FakeTransport):
+    """wait_for_resume() clears the condition the surface below is presenting - the
+    same shape as a real human, mid-takeover, doing something live that resolves an
+    unexpected page state (or simply confirming they've looked and it's fine to
+    retry) before hitting Resume."""
+
+    def __init__(self, surface):
+        super().__init__()
+        self.surface = surface
+
+    def wait_for_resume(self):
+        self.surface.resolved = True
+        return super().wait_for_resume()
+
+
+class _BusinessOutcomeUntilResolvedSurface(FakeSurface):
+    """The artifact's own success checkpoint (the generic branch below) only
+    reads True once all 3 of the artifact's steps have actually run through
+    act() - it does NOT defer to a fixed checkpoint_result. That matters here
+    specifically: this surface also gates a SEPARATE business-outcome
+    checkpoint (the supervisor-override page) that the first escalation
+    resolves. If the generic branch instead returned a constructor-supplied
+    checkpoint_result=True unconditionally, `_finish_if_already_succeeded`
+    would see the run as already done right after that FIRST escalation and
+    return SUCCESS before ever reaching the second, risky-step escalation
+    this test exists to exercise - collapsing two distinct escalations into
+    one and hiding a real gap."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.resolved = False
+
+    def check_checkpoint(self, checkpoint):
+        if checkpoint.type == CheckpointType.TEXT_PRESENT and checkpoint.text == "SUPERVISOR OVERRIDE REQUIRED":
+            return not self.resolved
+        return len(self.acted) >= 3
+
+
+def test_replay_escalates_before_accepting_a_business_outcome_ahead_of_a_known_risky_step(tmp_path):
+    # The core of the fix: an outcome pattern matching BEFORE the run ever reaches a
+    # step this artifact records as risky (i.e. a human already confirmed, during
+    # discovery, that this exact action needs judgment) must not be accepted as an
+    # unappealable dead end - a human gets a chance to look at the live page first.
+    # If their intervention clears the condition (simulated here via the transport's
+    # wait_for_resume, matching a real operator fixing something live), replay
+    # continues normally instead of giving up.
+    artifact = _make_artifact()
+    artifact.steps.append(
+        Step(
+            action=ActionType.CLICK,
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Post"}),
+            risk_tier=RiskTier.RISKY,
+        )
+    )
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="SUPERVISOR OVERRIDE REQUIRED"),
+            detail="supervisor override required",
+        )
+    ]
+    surface = _BusinessOutcomeUntilResolvedSurface()
+    transport = _ResolvableTransport(surface)
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_business_outcome_before_risky")
+    escalation = EscalationController(evidence, transport)
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    result = engine.run(artifact, params={"member_id": "12345"}, confirm_risky=False)
+
+    # One escalation for the unexpected business-outcome page, one more for the
+    # normal risky-step confirmation once the run actually reaches it.
+    assert len(transport.notified) == 2
+    assert "unexpected outcome" in transport.notified[0].reason
+    assert "risk_tier=risky" in transport.notified[1].reason
+    assert result.outcome == OutcomeType.SUCCESS
+
+
+def test_replay_still_reports_business_outcome_if_it_persists_after_escalation(tmp_path):
+    # If the human looks and confirms it's a genuine dead end (the condition is
+    # still there after resume), the original business_outcome is reported exactly
+    # as it would have been without this fix - a human's judgment that this really
+    # is a dead end is still respected, not overridden.
+    artifact = _make_artifact()
+    artifact.steps.append(
+        Step(
+            action=ActionType.CLICK,
+            locator=Locator(strategy=LocatorStrategy.ROLE, value={"role": "button", "name": "Post"}),
+            risk_tier=RiskTier.RISKY,
+        )
+    )
+    artifact.outcome_patterns = [
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="SUPERVISOR OVERRIDE REQUIRED"),
+            detail="supervisor override required",
+        )
+    ]
+    surface = FakeSurface(checkpoint_result=False, matching_checkpoint_text="SUPERVISOR OVERRIDE REQUIRED")
+    transport = FakeTransport()
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_business_outcome_persists")
+    escalation = EscalationController(evidence, transport)
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    result = engine.run(artifact, params={"member_id": "12345"}, confirm_risky=False)
+
+    assert len(transport.notified) == 1
+    assert result.outcome == OutcomeType.BUSINESS_OUTCOME
+    assert result.detail == "supervisor override required"
+
+
 def test_recovery_action_escalation_transport_failure_returns_hard_failure_not_a_crash(tmp_path):
     artifact = _make_artifact()
     artifact.outcome_patterns = [
@@ -886,3 +1070,176 @@ def test_escalation_survives_screenshot_capture_failure(tmp_path):
     assert result.outcome == OutcomeType.SUCCESS
     assert len(transport.notified) == 1
     assert transport.notified[0].screenshot_path is None
+
+
+def _engine_for(tmp_path, surface, run_id, transport=None):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id=run_id)
+    escalation = EscalationController(evidence, transport) if transport is not None else None
+    return ReplayEngine(surface, guardrail, evidence, escalation=escalation), evidence
+
+
+class _MeridianPageSurface(FakeSurface):
+    """Reports whatever page copy it was given for TEXT_PRESENT checks, so a test can
+    put the run on a real MERIDIAN error page and let the host-wide library classify
+    it - rather than hand-authoring the pattern into the artifact, which is precisely
+    what stopped working when a shared pattern needed fixing."""
+
+    def __init__(self, page_text, reason=None, **kwargs):
+        super().__init__(**kwargs)
+        self.page_text = page_text
+        self.reason = reason
+
+    def check_checkpoint(self, checkpoint):
+        if checkpoint.type == CheckpointType.TEXT_PRESENT:
+            return checkpoint.text in self.page_text
+        return super().check_checkpoint(checkpoint)
+
+    def act(self, action, locator, target, text):
+        if action == ActionType.EXTRACT and self.reason is not None:
+            return self.reason
+        return super().act(action, locator, target, text)
+
+
+def _meridian_artifact():
+    artifact = _make_artifact()
+    artifact.target = {"app": "web-sample.interface-hiring.com", "base_url": "https://web-sample.interface-hiring.com"}
+    return artifact
+
+
+def test_host_taxonomy_classifies_an_artifact_that_carries_no_patterns_of_its_own(tmp_path):
+    # Artifacts no longer snapshot the shared library (compile_artifact leaves the
+    # field empty), so this is the normal case, not an edge case: a capability
+    # recorded months ago still gets today's taxonomy.
+    artifact = _meridian_artifact()
+    assert artifact.outcome_patterns == []
+    surface = _MeridianPageSurface("RECORD NOT FOUND The requested member record could not be located")
+    engine, _ = _engine_for(tmp_path, surface, "replay_host_taxonomy")
+
+    result = engine.run(artifact, params={"member_id": "999999"})
+
+    assert result.outcome == OutcomeType.BUSINESS_OUTCOME
+    assert "could not be located" in result.detail
+
+
+def test_a_rejection_reports_the_reason_the_page_gives_not_just_the_category(tmp_path):
+    # "The transaction could not be validated" only names the category. The rule that
+    # actually failed sits in a list beneath it, and is the half a caller can act on.
+    artifact = _meridian_artifact()
+    surface = _MeridianPageSurface(
+        "FUNDS TRANSFER The transaction could not be validated:",
+        reason="Insufficient available balance in the source share.",
+    )
+    engine, _ = _engine_for(tmp_path, surface, "replay_reason_detail")
+
+    result = engine.run(artifact, params={"member_id": "100234"})
+
+    assert result.outcome == OutcomeType.BUSINESS_OUTCOME
+    assert "Insufficient available balance in the source share." in result.detail
+
+
+def test_a_recognised_rejection_beats_the_assumption_that_a_human_did_the_step(tmp_path):
+    # Live-observed: a transfer whose source share was on HOLD escalated at its risky
+    # step, the human resumed without fixing anything, and the "Post Transfer" click
+    # then failed only because the rejection page has no such button. Assuming "the
+    # human must have done it" logged a success-shaped event for a transfer that never
+    # posted. The rejection page is the answer and must win.
+    artifact = _meridian_artifact()
+    artifact.steps[1].risk_tier = RiskTier.RISKY
+    surface = _MeridianPageSurface(
+        "FUNDS TRANSFER The transaction could not be validated:",
+        reason="Source share is HOLD and cannot be debited.",
+        raise_on_step=1,
+        # A rejection page is not the success page: the checkpoint _finish_if_already_
+        # succeeded consults right after the human resumes has to read False here, or
+        # the run would report SUCCESS for a transfer that was refused.
+        checkpoint_result=False,
+    )
+    transport = FakeTransport()
+    engine, evidence = _engine_for(tmp_path, surface, "replay_rejection_beats_assumption", transport)
+
+    result = engine.run(artifact, params={"member_id": "100234"}, confirm_risky=False)
+
+    assert len(transport.notified) == 1
+    assert result.outcome == OutcomeType.BUSINESS_OUTCOME
+    assert "Source share is HOLD" in result.detail
+
+    events = [
+        json.loads(line)
+        for line in (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert not [e for e in events if e["event_type"] == "step_completed_during_escalation"]
+
+
+def test_an_application_error_page_is_reported_in_those_words(tmp_path):
+    # Still a hard failure - but named, rather than surfacing as whichever locator
+    # timed out first on a page the run never expected to be looking at.
+    artifact = _meridian_artifact()
+    surface = _MeridianPageSurface("APPLICATION ERROR An unexpected error occurred. Reference: ERR-3A0AEC77")
+    engine, _ = _engine_for(tmp_path, surface, "replay_application_error")
+
+    result = engine.run(artifact, params={"member_id": "100234"})
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
+    assert "application error" in result.detail.lower()
+
+
+class _MaintenanceThenSignedOutSurface(_MeridianPageSurface):
+    """Models the live A2 shape: an interstitial appears, its Continue link is clicked
+    (dismissing it), and the host comes back SIGNED OUT - so the page that follows shows
+    no error at all and every later step fails against it."""
+
+    def __init__(self, **kwargs):
+        super().__init__("SCHEDULED MAINTENANCE IN PROGRESS The host is temporarily unavailable", **kwargs)
+        self.dismissed = False
+
+    def act(self, action, locator, target, text):
+        # The recovery click is the one that clears the interstitial.
+        if not self.dismissed and action == ActionType.CLICK:
+            self.dismissed = True
+            self.page_text = "OPERATOR SIGN ON Operator ID: Password: Branch:"
+            return None
+        if self.dismissed:
+            raise TimeoutError("element not found: the session was lost with the interstitial")
+        return super().act(action, locator, target, text)
+
+
+def test_a_dismissed_interstitial_that_cost_the_session_reports_recoverable(tmp_path):
+    # A2, observed live: the maintenance interstitial WAS matched and its Continue link
+    # WAS clicked - classification and recovery both worked. But dismissing it returned
+    # the host to a signed-out page, and replay carried on at the step it was on rather
+    # than the sign-on it had lost. Reporting that as hard_failure blames the automation
+    # for a transient host condition it recognised and handled correctly; the caller
+    # needs to be told to re-invoke instead.
+    artifact = _meridian_artifact()
+    surface = _MaintenanceThenSignedOutSurface(checkpoint_result=False)
+    engine, _ = _engine_for(tmp_path, surface, "replay_interstitial_lost_session")
+
+    result = engine.run(artifact, params={"member_id": "103001"})
+
+    assert result.outcome == OutcomeType.RECOVERABLE
+    assert "re-invoke" in result.detail.lower()
+
+
+def test_outputs_survive_a_failed_run(tmp_path):
+    # A4: a run that read three values and then died still knows those three values.
+    # Dropping them made a partial answer indistinguishable from no answer.
+    artifact = _meridian_artifact()
+    artifact.steps.append(
+        Step(
+            action=ActionType.EXTRACT,
+            locator=Locator(strategy=LocatorStrategy.CSS, value={"css": "td.balance"}),
+            extract_as="balance",
+        )
+    )
+    # Succeeds through the extract, then the final success checkpoint never passes and
+    # no outcome pattern explains it.
+    surface = _MeridianPageSurface("MEMBER RECORD nothing unusual here", checkpoint_result=False)
+    engine, _ = _engine_for(tmp_path, surface, "replay_outputs_on_failure")
+
+    result = engine.run(artifact, params={"member_id": "103001"})
+
+    assert result.outcome == OutcomeType.HARD_FAILURE
+    assert result.outputs.get("balance") == "CONF-000123"

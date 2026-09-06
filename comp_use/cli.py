@@ -501,7 +501,9 @@ def run_discover(
             # hand-authored from watching real business/recoverable outcomes, not
             # something the agent infers from a single successful trace. Without this,
             # every re-discovery silently drops any hand-authored patterns from the
-            # previous version, since replay always loads the latest version.
+            # previous version, since replay always loads the latest version. Only
+            # capability-specific patterns live here; the host-wide taxonomy is resolved
+            # live at replay time, so it is never carried forward and never goes stale.
             if artifact.version > 1:
                 try:
                     prev_artifact = load_artifact(capability_name, settings.artifacts_dir, version=artifact.version - 1)

@@ -29,12 +29,76 @@ def _meridian_patterns() -> list[OutcomePattern]:
         ),
         OutcomePattern(
             outcome=OutcomeType.BUSINESS_OUTCOME,
-            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="SUPERVISOR OVERRIDE REQUIRED"),
+            checkpoint=Checkpoint(
+                type=CheckpointType.TEXT_PRESENT, text="No member records matched your search"
+            ),
+            detail="No member matched that search term.",
+            max_retries=0,
+        ),
+        # Anchored on the denial page's SENTENCE, never on its "SUPERVISOR OVERRIDE
+        # REQUIRED" banner: checkpoint matching is a substring test over page content,
+        # and the legitimate Place Account Hold FORM carries that same banner as a
+        # "RESTRICTED FUNCTION" warning label. Anchoring on the banner therefore matched
+        # every Place Hold replay the moment it reached the form - reporting "not
+        # authorized" even signed on as super1, who is authorized, and bailing out
+        # before the flow ran at all. The sentence below appears only on the real 403.
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(
+                type=CheckpointType.TEXT_PRESENT, text="is not authorized to perform this function"
+            ),
             detail=(
                 "The signed-on operator is not authorized for this action and a "
                 "supervisor override is required (natural permission denial, or the "
                 "injected permission error - same page)."
             ),
+            max_retries=0,
+        ),
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(
+                type=CheckpointType.TEXT_PRESENT, text="Invalid operator ID or password"
+            ),
+            detail="Sign-on was rejected: invalid operator ID or password.",
+            max_retries=0,
+        ),
+        # MERIDIAN reports a refused submission with one <font class="err"> banner and a
+        # <ul> of the rules that actually failed. The banner names only the category; the
+        # list is the half a caller can act on, hence detail_locator on both entries.
+        # Two banners, two flows, same shape:
+        #   transaction-level (Funds Transfer, Place Hold) -> "could not be validated"
+        #   field-level       (Update Member Information)  -> "Please correct the following"
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(
+                type=CheckpointType.TEXT_PRESENT, text="The transaction could not be validated"
+            ),
+            detail="MERIDIAN rejected the transaction:",
+            detail_locator=Locator(strategy=LocatorStrategy.CSS, value={"css": "font.err + ul"}),
+            max_retries=0,
+        ),
+        # The natural per-field validation the brief names ("invalid email/phone on
+        # update"). Without this the run walked every step, failed its success
+        # checkpoint, and reported a bare hard_failure - never mentioning that the host
+        # had said, in as many words, "E-mail address is not in a valid format."
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(
+                type=CheckpointType.TEXT_PRESENT, text="Please correct the following"
+            ),
+            detail="MERIDIAN rejected the submitted values:",
+            detail_locator=Locator(strategy=LocatorStrategy.CSS, value={"css": "font.err + ul"}),
+            max_retries=0,
+        ),
+        # Reached via ?inject=validation, and by a submission the host cannot parse at
+        # all. NOT the natural field-validation page - that one is "Please correct the
+        # following" above. (An earlier probe conflated the two by posting a wrongly
+        # named token field, which the host rejects generically; the browser flow never
+        # produces this page for a merely invalid e-mail.)
+        OutcomePattern(
+            outcome=OutcomeType.BUSINESS_OUTCOME,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="TRANSACTION REJECTED"),
+            detail="The host rejected the transaction as entered (injected validation fault, or a submission it could not accept).",
             max_retries=0,
         ),
         OutcomePattern(
@@ -59,6 +123,16 @@ def _meridian_patterns() -> list[OutcomePattern]:
                 "automatic recovery attempted, rather than misclassified as a hard "
                 "failure. See EXT_TASK_FIXES.md #9.5 for the full architectural gap."
             ),
+            max_retries=0,
+        ),
+        # Genuinely a hard failure - nothing to retry, and no human handoff fixes it -
+        # but recognised, so it reports as the host's own application error (with its
+        # ERR-... reference visible in the screenshot) instead of as whichever locator
+        # happened to time out first on an error page the run never expected to see.
+        OutcomePattern(
+            outcome=OutcomeType.HARD_FAILURE,
+            checkpoint=Checkpoint(type=CheckpointType.TEXT_PRESENT, text="APPLICATION ERROR"),
+            detail="MERIDIAN returned an application error (HTTP 500) and could not process the request.",
             max_retries=0,
         ),
     ]

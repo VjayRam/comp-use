@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type CapabilitySummary, type RunSummary, type VersionSummary } from "../api";
-import { RunPanel } from "../components/RunPanel";
+import { RunPanel, deriveUsage, type RunUsage } from "../components/RunPanel";
 import type { Page } from "../components/Nav";
 
 function statusColor(status: string): string {
@@ -24,13 +24,35 @@ function VersionManager({
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // Keyed by created_from_run_id - each version was produced by exactly one
+  // discovery run, so its LLM usage is that run's own llm_usage/llm_usage_summary
+  // events, re-derived with the same helper RunPanel uses rather than tracked
+  // separately. A version with no created_from_run_id (shouldn't happen in
+  // practice) or a run whose events fetch fails just shows no usage badge.
+  const [usageByRunId, setUsageByRunId] = useState<Record<string, RunUsage | null>>({});
 
   async function reload() {
+    let list: VersionSummary[];
     try {
-      setVersions(await api.listVersions(capabilityName));
+      list = await api.listVersions(capabilityName);
     } catch {
       setVersions([]);
+      return;
     }
+    setVersions(list);
+    const entries = await Promise.all(
+      list
+        .filter((v) => v.created_from_run_id)
+        .map(async (v) => {
+          const runId = v.created_from_run_id as string;
+          try {
+            return [runId, deriveUsage(await api.getRunEvents(runId))] as const;
+          } catch {
+            return [runId, null] as const;
+          }
+        }),
+    );
+    setUsageByRunId(Object.fromEntries(entries));
   }
 
   useEffect(() => {
@@ -79,6 +101,13 @@ function VersionManager({
             <span className="mono">v{v.version}</span>
             <span className={`status-pill status-${v.status}`}>{v.status}</span>
             {v.is_default && <span className="status-pill status-default">default</span>}
+            {v.created_from_run_id && usageByRunId[v.created_from_run_id] && (
+              <span className="usage-badge muted small" title="LLM tool calls and token usage for the discovery run that created this version">
+                {usageByRunId[v.created_from_run_id]!.toolCalls} call
+                {usageByRunId[v.created_from_run_id]!.toolCalls === 1 ? "" : "s"} ·{" "}
+                {usageByRunId[v.created_from_run_id]!.totalTokens} tokens
+              </span>
+            )}
             <span className="version-actions">
               {v.status === "draft" && (
                 <>
