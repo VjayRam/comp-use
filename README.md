@@ -839,6 +839,83 @@ ADAPTATION_WRITEUP.md   MERIDIAN CORE adaptation write-up (what changed, why, wh
 CODEMAP.md / ENHANCEMENTS.md / IMPACTS.md   full engineering log for the adaptation
 ```
 
+## System stats
+
+Measured on this machine (Docker Desktop, Windows 11, 16 GB RAM) against the live
+MERIDIAN target. Memory and CPU come from the sandbox container's own cgroup v2
+counters, sampled 5x/sec from inside the container; run timings and token counts
+come from the runs and evidence already stored in Postgres.
+
+### What a run costs
+
+| | discovery | replay |
+|---|---|---|
+| runs measured | 47 | 74 |
+| wall time — median | **100 s** | **7 s** |
+| wall time — mean | 117 s | 17 s |
+| wall time — min / max | 12 s / 561 s | 2 s / 159 s |
+
+Discovery time is dominated by waiting on the LLM, not by driving the browser, so
+it tracks the provider's latency more than the workflow's length. The 561 s outlier
+is a run that hit provider timeouts and retried; the 159 s replay is one that paused
+for a human takeover.
+
+### LLM usage per discovery run
+
+Replay never calls an LLM — it re-executes a recorded artifact — so these are
+discovery-only. 37 runs with complete usage records:
+
+| | min | median | mean | max |
+|---|---|---|---|---|
+| tool calls | 5 | **13** | 13 | 23 |
+| total tokens | 15,815 | **70,898** | 69,860 | 122,737 |
+
+One tool call is one decide-next-action turn, so a typical capability is recorded
+in about 13 model decisions. Token cost scales with the number of steps and with
+how much page structure each decision has to read.
+
+### Sandbox container — memory and CPU
+
+One ephemeral container per run (`docker run --rm`), running headed Chromium under
+Xvfb with a noVNC view attached.
+
+| workload | anon (process) max | page cache max | **peak (kernel high-water mark)** |
+|---|---|---|---|
+| replay (~5–7 s) | 359 MiB | 40 MiB | **428 MiB** |
+| discovery (104 s, clean run) | 354 MiB | 36 MiB | **428 MiB** |
+| discovery (9 m 21 s, with retries) | — | — | **1126 MiB** |
+
+Peak tracks how long and how hard a run works, not which kind of run it is: a short
+discovery costs the same as a replay, while a long one reloading pages through
+retries reaches ~1.1 GiB. Every container starts at ~20 MiB and climbs as Chromium
+warms. CPU is spiky and bursts across cores — 380–1070 % at peak (Chromium startup
+and page render), 18–133 % on average.
+
+**Budget roughly 450 MiB per concurrent run, 1.2 GiB worst case.** `comp_use/sandbox.py`
+sets `--shm-size 1g` but no `--memory` cap, so nothing bounds a runaway run today.
+
+Where it goes, per process (RSS overlaps between processes, so these sum to more
+than the cgroup total):
+
+| component | RSS mean | CPU mean |
+|---|---|---|
+| Chromium (all processes) | 874 MB | 39 % |
+| XFCE desktop (session, panel, wm, desktop) | 187 MB | 37 % |
+| Xvfb | 100 MB | 14 % |
+| x11vnc + websockify + socat | 34 MB | 5 % |
+| supervisord | 26 MB | 5 % |
+
+The desktop environment around the browser costs about as much CPU as the browser
+itself, and it exists only to make the live view look like a desktop.
+
+### Storage
+
+| | |
+|---|---|
+| sandbox image | 3.59 GB total, of which **128 kB is unique** — the rest is layers shared with images already present |
+| per-run writable layer | 12 kB at start → **4.8 MB** (replay), **9.1 MB** (9-minute discovery) |
+| containers left behind | **none** — `--rm` reclaims each one, so repeated runs do not grow disk |
+
 ## Contact
 
 - Email: vijayram.enag2002@gmail.com

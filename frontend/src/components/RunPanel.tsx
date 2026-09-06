@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type RunDetail, type RunEvent } from "../api";
+import { AgentActivity } from "@/components/agents/agent-activity";
+import { eventToActivity } from "@/lib/runActivity";
+import { formatAbsolute, formatElapsed, formatRelative } from "@/lib/time";
 import { BrowserFeedFrame } from "./BrowserFeedFrame";
 
 const ACTIVE_STATUSES = new Set(["running", "escalated"]);
@@ -38,6 +41,11 @@ export function deriveUsage(events: RunEvent[]): RunUsage | null {
   return seen ? { toolCalls, totalTokens } : null;
 }
 
+/** Whether a result has anything beyond its outcome line worth expanding. */
+function hasResultBody(result: { outputs: Record<string, unknown>; detail: string }): boolean {
+  return Boolean(result.detail) || Object.keys(result.outputs ?? {}).length > 0;
+}
+
 function statusColor(status: string): string {
   if (status === "done") return "dot-green";
   if (status === "error") return "dot-red";
@@ -51,113 +59,6 @@ function statusColor(status: string): string {
 // backend already masks replay_step's value server-side, since that's the
 // caller's real data; a discovery decision's value is whatever the LLM itself
 // chose to type and isn't masked at the source, so this is the only place it is).
-const SENSITIVE_PARAM_HINTS = ["password", "passwd", "pwd", "secret", "token", "apikey", "api_key"];
-
-function isSensitiveParamName(name: string | null | undefined): boolean {
-  if (!name) return false;
-  const lowered = name.toLowerCase();
-  return SENSITIVE_PARAM_HINTS.some((h) => lowered.includes(h));
-}
-
-interface EventLocator {
-  strategy?: string;
-  value?: Record<string, unknown>;
-}
-
-function describeLocator(locator: EventLocator | null | undefined): string | null {
-  if (!locator || !locator.value) return null;
-  const { strategy, value } = locator;
-  if (strategy === "role") {
-    const role = value.role as string | undefined;
-    const name = value.name as string | undefined;
-    return name ? `${role} "${name}"` : (role ?? null);
-  }
-  if (strategy === "text") return value.text ? `text "${value.text}"` : null;
-  if (strategy === "css") return (value.css as string | undefined) ?? null;
-  return JSON.stringify(value);
-}
-
-function eventToLine(e: RunEvent): string {
-  switch (e.event_type) {
-    case "decision": {
-      const d = e.data as {
-        action?: string;
-        text?: string | null;
-        target?: string | null;
-        locator?: EventLocator | null;
-        value_source?: { param_name?: string } | null;
-      };
-      const parts = [`decision: ${d.action ?? "?"}`];
-      const loc = describeLocator(d.locator);
-      if (loc) parts.push(`on ${loc}`);
-      if (d.target) parts.push(`-> ${d.target}`);
-      if (d.text != null && d.text !== "") {
-        parts.push(`= "${isSensitiveParamName(d.value_source?.param_name) ? "••••••" : d.text}"`);
-      }
-      return parts.join(" ");
-    }
-    case "skipped_decision":
-      return `skipped: ${(e.data as { reason?: string }).reason ?? ""}`;
-    case "loop_detected":
-      return `LOOP DETECTED: ${JSON.stringify(e.data)}`;
-    case "possible_incomplete_capability": {
-      const reason = (e.data as { reason?: string }).reason;
-      if (reason === "no_extract_performed") {
-        return "WARNING: this run never extracted anything - the goal's result may not be captured. Review before approving.";
-      }
-      if (reason === "combobox_seen_but_never_selected") {
-        return "WARNING: a dropdown was visible but never selected - a field may be left at its default. Review before approving.";
-      }
-      return `WARNING: possibly incomplete capability (${reason ?? "unknown reason"})`;
-    }
-    case "sandbox_started":
-      return `sandbox started`;
-    case "llm_usage": {
-      const d = e.data as {
-        call_number?: number;
-        prompt_tokens?: number | null;
-        completion_tokens?: number | null;
-        total_tokens?: number | null;
-        running_total_tokens?: number;
-      };
-      return (
-        `LLM call #${d.call_number ?? "?"}: ${d.prompt_tokens ?? "?"} in / ` +
-        `${d.completion_tokens ?? "?"} out (${d.total_tokens ?? "?"} tokens) ` +
-        `— running total ${d.running_total_tokens ?? "?"}`
-      );
-    }
-    case "llm_usage_summary": {
-      const d = e.data as {
-        tool_call_count?: number;
-        prompt_tokens?: number;
-        completion_tokens?: number;
-        total_tokens?: number;
-      };
-      return (
-        `LLM usage total: ${d.tool_call_count ?? "?"} tool call(s), ` +
-        `${d.prompt_tokens ?? 0} in / ${d.completion_tokens ?? 0} out ` +
-        `(${d.total_tokens ?? 0} tokens)`
-      );
-    }
-    case "replay_step": {
-      const d = e.data as {
-        index?: number;
-        action?: string;
-        locator?: EventLocator | null;
-        target?: string | null;
-        value?: string | null;
-      };
-      const parts = [`step ${d.index} -> ${d.action}`];
-      const loc = describeLocator(d.locator);
-      if (loc) parts.push(`on ${loc}`);
-      if (d.target) parts.push(`-> ${d.target}`);
-      if (d.value != null && d.value !== "") parts.push(`= "${d.value}"`);
-      return parts.join(" ");
-    }
-    default:
-      return `${e.event_type}: ${JSON.stringify(e.data).slice(0, 120)}`;
-  }
-}
 
 export function RunPanel({
   runId,
@@ -181,6 +82,9 @@ export function RunPanel({
   // clicking "Confirm take control" just made the button disappear with nothing
   // else visible until the poll eventually caught up, reading as broken/unresponsive.
   const [takeoverRequested, setTakeoverRequested] = useState(false);
+  // Collapsed by default: the outcome is the answer, and the raw outputs behind it
+  // can run to hundreds of lines that push the event log off the screen.
+  const [resultExpanded, setResultExpanded] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -265,6 +169,16 @@ export function RunPanel({
         <span className="mono">{runId}</span>
         <span className={`dot ${statusColor(detail.status)}`} />
         <span>{detail.status}</span>
+        {formatRelative(detail.started_at) && (
+          <span className="muted small" title={formatAbsolute(detail.started_at) ?? undefined}>
+            started {formatRelative(detail.started_at)}
+          </span>
+        )}
+        {formatElapsed(detail.started_at, detail.finished_at) && (
+          <span className="muted small" title="How long this run took">
+            took {formatElapsed(detail.started_at, detail.finished_at)}
+          </span>
+        )}
         {usage && (
           <span className="usage-badge muted small" title="LLM tool calls and token usage for this run">
             {usage.toolCalls} call{usage.toolCalls === 1 ? "" : "s"} · {usage.totalTokens} tokens
@@ -333,10 +247,25 @@ export function RunPanel({
 
       {detail.result && (
         <div className="result-box">
-          <strong>outcome:</strong> {detail.result.outcome}
-          {detail.result.detail && <div className="muted">{detail.result.detail}</div>}
-          {Object.keys(detail.result.outputs ?? {}).length > 0 && (
-            <pre>{JSON.stringify(detail.result.outputs, null, 2)}</pre>
+          <div className="result-head">
+            <span>
+              <strong>outcome:</strong> {detail.result.outcome}
+            </span>
+            {/* Only offered when there is something to expand - a run whose result is
+                just its outcome would otherwise show a toggle that reveals nothing. */}
+            {hasResultBody(detail.result) && (
+              <button className="link-button" onClick={() => setResultExpanded((v) => !v)}>
+                {resultExpanded ? "Hide full result" : "View full result"}
+              </button>
+            )}
+          </div>
+          {resultExpanded && (
+            <>
+              {detail.result.detail && <div className="muted">{detail.result.detail}</div>}
+              {Object.keys(detail.result.outputs ?? {}).length > 0 && (
+                <pre>{JSON.stringify(detail.result.outputs, null, 2)}</pre>
+              )}
+            </>
           )}
         </div>
       )}
@@ -350,12 +279,22 @@ export function RunPanel({
 
       <div className={showFeed ? "split" : "split split-full"}>
         <div className="log-panel">
-          {events.length === 0 && <p className="muted">waiting for events…</p>}
-          {events.map((e, i) => (
-            <div key={i} className="log-line">
-              {eventToLine(e)}
-            </div>
-          ))}
+          {events.length === 0 ? (
+            <p className="muted">waiting for events…</p>
+          ) : (
+            <AgentActivity
+              items={events.map(eventToActivity)}
+              status={detail.status === "running" ? "working" : "complete"}
+              // A finished run's log is the thing a reviewer came to read, so it
+              // stays open; only a live run collapses itself on completion.
+              collapseOnComplete={false}
+              defaultOpen
+              activeLabel={detail.kind === "discover" ? "Recording…" : "Replaying…"}
+              summary={`${events.length} event${events.length === 1 ? "" : "s"}`}
+              maxHeight={2000}
+              contentClassName="pr-2"
+            />
+          )}
         </div>
         {showFeed && (
           <div className="feed-panel">

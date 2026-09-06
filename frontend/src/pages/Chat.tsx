@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api, type ChatMessage } from "../api";
 import { RunPanel, type RunUsage } from "../components/RunPanel";
 
@@ -33,6 +33,18 @@ const SUGGESTED_PROMPTS: Record<string, string[]> = {
 
 const ADD_NEW_VALUE = "__add_new__";
 
+/** Drops the backend's "Working against <url>." lead-in from its first reply.
+ *
+ *  The status line above the conversation already says which site is in scope,
+ *  so the bubble is left with the part that asks the user something. Anything
+ *  that doesn't start with the expected preamble is shown verbatim - a changed
+ *  reply should read oddly, never come back blank. */
+function stripTargetPreamble(content: string, baseUrl: string | null): string {
+  if (!baseUrl) return content;
+  const preamble = `Working against ${baseUrl}.`;
+  return content.startsWith(preamble) ? content.slice(preamble.length).trim() || content : content;
+}
+
 export function Chat() {
   const [apps, setApps] = useState(KNOWN_APPS);
   const [selectedBaseUrl, setSelectedBaseUrl] = useState<string | null>(null);
@@ -49,6 +61,9 @@ export function Chat() {
   // that one RunPanel is wired to report it (see the .map below), so this always
   // tracks "the run currently in progress," not a stale earlier one.
   const [liveUsage, setLiveUsage] = useState<RunUsage | null>(null);
+  // Held across an app switch so a duplicated change event cannot start a second
+  // session; released once the opening message has been sent.
+  const switchingApp = useRef(false);
 
   async function ensureSession(): Promise<string> {
     if (sessionId) return sessionId;
@@ -92,14 +107,26 @@ export function Chat() {
     // minted session id is passed straight into sendRaw rather than through
     // setSessionId+ensureSession, since the old sessionId is still closed over
     // in this call and setSessionId(null) would not be visible until re-render.
+
+    // Re-entrancy guard: a select that fires change twice (some automation and
+    // assistive tooling does) would otherwise mint two sessions and send the
+    // opening message down both, leaving a second conversation running unseen.
+    // A ref, not `busy` - state set inside sendRaw lands too late to stop a
+    // second call made in the same tick.
+    if (switchingApp.current) return;
+    switchingApp.current = true;
     setAddingNewApp(false);
     setMessages([]);
     setHasSentTaskMessage(false);
     setSelectedBaseUrl(baseUrl);
     setInput("");
-    const { session_id } = await api.startChatSession();
-    setSessionId(session_id);
-    await sendRaw(baseUrl, session_id);
+    try {
+      const { session_id } = await api.startChatSession();
+      setSessionId(session_id);
+      await sendRaw(baseUrl, session_id);
+    } finally {
+      switchingApp.current = false;
+    }
   }
 
   function handleDropdownChange(value: string) {
@@ -119,6 +146,11 @@ export function Chat() {
   }
 
   const suggestions = selectedBaseUrl ? SUGGESTED_PROMPTS[selectedBaseUrl] : undefined;
+  // True when the first message is the URL selectApp auto-sent, which is the only
+  // case where the two opening messages are the handshake rather than something
+  // the user actually said.
+  const openingHandshake =
+    messages.length > 0 && messages[0].role === "user" && messages[0].content === selectedBaseUrl;
   // Only the most recent message carrying a run_id is "the run currently in
   // progress" - that's the one instance of RunPanel wired to update the top bar,
   // so switching to an older run_id's own detail (if the user scrolls up) never
@@ -134,6 +166,16 @@ export function Chat() {
     <div className="chat-page">
       <div className="chat-app-picker">
         <label htmlFor="chat-app-select">Target app</label>
+        {/* Switching apps is destructive to the conversation, and the dropdown
+            gives no hint of that until it has already happened. Focusable, not
+            hover-only, so the warning is reachable without a pointer. */}
+        <span className="info-hint" tabIndex={0} role="note">
+          <span aria-hidden="true">i</span>
+          <span className="info-hint-bubble">
+            Changing this mid-session clears the conversation and starts a new session. Any runs already
+            started stay visible on the Dashboard.
+          </span>
+        </span>
         <select
           id="chat-app-select"
           value={selectedBaseUrl ?? ""}
@@ -176,14 +218,28 @@ export function Chat() {
             {selectedBaseUrl ? "Tell me what you'd like to do." : "Pick a target app above to get started."}
           </p>
         )}
-        {messages.map((m, i) => (
-          <div key={i} className={`chat-bubble chat-${m.role}`}>
-            <p>{m.content}</p>
-            {m.run_id && (
-              <RunPanel runId={m.run_id} onUsageUpdate={i === latestRunMessageIndex ? setLiveUsage : undefined} />
-            )}
-          </div>
-        ))}
+        {messages.map((m, i) => {
+          // The opening handshake is plumbing, not conversation: the user never
+          // typed the URL, and the reply's preamble only restates the app they
+          // just picked. Both still travel to the backend unchanged - only their
+          // presentation is folded into one status line plus the actual question.
+          if (openingHandshake && i === 0) {
+            return (
+              <div key={i} className="chat-target-notice">
+                Target site set to <span className="mono">{m.content}</span>
+              </div>
+            );
+          }
+          const content = openingHandshake && i === 1 ? stripTargetPreamble(m.content, selectedBaseUrl) : m.content;
+          return (
+            <div key={i} className={`chat-bubble chat-${m.role}`}>
+              <p>{content}</p>
+              {m.run_id && (
+                <RunPanel runId={m.run_id} onUsageUpdate={i === latestRunMessageIndex ? setLiveUsage : undefined} />
+              )}
+            </div>
+          );
+        })}
         {error && <p className="error">{error}</p>}
       </div>
 

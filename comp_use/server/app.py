@@ -24,6 +24,7 @@ from comp_use.cli import (
     retire_artifact,
     run_discover,
     run_replay,
+    save_artifact,
     set_default_version,
 )
 from comp_use.chat.agent import ChatAgent
@@ -89,6 +90,20 @@ class DiscoverRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     note: str = ""
+
+
+class ApproveRequest(BaseModel):
+    """Optional body for approve: reviewer-corrected default values.
+
+    A discovery run records whatever literal it happened to type as each
+    parameter's `example`, which is the value a caller sees pre-filled. Reviewing
+    a draft is exactly when a wrong one gets noticed, so the correction and the
+    approval are one operation - a separate edit call could succeed while the
+    approve that followed it failed, leaving a draft carrying values nobody
+    agreed to.
+    """
+
+    input_examples: dict[str, str] | None = None
 
 
 class ChatMessageRequest(BaseModel):
@@ -186,6 +201,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         versions = _capability_versions(name)
         if not versions:
             raise HTTPException(status_code=404, detail=f"no capability '{name}'")
+        created_at_by_version: dict[int, str] = {}
+        if pg_store.db_enabled():
+            for row in pg_store.list_artifact_versions(name):
+                if row.get("created_at") is not None:
+                    created_at_by_version[row["version"]] = row["created_at"].isoformat()
         out = []
         for v in versions:
             try:
@@ -201,8 +221,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out.append({
                 "version": v, "status": artifact.status,
                 "created_from_run_id": artifact.created_from_run_id, "is_default": artifact.is_default,
+                # When this version was recorded. Postgres stamps every artifact row;
+                # the on-disk fallback has no equivalent, so it reports None rather
+                # than inventing a time from the file's mtime (which changes whenever
+                # the version is approved or retired, not when it was discovered).
+                "created_at": created_at_by_version.get(v),
             })
         return out
+
+    @app.get("/capabilities/{name}/versions/{version}")
+    def get_capability_version(name: str, version: int):
+        """The full artifact for one version, whatever its status.
+
+        `GET /capabilities/{name}` deliberately resolves to the latest APPROVED
+        version, which is right for callers but leaves a draft unreadable: the
+        dashboard could show that a draft existed but not what it had captured -
+        its goal, its inputs, or the defaults recorded for them - which is
+        exactly what a reviewer needs to see before approving it.
+        """
+        _validate_capability_name(name)
+        try:
+            artifact = load_artifact(name, settings.artifacts_dir, version=version)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return artifact.model_dump(mode="json")
 
     @app.post("/capabilities/{name}/invoke", status_code=202)
     def invoke_capability(name: str, body: InvokeRequest):
@@ -285,8 +327,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "capability_name": r.capability_name,
                 "status": r.status,
                 "novnc_url": r.novnc_url,
-                "started_at": None,
-                "finished_at": None,
+                "started_at": r.started_at,
+                "finished_at": r.finished_at,
             }
             for r in records
         ]
@@ -361,6 +403,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "discover_result": row["result"] if is_discover else None,
                         "error": None,
                         "novnc_url": row["novnc_url"],
+                        # .get(): a timestamp is presentation, so a row without one
+                        # (an older schema, a partial read) must degrade to "no time
+                        # shown" rather than 500 the whole run view.
+                        "started_at": row.get("started_at").isoformat() if row.get("started_at") else None,
+                        "finished_at": row.get("finished_at").isoformat() if row.get("finished_at") else None,
                     }
             raise HTTPException(status_code=404, detail=f"unknown run_id '{run_id}'")
         escalation = None
@@ -387,6 +434,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "discover_result": record.discover_result,
             "error": record.error,
             "novnc_url": record.novnc_url,
+            "started_at": record.started_at,
+            "finished_at": record.finished_at,
         }
 
     @app.post("/runs/{run_id}/takeover", status_code=202)
@@ -456,15 +505,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"run_id": run_id, "deleted": True}
 
     @app.post("/capabilities/{name}/versions/{version}/approve")
-    def approve(name: str, version: int):
+    def approve(name: str, version: int, body: ApproveRequest | None = None):
         _validate_capability_name(name)
         try:
+            if body is not None and body.input_examples:
+                _apply_input_examples(name, version, body.input_examples)
             artifact = approve_artifact(name, version, settings.artifacts_dir)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         return artifact.model_dump(mode="json")
+
+    def _apply_input_examples(name: str, version: int, examples: dict[str, str]) -> None:
+        """Write reviewer-corrected defaults onto a version's input_schema.
+
+        Saved before the status flip so the two land together: a caller can never
+        see an approved capability whose defaults are still the un-reviewed ones.
+        An unknown param name is rejected rather than ignored - silently dropping
+        a corrected value is how a reviewer ends up believing they fixed
+        something they did not.
+        """
+        artifact = load_artifact(name, settings.artifacts_dir, version=version)
+        known = {p.name for p in artifact.input_schema}
+        unknown = sorted(set(examples) - known)
+        if unknown:
+            raise ValueError(
+                f"{name} v{version} has no input param(s) named {', '.join(unknown)} - "
+                f"it accepts: {', '.join(sorted(known))}"
+            )
+        for param in artifact.input_schema:
+            if param.name in examples:
+                param.example = examples[param.name]
+        save_artifact(artifact, settings.artifacts_dir)
 
     @app.post("/capabilities/{name}/versions/{version}/reject")
     def reject(name: str, version: int):

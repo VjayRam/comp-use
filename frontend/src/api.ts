@@ -13,6 +13,25 @@ export interface CapabilitySummary {
   has_pending_draft: boolean;
 }
 
+export interface InputParam {
+  name: string;
+  type: string;
+  required: boolean;
+  example: unknown;
+}
+
+/** One version's full artifact, whatever its status - the shape a draft is
+ *  reviewed through before it is approved. */
+export interface CapabilityVersion {
+  capability_name: string;
+  version: number;
+  status: "draft" | "approved" | "rejected" | "retired";
+  description: string | null;
+  input_schema: InputParam[];
+  output_schema: { name: string; type: string }[];
+  created_from_run_id: string | null;
+}
+
 export interface RunSummary {
   run_id: string;
   kind: string;
@@ -32,6 +51,8 @@ export interface RunDetail {
   discover_result: { succeeded: boolean; artifact_version: number | null } | null;
   error: string | null;
   novnc_url: string | null;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 export interface RunEvent {
@@ -41,6 +62,10 @@ export interface RunEvent {
 }
 
 export interface VersionSummary {
+  /** When this version was recorded. Null on the on-disk fallback store, which
+   *  has no equivalent stamp (a file's mtime changes on approve/retire, so it
+   *  would report the wrong moment). */
+  created_at?: string | null;
   version: number;
   status: "draft" | "approved" | "rejected";
   created_from_run_id: string | null;
@@ -78,6 +103,8 @@ async function del<T>(path: string): Promise<T> {
 export const api = {
   listCapabilities: () => get<CapabilitySummary[]>("/capabilities"),
   listVersions: (name: string) => get<VersionSummary[]>(`/capabilities/${name}/versions`),
+  getVersion: (name: string, version: number) =>
+    get<CapabilityVersion>(`/capabilities/${name}/versions/${version}`),
   listRuns: (limit = 50) => get<RunSummary[]>(`/runs?limit=${limit}`),
   getRun: (runId: string) => get<RunDetail>(`/runs/${runId}`),
   getRunEvents: (runId: string) => get<RunEvent[]>(`/runs/${runId}/events`),
@@ -88,8 +115,11 @@ export const api = {
   takeover: (runId: string) =>
     post<{ status: string }>(`/runs/${runId}/takeover`, {}),
   deleteRun: (runId: string) => del<{ run_id: string; deleted: boolean }>(`/runs/${runId}`),
-  approveVersion: (name: string, version: number) =>
-    post<Record<string, unknown>>(`/capabilities/${name}/versions/${version}/approve`, {}),
+  // inputExamples carries reviewer-corrected defaults; the server writes them onto
+  // the version before flipping its status, so the two can't land separately.
+  approveVersion: (name: string, version: number, inputExamples?: Record<string, string>) =>
+    post<Record<string, unknown>>(`/capabilities/${name}/versions/${version}/approve`,
+      inputExamples ? { input_examples: inputExamples } : {}),
   rejectVersion: (name: string, version: number) =>
     post<Record<string, unknown>>(`/capabilities/${name}/versions/${version}/reject`, {}),
   retireVersion: (name: string, version: number) =>

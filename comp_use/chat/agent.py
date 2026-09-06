@@ -42,13 +42,31 @@ _PROPOSE_DISCOVERY_TOOL = {
     "type": "function",
     "function": {
         "name": "propose_discovery",
-        "description": "Propose recording a NEW capability because nothing in the catalog covers the user's request.",
+        "description": (
+            "Propose a discovery run to record a capability. Use it for a NEW capability when "
+            "nothing in the catalog covers the request, and ALSO to re-record an existing one "
+            "when the user explicitly asks for that (set replaces_existing=true and reuse the "
+            "catalog name exactly)."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "capability_name": {"type": "string", "description": "A new snake_case name for this capability."},
+                "capability_name": {
+                    "type": "string",
+                    "description": (
+                        "A new snake_case name, or - when replaces_existing is true - the exact "
+                        "name of the catalog capability being re-recorded."
+                    ),
+                },
                 "goal": {"type": "string", "description": "The natural-language goal to give the discovery agent."},
                 "param_hints": {"type": "array", "items": {"type": "string"}},
+                "replaces_existing": {
+                    "type": "boolean",
+                    "description": (
+                        "True only when the user explicitly asked to re-record, re-discover or "
+                        "rebuild a capability that already exists in the catalog."
+                    ),
+                },
             },
             "required": ["capability_name", "goal"],
         },
@@ -77,7 +95,13 @@ def _system_prompt(session: ChatSession, site_catalog: list[dict]) -> str:
         "If one of these capabilities satisfies the user's request, call propose_invoke with its "
         "name and every param value you can determine from the conversation. If none of them do, "
         "call propose_discovery. If you need more information before you can call either, just "
-        "reply in plain text asking for it."
+        "reply in plain text asking for it.\n\n"
+        "Re-recording: the user can ask for an existing capability to be recorded again - because "
+        "the site changed, the recording is wrong, or they want it to cover more. Call "
+        "propose_discovery with replaces_existing=true and that capability's exact catalog name. "
+        "Only do this when the user asked for it in so many words (re-record, re-discover, "
+        "rebuild, \"it's broken, record it again\"). A user simply rephrasing a request, or one "
+        "run failing, is NOT a request to re-record - propose_invoke, or ask, instead."
     )
 
 
@@ -253,7 +277,8 @@ class ChatAgent:
             return self._propose_invoke(session, site_catalog, args["capability_name"], params)
         if result["name"] == "propose_discovery":
             return self._propose_discovery(
-                session, args["capability_name"], detokenize(args["goal"]), args.get("param_hints")
+                session, site_catalog, args["capability_name"], detokenize(args["goal"]),
+                args.get("param_hints"), bool(args.get("replaces_existing")),
             )
 
         reply = "Sorry, I couldn't figure out how to help with that - could you rephrase?"
@@ -279,13 +304,35 @@ class ChatAgent:
         session.pending_action = PendingAction(kind="invoke", capability_name=capability_name, params=params)
         return ChatTurnResult(reply_text=reply)
 
-    def _propose_discovery(self, session: ChatSession, capability_name: str, goal: str, param_hints: list[str] | None) -> ChatTurnResult:
+    def _propose_discovery(
+        self, session: ChatSession, site_catalog: list[dict], capability_name: str, goal: str,
+        param_hints: list[str] | None, replaces_existing: bool = False,
+    ) -> ChatTurnResult:
         slug = _slugify(capability_name)
-        reply = (
-            f"No existing capability for {session.target_site} covers that. "
-            f"I'll record a new one — `{slug}` — against {session.target_site} with goal: \"{goal}\". "
-            "Proceed? (yes/no)"
-        )
+        # The catalog decides whether this is a re-record, not the model's flag alone:
+        # it can set replaces_existing on a name that doesn't exist (then it's simply a
+        # new capability), or propose a name that collides with an existing one without
+        # setting it (then it IS a re-record, and saying "new" would be a lie - the run
+        # lands as another version of that capability either way).
+        exists = any(c["capability_name"] == slug for c in site_catalog)
+        if exists:
+            reply = (
+                f"`{slug}` already exists for {session.target_site}. I'll record it again with goal: "
+                f"\"{goal}\". That creates a NEW DRAFT version — the approved version stays live and "
+                "keeps serving calls until you review and approve the draft on the dashboard. "
+                "Proceed? (yes/no)"
+            )
+        else:
+            reply = (
+                f"No existing capability for {session.target_site} covers that. "
+                f"I'll record a new one — `{slug}` — against {session.target_site} with goal: \"{goal}\". "
+                "Proceed? (yes/no)"
+            )
+        if replaces_existing and not exists:
+            reply += (
+                f"\n\n(You asked to re-record `{slug}`, but nothing by that name exists here, "
+                "so this would be a first recording.)"
+            )
         session.messages.append({"role": "assistant", "content": reply})
         session.pending_action = PendingAction(kind="discover", capability_name=slug, goal=goal, param_hints=param_hints)
         return ChatTurnResult(reply_text=reply)

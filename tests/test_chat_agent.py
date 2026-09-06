@@ -222,6 +222,54 @@ def test_propose_discovery_passes_through_param_hints():
     assert session.pending_action.param_hints == ["share_id"]
 
 
+def test_re_recording_an_existing_capability_proposes_a_new_draft_version():
+    agent = ChatAgent(FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_discovery",
+         "arguments": {"capability_name": "lookup_member", "goal": "look up a member, now via the name search",
+                       "replaces_existing": True}},
+    ]))
+    session = _session_with_site()
+
+    result = agent.turn(session, "re-record lookup_member, the site changed", _ONE_SITE_CATALOG)
+
+    # The user must be told this lands as a draft and leaves the live version alone -
+    # re-recording is the one chat action aimed at something already working.
+    assert "already exists" in result.reply_text
+    assert "DRAFT" in result.reply_text
+    assert result.to_execute is None
+    assert session.pending_action.kind == "discover"
+    assert session.pending_action.capability_name == "lookup_member"
+
+
+def test_a_name_that_collides_with_the_catalog_is_treated_as_a_re_record():
+    """The catalog decides, not the model's flag: proposing an existing name without
+    replaces_existing still appends a version, so calling it "new" would be wrong."""
+    agent = ChatAgent(FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_discovery",
+         "arguments": {"capability_name": "lookup_member", "goal": "look up a member"}},
+    ]))
+    session = _session_with_site()
+
+    result = agent.turn(session, "record something that looks up members", _ONE_SITE_CATALOG)
+
+    assert "already exists" in result.reply_text
+    assert "I'll record a new one" not in result.reply_text
+
+
+def test_re_record_of_an_unknown_name_says_it_is_a_first_recording():
+    agent = ChatAgent(FakeLLMClient(scripted_chat_turns=[
+        {"type": "tool_call", "name": "propose_discovery",
+         "arguments": {"capability_name": "close_a_share", "goal": "close a share",
+                       "replaces_existing": True}},
+    ]))
+    session = _session_with_site()
+
+    result = agent.turn(session, "re-record close_a_share", _ONE_SITE_CATALOG)
+
+    assert "first recording" in result.reply_text
+    assert session.pending_action.capability_name == "close_a_share"
+
+
 def test_slugify_collapses_non_alphanumerics_and_lowercases():
     from comp_use.chat.agent import _slugify
     assert _slugify("Close a Share!") == "close_a_share"

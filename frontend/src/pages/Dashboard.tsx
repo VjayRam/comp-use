@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type CapabilitySummary, type RunSummary, type VersionSummary } from "../api";
+import { api, type CapabilitySummary, type CapabilityVersion, type RunSummary, type VersionSummary } from "../api";
 import { RunPanel, deriveUsage, type RunUsage } from "../components/RunPanel";
+import { ResizableSidebar } from "../components/ResizableSidebar";
+import { formatAbsolute, formatElapsed, formatRelative } from "@/lib/time";
 import type { Page } from "../components/Nav";
 
 function statusColor(status: string): string {
@@ -13,11 +15,12 @@ function statusColor(status: string): string {
 // ---- Version manager: draft/approve/reject/retire per version, delete whole capability ----
 
 function VersionManager({
-  capabilityName, onChanged, onDeleted,
+  capabilityName, onChanged, onDeleted, onReviewDraft,
 }: {
   capabilityName: string;
   onChanged: () => void;
   onDeleted: () => void;
+  onReviewDraft: (version: number) => void;
 }) {
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [busyVersion, setBusyVersion] = useState<number | null>(null);
@@ -98,9 +101,20 @@ function VersionManager({
       <ul className="version-list">
         {versions.map((v) => (
           <li key={v.version} className="version-row">
-            <span className="mono">v{v.version}</span>
-            <span className={`status-pill status-${v.status}`}>{v.status}</span>
-            {v.is_default && <span className="status-pill status-default">default</span>}
+            {/* Two fixed lines rather than one wrapping row: the usage badge is long
+                enough to push the right-aligned actions onto a line of their own,
+                which left the identity, the badge and the buttons each starting at a
+                different edge. */}
+            <div className="version-head">
+              <span className="mono">v{v.version}</span>
+              <span className={`status-pill status-${v.status}`}>{v.status}</span>
+              {formatRelative(v.created_at) && (
+                <span className="muted small" title={`Recorded ${formatAbsolute(v.created_at)}`}>
+                  {formatRelative(v.created_at)}
+                </span>
+              )}
+              {v.is_default && <span className="status-pill status-default">default</span>}
+            </div>
             {v.created_from_run_id && usageByRunId[v.created_from_run_id] && (
               <span className="usage-badge muted small" title="LLM tool calls and token usage for the discovery run that created this version">
                 {usageByRunId[v.created_from_run_id]!.toolCalls} call
@@ -111,8 +125,11 @@ function VersionManager({
             <span className="version-actions">
               {v.status === "draft" && (
                 <>
-                  <button disabled={busyVersion === v.version} onClick={() => act(v.version, api.approveVersion)}>
-                    Approve
+                  {/* Opens the draft's own review panel rather than approving on the
+                      spot: what it captured, and the defaults it recorded, are the
+                      things worth looking at before making it callable. */}
+                  <button disabled={busyVersion === v.version} onClick={() => onReviewDraft(v.version)}>
+                    Review &amp; approve
                   </button>
                   <button disabled={busyVersion === v.version} onClick={() => act(v.version, api.rejectVersion)}>
                     Reject
@@ -142,7 +159,7 @@ function VersionManager({
       <div className="danger-zone">
         {!confirmingDelete ? (
           <button className="danger-button" onClick={() => setConfirmingDelete(true)}>
-            Delete capability
+            Delete workflow
           </button>
         ) : (
           <div className="confirm-row">
@@ -156,6 +173,176 @@ function VersionManager({
           </div>
         )}
       </div>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+// ---- Draft review: a draft rendered exactly like an approved capability ----
+
+/** A draft used to show as an empty shell - the capability listing carries no
+ *  schema, description or defaults until a version is approved, so the panel had
+ *  nothing to render and a reviewer could not see what discovery had actually
+ *  captured. This fetches the version itself and lays it out identically to the
+ *  invoke form, with two differences: invoking is refused (with the reason), and
+ *  the defaults are editable, because reviewing a draft is exactly when a wrong
+ *  recorded default gets noticed. */
+function DraftReview({
+  capabilityName, version, onApproved, onRejected,
+}: {
+  capabilityName: string;
+  /** null = "whichever version is the pending draft" - a capability with no
+   *  approved version reports no version number at all in the listing, and
+   *  assuming v1 breaks as soon as an earlier version was rejected. */
+  version: number | null;
+  onApproved: () => void;
+  onRejected: () => void;
+}) {
+  const [draft, setDraft] = useState<CapabilityVersion | null>(null);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDraft(null);
+    setError(null);
+    setConfirming(false);
+    (async () => {
+      let target = version;
+      if (target === null) {
+        const versions = await api.listVersions(capabilityName);
+        const drafts = versions.filter((v) => v.status === "draft").map((v) => v.version);
+        if (drafts.length === 0) throw new Error(`${capabilityName} has no draft version`);
+        target = Math.max(...drafts);
+      }
+      return api.getVersion(capabilityName, target);
+    })()
+      .then((v) => {
+        if (cancelled) return;
+        setDraft(v);
+        setValues(
+          Object.fromEntries(v.input_schema.map((p) => [p.name, p.example != null ? String(p.example) : ""])),
+        );
+      })
+      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [capabilityName, version]);
+
+  const original = (name: string) => {
+    const p = draft?.input_schema.find((q) => q.name === name);
+    return p?.example != null ? String(p.example) : "";
+  };
+  const edits = Object.keys(values)
+    .filter((name) => values[name] !== original(name))
+    .map((name) => ({ name, from: original(name), to: values[name] }));
+
+  async function approve(withEdits: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.approveVersion(
+        capabilityName,
+        draft!.version,
+        withEdits ? Object.fromEntries(edits.map((e) => [e.name, e.to])) : undefined,
+      );
+      onApproved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  }
+
+  async function reject() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.rejectVersion(capabilityName, draft!.version);
+      onRejected();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (error && !draft) return <p className="error">{error}</p>;
+  if (!draft) return <p className="muted">Loading draft…</p>;
+
+  return (
+    <div className="invoke-form">
+      <h3>
+        {draft.capability_name} <span className="status-pill status-draft">draft v{draft.version}</span>
+      </h3>
+      {draft.description && (
+        <>
+          <p className="muted small">The goal this was recorded from:</p>
+          <p className="muted draft-goal">{draft.description}</p>
+        </>
+      )}
+
+      {draft.input_schema.length === 0 && <p className="muted small">This workflow takes no inputs.</p>}
+      {draft.input_schema.map((p) => (
+        <label key={p.name} className="field">
+          <span>
+            {p.name}
+            {p.required && <span className="req">*</span>}
+          </span>
+          <input
+            value={values[p.name] ?? ""}
+            onChange={(e) => setValues((v) => ({ ...v, [p.name]: e.target.value }))}
+          />
+        </label>
+      ))}
+
+      {draft.output_schema.length > 0 && (
+        <p className="muted small">
+          Returns: {draft.output_schema.map((o) => o.name).join(", ")}
+        </p>
+      )}
+
+      <button disabled title="A draft can't be invoked — approve it first">
+        Invoke
+      </button>
+      <p className="muted small">Drafts can't be invoked. Approve this version to make it callable.</p>
+
+      {!confirming ? (
+        <div className="version-actions">
+          <button
+            disabled={busy}
+            onClick={() => (edits.length > 0 ? setConfirming(true) : approve(false))}
+          >
+            {busy ? "Approving…" : edits.length > 0 ? `Approve with ${edits.length} change(s)` : "Approve"}
+          </button>
+          <button disabled={busy} onClick={reject}>
+            Reject
+          </button>
+        </div>
+      ) : (
+        <div className="confirm-row confirm-defaults">
+          <span className="muted small">
+            Save these changes to the recorded defaults and approve v{draft.version}?
+          </span>
+          <ul className="default-diff">
+            {edits.map((e) => (
+              <li key={e.name}>
+                <span className="mono">{e.name}</span>: <s>{e.from || "(empty)"}</s> → <b>{e.to || "(empty)"}</b>
+              </li>
+            ))}
+          </ul>
+          <button disabled={busy} onClick={() => approve(true)}>
+            {busy ? "Saving…" : "Save defaults & approve"}
+          </button>
+          <button disabled={busy} onClick={() => setConfirming(false)}>
+            Cancel
+          </button>
+        </div>
+      )}
       {error && <p className="error">{error}</p>}
     </div>
   );
@@ -238,9 +425,16 @@ function InvokeForm({ capability, onInvoked }: { capability: CapabilitySummary; 
 
 export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) {
   const [capabilities, setCapabilities] = useState<CapabilitySummary[]>([]);
+  // Distinguishes "nothing recorded yet" from "the first fetch hasn't landed" -
+  // without it the sidebar claims there are no capabilities every time the page
+  // mounts, for as long as the request takes.
+  const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selectedCapability, setSelectedCapability] = useState<CapabilitySummary | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  // A draft version the user asked to review, overriding the default view. Cleared
+  // whenever the selection changes so it can't leak onto another capability.
+  const [reviewingDraft, setReviewingDraft] = useState<number | null>(null);
   const [capabilitiesOpen, setCapabilitiesOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
 
@@ -248,6 +442,7 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
     const list = await api.listCapabilities().catch(() => null);
     if (list === null) return;
     setCapabilities(list);
+    setCapabilitiesLoaded(true);
     setSelectedCapability((prev) =>
       prev ? list.find((c) => c.capability_name === prev.capability_name) ?? prev : prev,
     );
@@ -256,6 +451,12 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
   useEffect(() => {
     reloadCapabilities();
   }, []);
+
+  // A draft opened for review belongs to the capability that was selected at the
+  // time; leaving it set would render another capability's panel against it.
+  useEffect(() => {
+    setReviewingDraft(null);
+  }, [selectedCapability?.capability_name]);
 
   useEffect(() => {
     let cancelled = false;
@@ -290,14 +491,14 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
 
   return (
     <div className="dashboard">
-      <aside className="sidebar">
+      <ResizableSidebar>
         <button className="new-workflow-button" onClick={() => onNavigate("chat")}>
           + New workflow
         </button>
         <section>
           <button className="section-toggle" onClick={() => setCapabilitiesOpen((o) => !o)}>
             <span className={`chevron ${capabilitiesOpen ? "open" : ""}`}>&#9656;</span>
-            <h2>Capabilities</h2>
+            <h2>Workflows</h2>
           </button>
           {capabilitiesOpen && (
             <ul className="list">
@@ -315,7 +516,9 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
                   </button>
                 </li>
               ))}
-              {capabilities.length === 0 && <li className="muted">No approved capabilities yet.</li>}
+              {capabilities.length === 0 && (
+                <li className="muted">{capabilitiesLoaded ? "No approved workflows yet." : "Loading…"}</li>
+              )}
             </ul>
           )}
         </section>
@@ -334,8 +537,28 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
                     onClick={() => setSelectedRunId(r.run_id)}
                   >
                     <span className={`dot ${statusColor(r.status)}`} />
-                    <span className="mono small">{r.run_id}</span>
-                    <span className="muted small">{r.capability_name}</span>
+                    {/* Two lines: what it was, then when. A run id truncated into
+                        "discover_…" identifies nothing, and the full id is in the
+                        detail panel header anyway - so the capability leads, and
+                        the id becomes the second-line subtitle it deserves to be. */}
+                    <span className="run-row">
+                      <span className="run-row-title">
+                        {r.capability_name ?? r.kind}
+                      </span>
+                      <span className="run-row-meta muted">
+                        <span className="mono">{r.run_id}</span>
+                        {formatRelative(r.started_at) && (
+                          <span title={formatAbsolute(r.started_at) ?? undefined}>
+                            {formatRelative(r.started_at)}
+                          </span>
+                        )}
+                        {formatElapsed(r.started_at, r.finished_at) && (
+                          <span title="How long this run took">
+                            {formatElapsed(r.started_at, r.finished_at)}
+                          </span>
+                        )}
+                      </span>
+                    </span>
                   </button>
                 </li>
               ))}
@@ -343,22 +566,43 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
             </ul>
           )}
         </section>
-      </aside>
+      </ResizableSidebar>
 
       <main className="main">
         {selectedRunId ? (
           <RunPanel key={selectedRunId} runId={selectedRunId} onDeleted={() => setSelectedRunId(null)} />
         ) : selectedCapability ? (
           <div className="capability-panel">
-            <InvokeForm
-              key={selectedCapability.capability_name}
-              capability={selectedCapability}
-              onInvoked={(id) => setSelectedRunId(id)}
-            />
+            {/* An approved version stays the primary view, so a capability someone
+                invokes routinely doesn't move just because a draft appeared on it.
+                The review panel shows for a draft the user explicitly opened, or
+                when there is no approved version to show at all. */}
+            {reviewingDraft !== null || selectedCapability.version === null ? (
+              <DraftReview
+                key={`draft-${selectedCapability.capability_name}-${reviewingDraft ?? "only"}`}
+                capabilityName={selectedCapability.capability_name}
+                version={reviewingDraft}
+                onApproved={() => {
+                  setReviewingDraft(null);
+                  reloadCapabilities();
+                }}
+                onRejected={() => {
+                  setReviewingDraft(null);
+                  reloadCapabilities();
+                }}
+              />
+            ) : (
+              <InvokeForm
+                key={selectedCapability.capability_name}
+                capability={selectedCapability}
+                onInvoked={(id) => setSelectedRunId(id)}
+              />
+            )}
             <VersionManager
               key={`versions-${selectedCapability.capability_name}`}
               capabilityName={selectedCapability.capability_name}
               onChanged={reloadCapabilities}
+              onReviewDraft={setReviewingDraft}
               onDeleted={() => {
                 setSelectedCapability(null);
                 reloadCapabilities();
@@ -366,7 +610,9 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
             />
           </div>
         ) : (
-          <p className="muted">Select a capability to invoke it, or a run to watch it.</p>
+          <div className="empty-state">
+            <p className="empty-state-pill muted">Select a workflow to invoke it, or a run to watch it.</p>
+          </div>
         )}
       </main>
     </div>

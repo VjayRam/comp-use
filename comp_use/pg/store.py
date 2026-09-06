@@ -279,7 +279,7 @@ def latest_approved_artifact(capability_name: str) -> dict[str, Any] | None:
 def list_artifact_versions(capability_name: str) -> list[dict[str, Any]]:
     return _query(
         """
-        SELECT version, status, created_from_run_id FROM artifacts
+        SELECT version, status, created_from_run_id, created_at FROM artifacts
         WHERE capability_name = %s ORDER BY version ASC
         """,
         (capability_name,),

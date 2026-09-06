@@ -806,3 +806,82 @@ def test_delete_endpoint_leaves_run_history_intact(tmp_path, monkeypatch):
     # the capability is gone, but the run it created stays visible
     assert client.get("/capabilities/lookup_member").status_code == 404
     assert client.get(f"/runs/{run_id}").status_code == 200
+
+
+def _draft_with_examples(capability_name="lookup_member", version=1):
+    artifact = _artifact(capability_name=capability_name, version=version, status="draft")
+    artifact.input_schema = [
+        InputParam(name="member_id", type="string", required=True, example="103001"),
+        InputParam(name="operator_id", type="string", required=True, example="operator_id"),
+    ]
+    return artifact
+
+
+def test_a_draft_version_can_be_read_in_full(tmp_path):
+    # GET /capabilities/{name} resolves to the latest APPROVED version, so before this
+    # endpoint a draft was visible only as a name and a badge: the dashboard could show
+    # that one existed but not its goal, its inputs, or the defaults recorded for them -
+    # exactly what a reviewer needs in order to approve it.
+    client, settings = _client(tmp_path)
+    save_artifact(_draft_with_examples(), settings.artifacts_dir)
+
+    # The approved-only view still refuses it...
+    assert client.get("/capabilities/lookup_member").status_code == 404
+    # ...while the per-version view returns everything.
+    r = client.get("/capabilities/lookup_member/versions/1")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "draft"
+    assert body["description"] == "Looks up a member."
+    assert [(p["name"], p["example"]) for p in body["input_schema"]] == [
+        ("member_id", "103001"),
+        ("operator_id", "operator_id"),
+    ]
+
+
+def test_approve_saves_corrected_defaults_before_flipping_status(tmp_path):
+    # Reviewing a draft is exactly when a wrong recorded default gets noticed - here a
+    # discovery run captured the literal placeholder "operator_id" as the operator's
+    # example. The correction and the approval are one call so a caller can never see an
+    # approved capability still carrying the un-reviewed value.
+    client, settings = _client(tmp_path)
+    save_artifact(_draft_with_examples(), settings.artifacts_dir)
+
+    r = client.post(
+        "/capabilities/lookup_member/versions/1/approve",
+        json={"input_examples": {"operator_id": "teller1"}},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "approved"
+
+    body = client.get("/capabilities/lookup_member/versions/1").json()
+    assert {p["name"]: p["example"] for p in body["input_schema"]} == {
+        "member_id": "103001",      # untouched
+        "operator_id": "teller1",   # corrected
+    }
+
+
+def test_approve_still_works_with_no_body(tmp_path):
+    client, settings = _client(tmp_path)
+    save_artifact(_draft_with_examples(), settings.artifacts_dir)
+
+    r = client.post("/capabilities/lookup_member/versions/1/approve")
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "approved"
+
+
+def test_approve_rejects_a_default_for_an_unknown_param(tmp_path):
+    # Silently dropping an unrecognised name is how a reviewer ends up believing they
+    # fixed something they did not - and the draft stays a draft, so nothing is half-done.
+    client, settings = _client(tmp_path)
+    save_artifact(_draft_with_examples(), settings.artifacts_dir)
+
+    r = client.post(
+        "/capabilities/lookup_member/versions/1/approve",
+        json={"input_examples": {"operatorid": "teller1"}},
+    )
+
+    assert r.status_code == 409
+    assert "operatorid" in r.json()["detail"]
+    assert client.get("/capabilities/lookup_member/versions/1").json()["status"] == "draft"

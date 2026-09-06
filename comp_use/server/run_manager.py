@@ -1,6 +1,7 @@
 import threading
+from datetime import datetime, timezone
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
 from comp_use.escalation.transport import QueueTransport
@@ -19,6 +20,11 @@ class RunRecord:
     discover_result: dict | None = None
     error: str | None = None
     novnc_url: str | None = None
+    # Wall-clock bounds for the dashboard. Postgres carries its own
+    # started_at/finished_at; these are the equivalent for the in-memory
+    # fallback, so a run shows when it happened with or without a database.
+    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    finished_at: str | None = None
 
 
 class RunManager:
@@ -77,6 +83,7 @@ class RunManager:
                 with self._lock:
                     record.status = "error"
                     record.error = f"{type(exc).__name__}: {exc}"
+                    record.finished_at = datetime.now(timezone.utc).isoformat()
                 return
             with self._lock:
                 if kind == "invoke":
@@ -84,6 +91,7 @@ class RunManager:
                 else:
                     record.discover_result = outcome
                 record.status = "done"
+                record.finished_at = datetime.now(timezone.utc).isoformat()
 
         threading.Thread(target=worker, daemon=True).start()
         return run_id
