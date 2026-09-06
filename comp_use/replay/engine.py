@@ -61,7 +61,7 @@ def validate_required_params(artifact: Artifact, params: dict) -> str | None:
     """Single source of truth for "does this params dict satisfy this artifact's
     input_schema" - used both by ReplayEngine.run() and by cli.py's _run_replay
     (which needs a pre-browser answer, before ReplayEngine even exists, to honor
-    "skip launching Chromium on validation_error"), and by the chat endpoint
+    "skip launching Chromium on input_error"), and by the chat endpoint
     before trusting an LLM tool call's params. Checks presence of every required
     param AND, for any param actually supplied, that its value matches the type
     declared in input_schema - never trust a caller's (especially an LLM's)
@@ -303,8 +303,8 @@ class ReplayEngine:
     def run(self, artifact: Artifact, params: dict, confirm_risky: bool = False) -> ReplayResult:
         validation_error = validate_required_params(artifact, params)
         if validation_error:
-            self.evidence_logger.log_event("validation_error", {"detail": validation_error})
-            return ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=validation_error)
+            self.evidence_logger.log_event("input_error", {"detail": validation_error})
+            return ReplayResult(outcome=OutcomeType.INPUT_ERROR, detail=validation_error)
 
         outputs: dict = {}
         retries_used: dict[int, int] = {}
@@ -455,8 +455,8 @@ class ReplayEngine:
                     # any other "caller didn't supply what this artifact needs" case,
                     # rather than letting a raw KeyError crash the whole replay.
                     detail = f"step {index} references param '{param_name}' which was not provided"
-                    self.evidence_logger.log_event("validation_error", {"detail": detail})
-                    return ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=detail, step_index=index)
+                    self.evidence_logger.log_event("input_error", {"detail": detail})
+                    return ReplayResult(outcome=OutcomeType.INPUT_ERROR, detail=detail, step_index=index)
                 text = str(params[param_name])
 
             target_url = step.target

@@ -673,9 +673,9 @@ def run_replay(
 
     validation_error = validate_required_params(artifact, params)
     if validation_error:
-        evidence.log_event("validation_error", {"detail": validation_error})
-        pg_store.finish_run(run_id, status="validation_error", result={"detail": validation_error})
-        return ReplayResult(outcome=OutcomeType.VALIDATION_ERROR, detail=validation_error)
+        evidence.log_event("input_error", {"detail": validation_error})
+        pg_store.finish_run(run_id, status="input_error", result={"detail": validation_error})
+        return ReplayResult(outcome=OutcomeType.INPUT_ERROR, detail=validation_error)
 
     # Replay has no explicit start_url param (it's baked into the artifact's own first
     # NAVIGATE step) - use the artifact's own recorded base_url as the sandbox's initial

@@ -23,7 +23,7 @@ complete.** Setup and demo commands below; full design rationale is in
    typed outputs, per-step locators and checkpoints).
 4. Replay that artifact deterministically against new inputs, with no LLM call,
    detecting and classifying runtime outcomes (success / business outcome /
-   recoverable / hard failure / validation error).
+   recoverable / hard failure / input error).
 5. Escalate to a human and hand over the *same* live browser session when the agent or
    a replay run can't safely proceed on its own.
 6. Enforce an allowlist, risk-tiered action handling, and redaction of sensitive data
@@ -493,13 +493,13 @@ PowerShell:
 Expected: `ReplayResult` JSON with `"outcome": "success"` and
 `evidence/replay_<timestamp>/`.
 
-**Replay with a missing param** (validation error — no browser window):
+**Replay with a missing param** (input error — no browser window):
 
 ```bash
 python -m comp_use.cli replay --capability-name lookup_member --params "{}"
 ```
 
-Expected: `"outcome": "validation_error"` and detail `missing required param 'member_id'`.
+Expected: `"outcome": "input_error"` and detail `missing required param 'member_id'`.
 
 Risky steps (opening a sub-account, transferring funds) pause for human
 confirmation on both `discover` and `replay` unless you pass `--confirm-risky`.
@@ -653,7 +653,7 @@ python -m comp_use.cli replay --capability-name transfer_funds --params "{\"memb
 Expected: `"outcome": "business_outcome"`, detail `"no_such_member"` /
 `"insufficient_funds"`.
 
-**5. Replay — `validation_error`** (no browser opens — see Demo path above for the single-command version)
+**5. Replay — `input_error`** (no browser opens — see Demo path above for the single-command version)
 
 **6. Replay — `hard_failure`**
 

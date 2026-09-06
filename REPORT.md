@@ -43,7 +43,9 @@ Typed Pydantic models (`comp_use/schemas.py`). A capability is versioned JSON at
 
 Replay (`comp_use/replay/engine.py`) never calls an LLM — same artifact, same params, same actions, same order. Five outcomes (`OutcomeType`):
 
-1. **`validation_error`** — required params missing; returns before any browser opens.
+1. **`input_error`** — required params missing; returns before any browser opens. Named for
+   the CALLER's input: a value the TARGET rejects is a `business_outcome`, since the
+   automation worked and the host legitimately refused.
 2. **`success`** — all steps ran, checkpoint held; `extract` values returned in `outputs`.
 3. **`business_outcome`** — a legitimate non-success result (e.g. "insufficient funds"). Declared per-artifact as `outcome_patterns`, checked before every step — not only after a checkpoint miss, since the app can diverge mid-sequence — and before falling back to `hard_failure`. **Known limitation:** the LLM never populates `outcome_patterns` itself; every entry is hand-authored. **Fixed:** re-discovery used to silently drop hand-authored patterns the moment a new version saved; `_run_discover` now carries them forward from the previous version automatically.
 4. **`recoverable`** — a transient, dismiss-and-retry condition. Both risky flows declare one for a stale/double-submitted review token — a real mock-app crash (`KeyError`/500) fixed to render "Session Expired" instead.
@@ -121,7 +123,7 @@ Every run below is against the live mock app + real Playwright Chromium. Discove
 | Replay `business_outcome` (no such member) | `{"outcome": "business_outcome", "detail": "no_such_member"}` | `evidence/replay_1787105468/` |
 | Replay `business_outcome` (mid-sequence divergence) | `{"outcome": "business_outcome", "detail": "insufficient_funds"}` | `evidence/replay_1787105611/` |
 | Replay `hard_failure` | `{"outcome": "hard_failure", "step_index": 3, ...}` + `final.png` | `evidence/replay_1787150562/` |
-| Replay `validation_error` | Returns before any browser opens | `replay --capability-name lookup_member --params "{}"` |
+| Replay `input_error` | Returns before any browser opens | `replay --capability-name lookup_member --params "{}"` |
 | Replay `recoverable` (stale review token) | Real page renders "Session Expired"; checkpoint matches | See Determinism section above |
 | Discovery, real LLM (non-scripted) | Real OpenRouter tool-call shape, `lookup_member` end to end | `evidence/discover_1787097059/` |
 | Discovery, real LLM, checkpoint-fix verification | `v2.json` generalizes to a different member; `v1.json` untouched | `evidence/discover_1787154166/` |

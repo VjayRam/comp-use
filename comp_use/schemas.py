@@ -101,7 +101,24 @@ class OutputParam(BaseModel):
 
 
 class OutcomeType(str, Enum):
-    VALIDATION_ERROR = "validation_error"
+    """How a replay ended.
+
+    SUCCESS / BUSINESS_OUTCOME / RECOVERABLE / HARD_FAILURE are the taxonomy the
+    Adaptation brief §2.2 asks for, in its own words: expected business outcomes
+    ("no such member", "insufficient funds"), recoverable conditions (dismiss a
+    known interstitial, retry a transient fault), and hard failures.
+
+    INPUT_ERROR is ours and sits outside that taxonomy on purpose: the request
+    never reached the target at all, because the caller did not supply what the
+    artifact declares it needs. It is named for the CALLER's input, not the
+    host's - a field the host itself rejects ("E-mail address is not in a valid
+    format", the `?inject=validation` page) is a BUSINESS_OUTCOME, since the
+    automation worked and the host legitimately refused. This member was called
+    VALIDATION_ERROR, which read as though it meant exactly the case it does
+    not cover.
+    """
+
+    INPUT_ERROR = "input_error"
     SUCCESS = "success"
     BUSINESS_OUTCOME = "business_outcome"
     RECOVERABLE = "recoverable"

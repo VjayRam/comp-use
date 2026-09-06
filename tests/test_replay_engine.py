@@ -118,11 +118,11 @@ def _make_engine(surface, tmp_path):
     return ReplayEngine(surface, guardrail, evidence)
 
 
-def test_missing_required_param_is_validation_error(tmp_path):
+def test_missing_required_param_is_input_error(tmp_path):
     engine = _make_engine(FakeSurface(), tmp_path)
     result = engine.run(_make_artifact(), params={})
-    assert result.outcome == OutcomeType.VALIDATION_ERROR
-    assert not FakeSurface().acted  # no browser interaction on validation failure
+    assert result.outcome == OutcomeType.INPUT_ERROR
+    assert not FakeSurface().acted  # nothing is driven when the caller's own input is incomplete
 
 
 def test_successful_replay_returns_success(tmp_path):
@@ -661,7 +661,7 @@ def test_replay_treats_risky_step_as_succeeded_when_the_action_fails_after_escal
 
     log_path = evidence.run_dir / "log.jsonl"
     events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
-    assert not [e for e in events if e["event_type"] == "validation_error"]
+    assert not [e for e in events if e["event_type"] == "input_error"]
     recorded = [e for e in events if e["event_type"] == "step_completed_during_escalation"]
     assert len(recorded) == 1
 
@@ -981,7 +981,7 @@ def test_disallowed_url_step_is_not_mistaken_for_a_drifted_locator(tmp_path):
     assert _is_action_locator_failure(artifact, result) is False
 
 
-def test_goal_parameter_step_with_unprovided_param_is_validation_error_not_crash(tmp_path):
+def test_goal_parameter_step_with_unprovided_param_is_input_error_not_crash(tmp_path):
     # validate_required_params only checks input_schema entries marked required=True;
     # a step can still reference a param name that's missing from `params` (an
     # optional-and-omitted param, or a stale/typo'd artifact). This must be reported
@@ -995,7 +995,7 @@ def test_goal_parameter_step_with_unprovided_param_is_validation_error_not_crash
 
     result = engine.run(artifact, params={"member_id": "12345"})
 
-    assert result.outcome == OutcomeType.VALIDATION_ERROR
+    assert result.outcome == OutcomeType.INPUT_ERROR
     assert "deposit_amount" in result.detail
     assert len(surface.acted) == 1  # only the earlier NAVIGATE step ran
 
