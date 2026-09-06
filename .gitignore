@@ -13,3 +13,6 @@ node_modules/
 # configured (see comp_use/pg/ - Postgres is the primary store otherwise).
 /evidence/
 /artifacts/
+
+# Local backend server stdout/stderr, written by the dev launch command.
+*.log

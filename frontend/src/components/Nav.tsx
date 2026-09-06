@@ -5,7 +5,7 @@ export type Page = "dashboard" | "chat";
 export function Nav({ page, onNavigate }: { page: Page; onNavigate: (p: Page) => void }) {
   return (
     <nav className="nav">
-      <span className="nav-brand">comp-use</span>
+      <span className="nav-brand">CompUse</span>
       {/* Controlled by the page the app is actually on, so the indicator can never
           disagree with what's rendered below it. TabsContent is deliberately
           unused - the panels are whole routed pages, not tab bodies. */}
