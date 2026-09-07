@@ -50,6 +50,7 @@ function statusColor(status: string): string {
   if (status === "done") return "dot-green";
   if (status === "error") return "dot-red";
   if (status === "escalated") return "dot-amber";
+  if (status === "interrupted") return "dot-grey";
   return "dot-blue";
 }
 
@@ -85,6 +86,13 @@ export function RunPanel({
   // Collapsed by default: the outcome is the answer, and the raw outputs behind it
   // can run to hundreds of lines that push the event log off the screen.
   const [resultExpanded, setResultExpanded] = useState(false);
+  // Same next-step-boundary lag as a takeover request, and the same reason for
+  // showing it: without this the Stop button just vanished while the run kept
+  // visibly working, which reads as the click not having registered.
+  const [confirmingStop, setConfirmingStop] = useState(false);
+  const [stopBusy, setStopBusy] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
+  const [stopRequested, setStopRequested] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -102,6 +110,7 @@ export function RunPanel({
         setEvents(evs);
         onUsageUpdate?.(deriveUsage(evs));
         if (d.status !== "running") setTakeoverRequested(false);
+        if (!ACTIVE_STATUSES.has(d.status)) setStopRequested(false);
         if (ACTIVE_STATUSES.has(d.status)) {
           timer = window.setTimeout(poll, 1500);
         }
@@ -137,6 +146,20 @@ export function RunPanel({
     }
   }
 
+  async function confirmStop() {
+    setStopBusy(true);
+    setStopError(null);
+    try {
+      await api.interruptRun(runId);
+      setConfirmingStop(false);
+      setStopRequested(true);
+    } catch (e) {
+      setStopError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStopBusy(false);
+    }
+  }
+
   async function confirmDeleteRun() {
     setDeleteBusy(true);
     setDeleteError(null);
@@ -151,6 +174,12 @@ export function RunPanel({
 
   const usage = deriveUsage(events);
   const canTakeControl = detail.status === "running" && !!detail.novnc_url;
+  // Unlike Delete run, this is offered in chat as well as on the dashboard: it needs
+  // no onDeleted to unmount anything (the panel stays and reports "interrupted"),
+  // and a runaway run is exactly what someone watching from a chat bubble wants to
+  // stop. Valid while escalated too - an abandoned escalation is a prime reason to
+  // stop a run - which is why it tests ACTIVE_STATUSES rather than "running".
+  const canStop = ACTIVE_STATUSES.has(detail.status);
   const feedInteractive = detail.status === "escalated";
   const showFeed = ACTIVE_STATUSES.has(detail.status) && !!detail.novnc_url;
   // Mirrors the server's own 409 gate on DELETE /runs/{run_id} (an active run's
@@ -200,6 +229,27 @@ export function RunPanel({
             </button>
           </span>
         )}
+        {canStop && !confirmingStop && !stopRequested && (
+          <button className="danger-button" onClick={() => setConfirmingStop(true)}>
+            Stop run
+          </button>
+        )}
+        {stopRequested && (
+          <span className="muted small">
+            Stop requested — finishing the step in flight, then shutting the browser down…
+          </span>
+        )}
+        {canStop && confirmingStop && (
+          <span className="confirm-row confirm-row-inline">
+            <span className="muted small">Stop this run and shut down its browser?</span>
+            <button className="danger-button" disabled={stopBusy} onClick={confirmStop}>
+              {stopBusy ? "Stopping…" : "Confirm stop"}
+            </button>
+            <button disabled={stopBusy} onClick={() => setConfirmingStop(false)}>
+              Cancel
+            </button>
+          </span>
+        )}
         {canTakeControl && !confirmingTakeover && !takeoverRequested && (
           <button className="takeover-button" onClick={() => setConfirmingTakeover(true)}>
             Take control
@@ -222,6 +272,7 @@ export function RunPanel({
           </span>
         )}
       </div>
+      {stopError && <p className="error">{stopError}</p>}
       {takeoverError && <p className="error">{takeoverError}</p>}
       {deleteError && <p className="error">{deleteError}</p>}
 

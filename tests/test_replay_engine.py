@@ -5,6 +5,7 @@ import pytest
 
 from comp_use.config import load_settings
 from comp_use.escalation.controller import EscalationController
+from comp_use.escalation.transport import RunInterrupted
 from comp_use.escalation.transport import ControlTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
@@ -1243,3 +1244,29 @@ def test_outputs_survive_a_failed_run(tmp_path):
 
     assert result.outcome == OutcomeType.HARD_FAILURE
     assert result.outputs.get("balance") == "CONF-000123"
+
+
+class InterruptedTransport(FakeTransport):
+    """An operator has pressed Stop run; the flag stays set, as the real
+    QueueTransport's does (nothing clears an interrupt - the run is over)."""
+
+    def interrupt_requested(self):
+        return True
+
+
+def test_an_interrupt_stops_replay_before_the_next_step_and_is_never_reported_as_a_failure(tmp_path):
+    surface = FakeSurface(checkpoint_result=True)
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="replay_interrupt")
+    escalation = EscalationController(evidence, InterruptedTransport())
+    engine = ReplayEngine(surface, guardrail, evidence, escalation=escalation)
+
+    # Propagates out of run() rather than becoming a ReplayResult: engine.run's own
+    # `except Exception` handlers must not convert an operator's stop into a
+    # hard_failure, which is what RunInterrupted subclassing BaseException buys.
+    with pytest.raises(RunInterrupted):
+        engine.run(_make_artifact(), params={"member_id": "12345"})
+
+    assert surface.acted == []  # stopped BEFORE the first step ran

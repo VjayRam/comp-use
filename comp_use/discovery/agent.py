@@ -324,6 +324,12 @@ class DiscoveryAgent:
         loop_signature_counts: dict[tuple, int] = {}
 
         for step_index in range(self.max_steps):
+            if self.escalation is not None:
+                # Stop-run, checked before takeover: an operator who has asked for
+                # both wants the run gone, not paused for a handover. Raises
+                # RunInterrupted straight out of this loop - unwinding through
+                # cli.py's _browser_session tears the sandbox container down.
+                self.escalation.raise_if_interrupted()
             if self.escalation is not None and self.escalation.takeover_requested():
                 # A human clicked "Take control" on the dashboard - pause here rather
                 # than mid-decision, before spending an LLM call on a step that may

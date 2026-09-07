@@ -4,7 +4,12 @@ import time
 
 import pytest
 
-from comp_use.escalation.transport import LocalSharedBrowserTransport, QueueTransport
+from comp_use.escalation.transport import (
+    EscalationAbandoned,
+    LocalSharedBrowserTransport,
+    QueueTransport,
+    RunInterrupted,
+)
 from comp_use.schemas import InterventionRequest
 
 
@@ -101,3 +106,42 @@ def test_control_transport_default_takeover_methods_are_inert_no_ops():
     transport.request_takeover()
     assert transport.takeover_requested() is False
     transport.clear_takeover()
+
+
+def test_interrupt_wakes_a_pending_wait_with_run_interrupted_not_abandoned():
+    """interrupt() sets the cancel event too (so an escalated run wakes at once),
+    but the interrupt is the more specific intent and must win the race."""
+    transport = QueueTransport(on_notify=lambda request: None)
+    transport.interrupt()
+
+    with pytest.raises(RunInterrupted):
+        transport.wait_for_resume()
+
+
+def test_cancel_alone_still_raises_escalation_abandoned():
+    transport = QueueTransport(on_notify=lambda request: None)
+    transport.cancel()
+
+    with pytest.raises(EscalationAbandoned):
+        transport.wait_for_resume()
+
+
+def test_interrupt_requested_is_false_until_interrupt_is_called():
+    transport = QueueTransport(on_notify=lambda request: None)
+    assert transport.interrupt_requested() is False
+    transport.interrupt()
+    assert transport.interrupt_requested() is True
+
+
+def test_run_interrupted_is_not_an_exception_so_broad_handlers_cannot_swallow_it():
+    """The whole reason RunInterrupted subclasses BaseException: every layer between
+    the step loop and RunManager.worker catches `except Exception` and turns what it
+    caught into a REPORTED failure. An interrupt must pass straight through."""
+    assert not issubclass(RunInterrupted, Exception)
+    assert issubclass(RunInterrupted, BaseException)
+
+    with pytest.raises(RunInterrupted):
+        try:
+            raise RunInterrupted("stopped")
+        except Exception:  # noqa: BLE001 - deliberately mirrors the handlers upstream
+            raise AssertionError("an `except Exception` handler swallowed the interrupt")

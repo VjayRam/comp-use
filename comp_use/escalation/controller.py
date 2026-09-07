@@ -2,7 +2,7 @@ import difflib
 from enum import Enum
 
 from comp_use.evidence import EvidenceLogger
-from comp_use.escalation.transport import ControlTransport
+from comp_use.escalation.transport import ControlTransport, RunInterrupted
 from comp_use.schemas import InterventionRequest
 from comp_use.surface import safe_screenshot
 
@@ -54,6 +54,14 @@ class EscalationController:
         """Polled by DiscoveryAgent/ReplayEngine once per step - see
         ControlTransport.takeover_requested()'s docstring."""
         return self.transport.takeover_requested()
+
+    def raise_if_interrupted(self) -> None:
+        """Polled by DiscoveryAgent/ReplayEngine once per step, beside
+        takeover_requested(). Raises RunInterrupted (a BaseException, so no
+        caller's `except Exception` converts it into a reported failure) when an
+        operator has stopped the run - see ControlTransport.interrupt()."""
+        if self.transport.interrupt_requested():
+            raise RunInterrupted("run was interrupted by an operator")
 
     def escalate(self, request: InterventionRequest) -> None:
         self.control = ControlState.HUMAN

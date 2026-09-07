@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { api, type ChatMessage } from "../api";
 import { RunPanel, type RunUsage } from "../components/RunPanel";
+import { SelectMenu } from "../components/SelectMenu";
 
 // Presets for the target-app dropdown. Selecting one auto-sends its base URL
 // as the first chat message - reuses the existing deterministic target-site
@@ -176,21 +177,16 @@ export function Chat() {
             started stay visible on the Dashboard.
           </span>
         </span>
-        <select
+        <SelectMenu
           id="chat-app-select"
           value={selectedBaseUrl ?? ""}
-          onChange={(e) => handleDropdownChange(e.target.value)}
-        >
-          <option value="" disabled>
-            Select an app…
-          </option>
-          {apps.map((a) => (
-            <option key={a.baseUrl} value={a.baseUrl}>
-              {a.label}
-            </option>
-          ))}
-          <option value={ADD_NEW_VALUE}>+ Add new site…</option>
-        </select>
+          placeholder="Select an app…"
+          options={[
+            ...apps.map((a) => ({ value: a.baseUrl, label: a.label })),
+            { value: ADD_NEW_VALUE, label: "+ Add new site…", footer: true },
+          ]}
+          onChange={handleDropdownChange}
+        />
         {liveUsage && (
           <span className="chat-usage-badge" title="LLM tool calls and token usage for the current run">
             {liveUsage.toolCalls} call{liveUsage.toolCalls === 1 ? "" : "s"} · {liveUsage.totalTokens} tokens

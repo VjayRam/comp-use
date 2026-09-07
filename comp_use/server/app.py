@@ -457,6 +457,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=f"run is '{record.status}', not 'running'")
         return {"status": "takeover_requested"}
 
+    @app.post("/runs/{run_id}/interrupt", status_code=202)
+    def interrupt_run(run_id: str):
+        _validate_run_id(run_id)
+        # Stop a run for good, and with it the sandbox container underneath. Like
+        # takeover above, this only sets a flag the step loop polls, so it returns
+        # 202 and not 200: the run ends at its NEXT step boundary, which a slow
+        # in-flight action (a page load, an LLM call) can delay by a few seconds.
+        # A run parked on an escalation never reaches a step boundary, so
+        # QueueTransport.interrupt() also unblocks its wait_for_resume().
+        # GET /runs/{run_id} reports status="interrupted" once the worker unwinds.
+        stopped = app.state.run_manager.interrupt(run_id)
+        if not stopped:
+            record = app.state.run_manager.get(run_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail=f"unknown run_id '{run_id}'")
+            raise HTTPException(
+                status_code=409,
+                detail=f"run is '{record.status}' - only an active run can be interrupted",
+            )
+        return {"status": "interrupt_requested"}
+
     @app.post("/runs/{run_id}/resume", status_code=202)
     def resume_run(run_id: str, body: ResumeRequest):
         _validate_run_id(run_id)

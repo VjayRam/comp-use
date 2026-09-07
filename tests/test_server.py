@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from comp_use.cli import save_artifact
 from comp_use.config import Settings
+from comp_use.escalation.transport import RunInterrupted
 from comp_use.schemas import (
     Artifact,
     Checkpoint,
@@ -885,3 +886,52 @@ def test_approve_rejects_a_default_for_an_unknown_param(tmp_path):
     assert r.status_code == 409
     assert "operatorid" in r.json()["detail"]
     assert client.get("/capabilities/lookup_member/versions/1").json()["status"] == "draft"
+
+
+def test_interrupt_endpoint_stops_a_running_run_and_reports_it_as_interrupted(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+
+    def fake_run_replay(capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None):
+        # Mirrors ReplayEngine's real per-step poll and the raise that follows it.
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if transport.interrupt_requested():
+                raise RunInterrupted("run was interrupted by an operator")
+            time.sleep(0.01)
+        return ReplayResult(outcome=OutcomeType.SUCCESS)
+
+    monkeypatch.setattr(app_module, "run_replay", fake_run_replay)
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+
+    interrupt_response = client.post(f"/runs/{run_id}/interrupt")
+    assert interrupt_response.status_code == 202
+    assert interrupt_response.json() == {"status": "interrupt_requested"}
+
+    stopped = _wait_for_status(client, run_id, "interrupted")
+    # Distinct from 'error': nothing failed, and there is no ReplayResult to show.
+    assert stopped["result"] is None
+
+
+def test_interrupt_endpoint_404s_for_an_unknown_run_id(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.post("/runs/does_not_exist/interrupt")
+    assert response.status_code == 404
+
+
+def test_interrupt_endpoint_409s_once_the_run_is_done(tmp_path, monkeypatch):
+    client, settings = _client(tmp_path)
+    save_artifact(_artifact(), settings.artifacts_dir)
+    monkeypatch.setattr(
+        app_module, "run_replay",
+        lambda capability_name, params, confirm_risky, diagnose_drift_on_failure, transport, version=None, run_id=None:
+            ReplayResult(outcome=OutcomeType.SUCCESS),
+    )
+
+    response = client.post("/capabilities/lookup_member/invoke", json={"params": {"member_id": "12345"}})
+    run_id = response.json()["run_id"]
+    _wait_for_status(client, run_id, "done")
+
+    assert client.post(f"/runs/{run_id}/interrupt").status_code == 409

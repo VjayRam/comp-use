@@ -2,7 +2,10 @@ import json
 
 from comp_use.config import load_settings
 from comp_use.discovery.agent import DiscoveryAgent
+import pytest
+
 from comp_use.escalation.controller import EscalationController
+from comp_use.escalation.transport import RunInterrupted
 from comp_use.escalation.transport import ControlTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
@@ -1364,3 +1367,31 @@ def test_finish_is_never_pushed_back_once_an_irreversible_step_has_run(tmp_path)
               (evidence.run_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
     assert not [e for e in events if e["event_type"] == "finish_rejected_missing_params"]
     assert [e for e in events if e["event_type"] == "finish_accepted_after_commit"]
+
+
+class InterruptedTransport(FakeTransport):
+    """An operator has pressed Stop run. Nothing clears an interrupt - unlike a
+    takeover, the run does not come back."""
+
+    def interrupt_requested(self):
+        return True
+
+
+def test_an_interrupt_stops_discovery_before_the_next_decision(tmp_path):
+    settings = load_settings()
+    settings.evidence_dir = tmp_path / "evidence"
+    surface = FakeSurface()
+    # Never consulted: the interrupt is checked before any LLM call is spent, which
+    # is the point of stopping at a step boundary rather than mid-decision.
+    llm = FakeLLMClient(scripted_actions=[{"action": "finish", "done": True}])
+    guardrail = Guardrail(settings)
+    evidence = EvidenceLogger(settings, guardrail, run_id="run_interrupt")
+    transport = InterruptedTransport()
+    escalation = EscalationController(evidence, transport)
+    agent = DiscoveryAgent(surface, llm, guardrail, evidence, max_steps=5, escalation=escalation)
+
+    with pytest.raises(RunInterrupted):
+        agent.run(goal="do something", start_url="http://localhost:5000/member/search")
+
+    # An interrupt is not an escalation: nobody is being asked to do anything.
+    assert transport.notified == []

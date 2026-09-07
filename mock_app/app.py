@@ -12,6 +12,10 @@ from mock_app.data import (
 def create_app() -> Flask:
     app = Flask(__name__)
 
+    @app.get("/")
+    def main_menu():
+        return render_template("menu.html")
+
     @app.get("/widgets/ticker")
     def widgets_ticker():
         return "<html><body><p>Savings APY: 0.10% | 12mo CD: 1.25%</p></body></html>"

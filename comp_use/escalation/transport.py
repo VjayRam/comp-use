@@ -17,6 +17,26 @@ class EscalationAbandoned(RuntimeError):
     way to actually fire."""
 
 
+class RunInterrupted(BaseException):
+    """Raised inside a run's own thread when an operator stops it from the
+    dashboard (see RunManager.interrupt() / POST /runs/{run_id}/interrupt).
+
+    Deliberately a BaseException, not an Exception. Every layer between the step
+    loop and the worker thread - ReplayEngine.run(), DiscoveryAgent._escalate(),
+    the CLI wrappers - catches broad `except Exception` and turns what it caught
+    into a REPORTED failure (a hard_failure result, a failed discovery). An
+    interrupt is not a failure of the capability and must not be recorded as
+    one, so it has to pass through those handlers untouched and reach the worker,
+    which marks the run 'interrupted'. Subclassing BaseException is what makes
+    that true by construction rather than by remembering to re-raise it in a
+    dozen places.
+
+    Nothing needs to catch this to stop the sandbox container: cli.py's
+    _browser_session is a context manager whose finally already calls
+    sandbox.stop(), so unwinding through it tears the container down.
+    """
+
+
 class ControlTransport:
     def notify(self, request: InterventionRequest) -> None:
         raise NotImplementedError
@@ -55,6 +75,21 @@ class ControlTransport:
         or not escalation ever actually happens. Default is a no-op - only
         sandbox-mode runs ever call this at all."""
         pass
+
+    def interrupt(self) -> None:
+        """Ask the running loop to stop for good at its next step boundary and
+        raise RunInterrupted. Distinct from request_takeover() (pause, hand the
+        browser to a human, resume the SAME run) and from cancel() (unblock an
+        abandoned escalation so the run can finish reporting): this one ends the
+        run. Default is a no-op - only QueueTransport, the capability server's
+        HTTP-driven runs, has a "Stop run" button to wire it to."""
+        pass
+
+    def interrupt_requested(self) -> bool:
+        """Polled by DiscoveryAgent/ReplayEngine once per step, beside
+        takeover_requested(). True means: raise RunInterrupted before starting
+        the next step."""
+        return False
 
     def cancel(self) -> None:
         """Force-unblocks a pending wait_for_resume() with EscalationAbandoned
@@ -111,6 +146,7 @@ class QueueTransport(ControlTransport):
         self._resume_queue: "queue.Queue[str]" = queue.Queue()
         self._takeover_event = threading.Event()
         self._cancel_event = threading.Event()
+        self._interrupt_event = threading.Event()
 
     def notify(self, request: InterventionRequest) -> None:
         self._on_notify(request)
@@ -135,6 +171,12 @@ class QueueTransport(ControlTransport):
         # normal-path latency (a real resume() still wakes this up within one
         # slice at most).
         while True:
+            # Checked before the cancel event: interrupt() sets BOTH (an escalated
+            # run is parked here, not at a step boundary, so the boundary poll can
+            # never fire for it). Interrupt is the more specific intent of the two,
+            # and it must not be reported as an abandoned escalation.
+            if self._interrupt_event.is_set():
+                raise RunInterrupted("run was interrupted by an operator while escalated")
             if self._cancel_event.is_set():
                 raise EscalationAbandoned("escalation was force-cancelled before a human resumed it")
             try:
@@ -157,6 +199,17 @@ class QueueTransport(ControlTransport):
     def on_novnc_url(self, url: str) -> None:
         if self._on_novnc_url is not None:
             self._on_novnc_url(url)
+
+    def interrupt(self) -> None:
+        # Also sets the cancel event, so a run blocked in wait_for_resume() wakes
+        # immediately instead of waiting for a step boundary that will never come.
+        # wait_for_resume() checks the interrupt event first, so it still raises
+        # RunInterrupted rather than EscalationAbandoned.
+        self._interrupt_event.set()
+        self._cancel_event.set()
+
+    def interrupt_requested(self) -> bool:
+        return self._interrupt_event.is_set()
 
     def cancel(self) -> None:
         self._cancel_event.set()

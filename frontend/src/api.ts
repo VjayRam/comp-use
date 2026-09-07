@@ -114,6 +114,8 @@ export const api = {
     post<{ status: string }>(`/runs/${runId}/resume`, { note }),
   takeover: (runId: string) =>
     post<{ status: string }>(`/runs/${runId}/takeover`, {}),
+  interruptRun: (runId: string) =>
+    post<{ status: string }>(`/runs/${runId}/interrupt`, {}),
   deleteRun: (runId: string) => del<{ run_id: string; deleted: boolean }>(`/runs/${runId}`),
   // inputExamples carries reviewer-corrected defaults; the server writes them onto
   // the version before flipping its status, so the two can't land separately.

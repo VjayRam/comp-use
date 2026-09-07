@@ -1,6 +1,7 @@
 import time
 
 from comp_use.schemas import InterventionRequest, OutcomeType, ReplayResult
+from comp_use.escalation.transport import RunInterrupted
 from comp_use.server.run_manager import RunManager
 
 
@@ -148,3 +149,76 @@ def test_run_manager_concurrent_runs_get_distinct_ids_and_dont_share_state():
     assert _wait_until(lambda: manager.get(run_id_a).status == "done" and manager.get(run_id_b).status == "done")
     assert manager.get(run_id_a).result.detail == "a"
     assert manager.get(run_id_b).result.detail == "b"
+
+
+def test_run_manager_interrupt_ends_a_running_run_as_interrupted():
+    manager = RunManager()
+
+    def target(transport):
+        # Polls like DiscoveryAgent/ReplayEngine's step loop does, and raises the
+        # same way EscalationController.raise_if_interrupted() would.
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if transport.interrupt_requested():
+                raise RunInterrupted("run was interrupted by an operator")
+            time.sleep(0.01)
+        return ReplayResult(outcome=OutcomeType.SUCCESS)
+
+    run_id = manager.start("invoke", "lookup_member", target)
+    assert manager.interrupt(run_id) is True
+
+    assert _wait_until(lambda: manager.get(run_id).status == "interrupted", timeout=3.0)
+    record = manager.get(run_id)
+    assert record.error == "stopped by an operator"
+    assert record.finished_at is not None
+    # Not an error, and no result recorded - the capability never reported anything.
+    assert record.result is None
+
+
+def test_run_manager_interrupt_unblocks_a_run_parked_on_an_escalation():
+    """An escalated run is blocked in wait_for_resume(), not at a step boundary, so
+    the loop's interrupt poll can never fire for it - interrupt() has to wake it."""
+    manager = RunManager()
+
+    def target(transport):
+        transport.notify(
+            InterventionRequest(run_id="ignored", capability_or_goal="lookup_member", reason="risky step")
+        )
+        transport.wait_for_resume()
+        return ReplayResult(outcome=OutcomeType.SUCCESS)
+
+    run_id = manager.start("invoke", "lookup_member", target)
+    assert _wait_until(lambda: manager.get(run_id).status == "escalated")
+
+    assert manager.interrupt(run_id) is True
+    assert _wait_until(lambda: manager.get(run_id).status == "interrupted", timeout=3.0)
+
+
+def test_run_manager_interrupt_returns_false_for_unknown_or_finished_runs():
+    manager = RunManager()
+    assert manager.interrupt("does_not_exist") is False
+
+    run_id = manager.start("invoke", "lookup_member", lambda transport: ReplayResult(outcome=OutcomeType.SUCCESS))
+    assert _wait_until(lambda: manager.get(run_id).status == "done")
+    assert manager.interrupt(run_id) is False
+
+
+def test_an_interrupted_run_can_then_be_deleted():
+    """delete() refuses 'running'/'escalated'. 'interrupted' is terminal, so the
+    record must actually be removable afterwards rather than becoming a leak."""
+    manager = RunManager()
+
+    def target(transport):
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if transport.interrupt_requested():
+                raise RunInterrupted("stopped")
+            time.sleep(0.01)
+        return ReplayResult(outcome=OutcomeType.SUCCESS)
+
+    run_id = manager.start("invoke", "lookup_member", target)
+    manager.interrupt(run_id)
+    assert _wait_until(lambda: manager.get(run_id).status == "interrupted", timeout=3.0)
+
+    assert manager.delete(run_id) is True
+    assert manager.get(run_id) is None

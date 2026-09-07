@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Legacy Bank Terminal - Main Menu{% endblock %}
+{% block content %}
+<h3>MAIN MENU</h3>
+<table border="1" cellpadding="4" width="100%">
+<tr><th width="10%">Option</th><th>Function</th></tr>
+<tr>
+  <td>1</td>
+  <td><a href="/member/search">Member Search</a> - look up a member record by member ID</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td>
+    Search With Member ID - go directly to a member record
+    <form method="get" action="/member/search">
+      <label for="menu_member_id">Member ID</label>
+      <input type="text" id="menu_member_id" name="member_id">
+      <input type="submit" value="Go">
+    </form>
+  </td>
+</tr>
+</table>
+<p>Select an option to continue.</p>
+{% endblock %}

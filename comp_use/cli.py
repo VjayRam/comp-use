@@ -14,7 +14,7 @@ from comp_use.discovery.agent import DiscoveryAgent
 from comp_use.discovery.compiler import compile_artifact
 from comp_use.drift import propose_drift_patch
 from comp_use.escalation.controller import EscalationController
-from comp_use.escalation.transport import LocalSharedBrowserTransport
+from comp_use.escalation.transport import LocalSharedBrowserTransport, RunInterrupted
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
 from comp_use.llm_client import FallbackLLMClient, LLMClient, NvidiaNimClient, OpenRouterClient
@@ -525,6 +525,17 @@ def run_discover(
             result={"succeeded": True, "artifact_version": artifact.version, "artifact_status": artifact.status},
         )
         return artifact
+    except RunInterrupted:
+        # RunInterrupted is a BaseException precisely so the broad handler below
+        # cannot turn an operator's stop into a reported error - but that also means
+        # it would skip finish_run() and leave this run's Postgres row stuck at
+        # 'running' forever, the exact failure the comment above describes. Record
+        # the terminal status, then re-raise for RunManager.worker to see.
+        pg_store.finish_run(
+            run_id, status="interrupted",
+            result={"detail": "stopped by an operator"},
+        )
+        raise
     except Exception as exc:
         pg_store.finish_run(run_id, status="error", result={"error": f"{type(exc).__name__}: {exc}"})
         raise
@@ -704,6 +715,17 @@ def run_replay(
 
         pg_store.finish_run(run_id, status=result.outcome.value, result=result.model_dump(mode="json"))
         return result
+    except RunInterrupted:
+        # RunInterrupted is a BaseException precisely so the broad handler below
+        # cannot turn an operator's stop into a reported error - but that also means
+        # it would skip finish_run() and leave this run's Postgres row stuck at
+        # 'running' forever, the exact failure the comment above describes. Record
+        # the terminal status, then re-raise for RunManager.worker to see.
+        pg_store.finish_run(
+            run_id, status="interrupted",
+            result={"detail": "stopped by an operator"},
+        )
+        raise
     except Exception as exc:
         pg_store.finish_run(run_id, status="error", result={"error": f"{type(exc).__name__}: {exc}"})
         raise

@@ -316,6 +316,10 @@ class ReplayEngine:
         while index < len(artifact.steps):
             step = artifact.steps[index]
 
+            if self.escalation is not None:
+                # See the identical check in DiscoveryAgent.run(): stop-run wins over
+                # a pending takeover, and RunInterrupted leaves this loop uncaught.
+                self.escalation.raise_if_interrupted()
             if self.escalation is not None and self.escalation.takeover_requested():
                 # A human clicked "Take control" on the dashboard - pause here, before
                 # this step runs, exactly like a risky-step escalation just below.

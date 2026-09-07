@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
-from comp_use.escalation.transport import QueueTransport
+from comp_use.escalation.transport import QueueTransport, RunInterrupted
 from comp_use.schemas import InterventionRequest, ReplayResult
 
 
@@ -13,7 +13,7 @@ class RunRecord:
     run_id: str
     kind: Literal["discover", "invoke"]
     capability_name: str
-    status: Literal["running", "escalated", "done", "error"] = "running"
+    status: Literal["running", "escalated", "done", "error", "interrupted"] = "running"
     escalation: InterventionRequest | None = None
     transport: QueueTransport | None = None
     result: ReplayResult | None = None
@@ -79,6 +79,17 @@ class RunManager:
         def worker() -> None:
             try:
                 outcome = target_fn(transport)
+            except RunInterrupted:
+                # Not a failure of the capability - an operator stopped it - so it
+                # gets its own terminal status rather than being reported as an
+                # error. The sandbox container is already gone by the time this
+                # runs: the exception unwound through cli.py's _browser_session,
+                # whose finally calls sandbox.stop().
+                with self._lock:
+                    record.status = "interrupted"
+                    record.error = "stopped by an operator"
+                    record.finished_at = datetime.now(timezone.utc).isoformat()
+                return
             except Exception as exc:
                 with self._lock:
                     record.status = "error"
@@ -122,6 +133,28 @@ class RunManager:
                 return False
             del self._runs[run_id]
             return True
+
+    def interrupt(self, run_id: str) -> bool:
+        """Stops a run for good: the loop raises RunInterrupted at its next step
+        boundary, unwinds through the browser session (which stops the sandbox
+        container), and the worker marks the run 'interrupted'.
+
+        Distinct from the two neighbours above. request_takeover() PAUSES a run so
+        a human can drive the same live session and hand it back; cancel() unblocks
+        an abandoned escalation so the run can finish REPORTING a failure. This one
+        ends the run outright, and is valid from either active status - a run parked
+        on an escalation is woken by QueueTransport.interrupt() setting the cancel
+        event too, since it will never reach a step boundary on its own.
+
+        Returns False if the run is unknown or already finished; the caller maps
+        that to a 409."""
+        with self._lock:
+            record = self._runs.get(run_id)
+            if record is None or record.status not in ("running", "escalated"):
+                return False
+            transport = record.transport
+        transport.interrupt()
+        return True
 
     def request_takeover(self, run_id: str) -> bool:
         """Signals the running discovery/replay loop to pause for a human takeover
