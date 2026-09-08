@@ -1,7 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type ChatMessage } from "../api";
 import { RunPanel, type RunUsage } from "../components/RunPanel";
 import { SelectMenu } from "../components/SelectMenu";
+import { ThinkingShimmer } from "../components/agents/loading-states/thinking-shimmer";
 
 // Presets for the target-app dropdown. Selecting one auto-sends its base URL
 // as the first chat message - reuses the existing deterministic target-site
@@ -46,6 +47,41 @@ function stripTargetPreamble(content: string, baseUrl: string | null): string {
   return content.startsWith(preamble) ? content.slice(preamble.length).trim() || content : content;
 }
 
+/** The reply is a single blocking POST that can sit for a long time - the agent may
+ *  be driving a browser behind it - and until it lands the conversation showed the
+ *  user's own message and nothing else, which reads as a dead page. This is the
+ *  placeholder for that gap: an assistant-side bubble with animated dots, plus a
+ *  label that escalates so a long wait says "slow", not "stuck". */
+const PENDING_LABELS: { after: number; label: string }[] = [
+  { after: 0, label: "Thinking…" },
+  { after: 6, label: "Working on it…" },
+  { after: 20, label: "Still working — browser runs can take a minute…" },
+];
+
+function PendingBubble() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setSeconds((s) => s + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  // Last threshold the elapsed time has passed; the list is short and ordered, so
+  // a scan reads more plainly here than a binary search would.
+  const label = [...PENDING_LABELS].reverse().find((l) => seconds >= l.after)!.label;
+
+  return (
+    <div className="chat-bubble chat-assistant chat-pending" aria-live="polite">
+      <p>
+        <ThinkingShimmer>{label}</ThinkingShimmer>
+        <span className="chat-typing-dots" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </span>
+      </p>
+    </div>
+  );
+}
+
 export function Chat() {
   const [apps, setApps] = useState(KNOWN_APPS);
   const [selectedBaseUrl, setSelectedBaseUrl] = useState<string | null>(null);
@@ -65,6 +101,15 @@ export function Chat() {
   // Held across an app switch so a duplicated change event cannot start a second
   // session; released once the opening message has been sent.
   const switchingApp = useRef(false);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+
+  // The pending bubble only reassures if it's on screen - once the conversation
+  // overflows, a reply appended below the fold leaves the view looking as static
+  // as it did before. Follows the newest message and the pending state alike.
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length, busy]);
 
   async function ensureSession(): Promise<string> {
     if (sessionId) return sessionId;
@@ -208,7 +253,7 @@ export function Chat() {
         )}
       </div>
 
-      <div className="chat-messages">
+      <div className="chat-messages" ref={messagesRef}>
         {messages.length === 0 && !addingNewApp && (
           <p className="muted">
             {selectedBaseUrl ? "Tell me what you'd like to do." : "Pick a target app above to get started."}
@@ -236,6 +281,7 @@ export function Chat() {
             </div>
           );
         })}
+        {busy && <PendingBubble />}
         {error && <p className="error">{error}</p>}
       </div>
 

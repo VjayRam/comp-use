@@ -18,7 +18,9 @@ from comp_use.escalation.controller import EscalationController
 from comp_use.escalation.transport import ControlTransport
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
-from comp_use.llm_client import FakeLLMClient, FallbackLLMClient, NvidiaNimClient, OpenRouterClient
+from comp_use.llm_client import (
+    FakeLLMClient, FallbackLLMClient, NvidiaNimClient, OpenAIClient, OpenRouterClient,
+)
 from comp_use.schemas import (
     ActionType, Artifact, Checkpoint, CheckpointType, InputParam, Locator,
     LocatorStrategy, OutcomeType, ReplayResult, RiskTier, Step,
@@ -766,11 +768,29 @@ def test_build_llm_client_is_openrouter_only_without_an_nvidia_key():
 
 
 def test_build_llm_client_wraps_openrouter_with_nvidia_fallback_when_key_present():
-    settings = Settings(model_provider="openrouter", nvidia_api_key="nvidia-test-key")
+    settings = Settings(
+        model_provider="openrouter",
+        openrouter_api_key="or-test-key",
+        nvidia_api_key="nvidia-test-key",
+    )
     client = build_llm_client(settings)
     assert isinstance(client, FallbackLLMClient)
     assert isinstance(client.primary, OpenRouterClient)
     assert isinstance(client.fallback, NvidiaNimClient)
+
+
+def test_build_llm_client_skips_the_requested_provider_when_it_has_no_key():
+    """The rule is symmetric across providers, which it was not before a third
+    existed: MODEL_PROVIDER=nvidia with no NVIDIA_API_KEY already stepped aside for
+    OpenRouter, but MODEL_PROVIDER=openrouter with no OPENROUTER_API_KEY used to lead
+    with OpenRouter anyway and fail its first call before falling back. An unkeyed
+    client in the chain costs a real request's latency and prints a misleading
+    'primary provider failed' on the way past."""
+    settings = Settings(
+        model_provider="openrouter", openrouter_api_key="", nvidia_api_key="nvidia-test-key"
+    )
+    client = build_llm_client(settings)
+    assert isinstance(client, NvidiaNimClient)
 
 
 def test_build_llm_client_is_nvidia_only_when_provider_is_nvidia_and_no_openrouter_key():
@@ -875,3 +895,54 @@ def test_run_serve_launches_uvicorn_with_the_app(monkeypatch):
     cli._run_serve(args)
 
     assert calls == {"host": "0.0.0.0", "port": 9000}
+
+
+def test_build_llm_client_puts_openai_first_when_requested():
+    settings = Settings(model_provider="openai", openai_api_key="oa-test-key")
+    client = build_llm_client(settings)
+    assert isinstance(client, OpenAIClient)
+
+
+def test_build_llm_client_chains_all_three_providers_behind_the_requested_one():
+    """Three providers nest as Fallback(a, Fallback(b, c)) rather than needing a
+    variadic FallbackLLMClient - it is itself an LLMClient, so the pair it was
+    written for composes into a chain of any length."""
+    settings = Settings(
+        model_provider="openai",
+        openai_api_key="oa-test-key",
+        nvidia_api_key="nvidia-test-key",
+        openrouter_api_key="or-test-key",
+    )
+    client = build_llm_client(settings)
+
+    assert isinstance(client, FallbackLLMClient)
+    assert isinstance(client.primary, OpenAIClient)
+    assert isinstance(client.fallback, FallbackLLMClient)
+    assert isinstance(client.fallback.primary, NvidiaNimClient)
+    assert isinstance(client.fallback.fallback, OpenRouterClient)
+
+
+def test_build_llm_client_leaves_openai_out_entirely_when_it_has_no_key():
+    """The default configuration must behave exactly as it did before OpenAI was
+    added - a provider with no key is never in the chain at all."""
+    settings = Settings(
+        model_provider="nvidia", nvidia_api_key="nvidia-test-key", openrouter_api_key="or-test-key"
+    )
+    client = build_llm_client(settings)
+
+    assert isinstance(client, FallbackLLMClient)
+    assert isinstance(client.primary, NvidiaNimClient)
+    assert isinstance(client.fallback, OpenRouterClient)
+
+
+def test_openai_client_targets_openai_and_reads_its_own_settings():
+    settings = Settings(
+        openai_api_key="oa-test-key", openai_model="a-text-model", openai_vision_model="a-vision-model"
+    )
+    client = OpenAIClient(settings)
+
+    assert client._endpoint() == "https://api.openai.com/v1/chat/completions"
+    assert client._headers()["Authorization"] == "Bearer oa-test-key"
+    assert client._text_model() == "a-text-model"
+    assert client._vision_model() == "a-vision-model"
+    assert client._provider_label() == "openai"

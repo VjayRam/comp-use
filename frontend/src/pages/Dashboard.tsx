@@ -478,9 +478,16 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
   const sortedRuns = useMemo(
     () =>
       [...runs].sort((a, b) => {
-        // run_id's kind prefix ("discover_" vs "invoke_") sorts before actual
-        // recency if compared as plain strings, sinking newer discovery runs
-        // below older invoke runs - started_at reflects real chronology.
+        // Discovery runs first as a block: they're the ones being reviewed and
+        // approved, so they shouldn't have to be hunted for among the invokes
+        // that a single approved workflow accumulates.
+        const aDiscover = a.kind === "discover";
+        const bDiscover = b.kind === "discover";
+        if (aDiscover !== bDiscover) return aDiscover ? -1 : 1;
+        // Within each block, newest first. run_id's kind prefix ("discover_" vs
+        // "invoke_") sorts before actual recency if compared as plain strings,
+        // sinking newer discovery runs below older invoke runs - started_at
+        // reflects real chronology.
         const aTime = a.started_at ?? "";
         const bTime = b.started_at ?? "";
         if (aTime !== bTime) return aTime < bTime ? 1 : -1;
@@ -559,6 +566,9 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) 
                         )}
                       </span>
                     </span>
+                    {/* Marks where the pinned discovery block ends - without it the
+                        top of the list just looks out of chronological order. */}
+                    {r.kind === "discover" && <span className="badge badge-discover">discover</span>}
                   </button>
                 </li>
               ))}

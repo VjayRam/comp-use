@@ -105,7 +105,10 @@ export const api = {
   listVersions: (name: string) => get<VersionSummary[]>(`/capabilities/${name}/versions`),
   getVersion: (name: string, version: number) =>
     get<CapabilityVersion>(`/capabilities/${name}/versions/${version}`),
-  listRuns: (limit = 50) => get<RunSummary[]>(`/runs?limit=${limit}`),
+  // 150, not the server's default 50: the dashboard pins discovery runs to the top
+  // of the list, and a cap that truncates before the older ones are fetched would
+  // silently hide them no matter how the client sorts. The endpoint allows 500.
+  listRuns: (limit = 150) => get<RunSummary[]>(`/runs?limit=${limit}`),
   getRun: (runId: string) => get<RunDetail>(`/runs/${runId}`),
   getRunEvents: (runId: string) => get<RunEvent[]>(`/runs/${runId}/events`),
   invoke: (name: string, params: Record<string, unknown>, version?: number) =>

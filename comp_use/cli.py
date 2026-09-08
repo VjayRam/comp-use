@@ -5,6 +5,7 @@ import os
 import shutil
 import threading
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -17,7 +18,9 @@ from comp_use.escalation.controller import EscalationController
 from comp_use.escalation.transport import LocalSharedBrowserTransport, RunInterrupted
 from comp_use.evidence import EvidenceLogger
 from comp_use.guardrail import Guardrail
-from comp_use.llm_client import FallbackLLMClient, LLMClient, NvidiaNimClient, OpenRouterClient
+from comp_use.llm_client import (
+    FallbackLLMClient, LLMClient, NvidiaNimClient, OpenAIClient, OpenRouterClient,
+)
 from comp_use.pg import store as pg_store
 from comp_use.replay.engine import ReplayEngine, validate_required_params
 from comp_use.schemas import (
@@ -294,23 +297,48 @@ _version_lock = threading.Lock()
 
 
 def build_llm_client(settings: Settings) -> LLMClient:
-    """MODEL_PROVIDER picks which provider is tried first; the other is used
-    as an automatic fallback only if its own API key is configured (see
-    FallbackLLMClient). If the primary provider's own key isn't configured,
-    there's nothing usable to put first, so fall back to whichever provider
-    does have a key rather than build a client guaranteed to fail on first
-    use."""
-    openrouter = OpenRouterClient(settings)
-    nvidia = NvidiaNimClient(settings)
+    """MODEL_PROVIDER picks which provider is tried first; every OTHER provider
+    whose own API key is configured becomes a fallback behind it, in the order
+    listed below (see FallbackLLMClient). If the chosen primary has no key there
+    is nothing usable to put first, so the first configured provider leads
+    instead of building a client guaranteed to fail on its first call.
 
-    if settings.model_provider == "nvidia" and settings.nvidia_api_key:
-        primary, fallback, fallback_key = nvidia, openrouter, settings.openrouter_api_key
-    else:
-        primary, fallback, fallback_key = openrouter, nvidia, settings.nvidia_api_key
+    Previously this was hardcoded to exactly two providers with a pairwise
+    primary/fallback swap, which had no shape to add a third to. The chain is
+    built by nesting - FallbackLLMClient is itself an LLMClient, so
+    Fallback(a, Fallback(b, c)) tries a, then b, then c, and `last_usage` still
+    resolves to whichever client actually served the call, because each layer
+    defers to the one it used.
 
-    if fallback_key:
-        return FallbackLLMClient(primary, fallback)
-    return primary
+    A provider with no key is never put in the chain: an unkeyed client would
+    fail its call, print a misleading "primary provider failed", and spend a
+    real request's latency before reaching one that works."""
+    builders: list[tuple[str, str, Callable[[], LLMClient]]] = [
+        ("nvidia", settings.nvidia_api_key, lambda: NvidiaNimClient(settings)),
+        ("openai", settings.openai_api_key, lambda: OpenAIClient(settings)),
+        ("openrouter", settings.openrouter_api_key, lambda: OpenRouterClient(settings)),
+    ]
+    configured = [(name, build) for name, key, build in builders if key]
+
+    if not configured:
+        # No key for any provider. Return a client anyway rather than raising:
+        # replay never calls an LLM, and both the CLI and the server build this at
+        # startup, so raising here would break the half of the system that needs no
+        # key at all. The failure surfaces on the first real call instead.
+        # OpenRouter specifically, to preserve the behaviour this returned before
+        # a third provider existed - the case is broken either way, so there is
+        # nothing to be gained by changing which broken client comes back.
+        by_name = {name: build for name, _key, build in builders}
+        return by_name["openrouter"]()
+
+    # The requested provider leads when it has a key; otherwise the first that does.
+    configured.sort(key=lambda pair: pair[0] != settings.model_provider)
+    clients = [build() for _name, build in configured]
+
+    chain = clients[-1]
+    for client in reversed(clients[:-1]):
+        chain = FallbackLLMClient(client, chain)
+    return chain
 
 
 def _derive_success_checkpoint(surface: Surface, fallback_url: str) -> Checkpoint:

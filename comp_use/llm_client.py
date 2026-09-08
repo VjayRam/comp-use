@@ -647,6 +647,43 @@ class NvidiaNimClient(_OpenAICompatibleClient):
         return _NVIDIA_RATE_LIMITER
 
 
+class OpenAIClient(_OpenAICompatibleClient):
+    """OpenAI proper (api.openai.com).
+
+    The shortest client in this file, and deliberately so: OpenAI defined the
+    chat-completions + tool-calling shape the other two providers imitate, so
+    everything _OpenAICompatibleClient already does - forcing a tool call rather
+    than accepting free text, the tolerant decision parser, retry-on-429/5xx, the
+    image content block on the vision path - applies here unchanged. Only the
+    endpoint, auth and model names differ.
+
+    Rate limits are handled the same way they are for the other two providers:
+    _post_with_retry() backs off and retries on a 429. OpenAI's own limits are
+    per-account and per-tier rather than one published number, so there is no
+    single ceiling worth pacing to client-side even if pacing existed here.
+    """
+
+    ENDPOINT = "https://api.openai.com/v1/chat/completions"
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    def _endpoint(self) -> str:
+        return self.ENDPOINT
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.settings.openai_api_key}"}
+
+    def _text_model(self) -> str:
+        return self.settings.openai_model
+
+    def _vision_model(self) -> str:
+        return self.settings.openai_vision_model
+
+    def _provider_label(self) -> str:
+        return "openai"
+
+
 class FallbackLLMClient(LLMClient):
     """Tries `primary` first; if it raises for ANY reason (a rate limit is
     the motivating case, but this also covers timeouts, transient 5xxs, and

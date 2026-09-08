@@ -46,7 +46,7 @@ class Settings(BaseModel):
     # requests a day across every free model, and one discovery run spends 15-20
     # of them, so a couple of recordings exhaust it and every later run fails on
     # HTTP 429 regardless of which free model is named.
-    model_provider: Literal["openrouter", "nvidia"] = "nvidia"
+    model_provider: Literal["openrouter", "nvidia", "openai"] = "nvidia"
     openrouter_api_key: str = ""
     openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
     # Used only as a vision fallback, when the accessibility tree alone hasn't been
@@ -58,6 +58,15 @@ class Settings(BaseModel):
     nvidia_api_key: str = ""
     nvidia_model: str = "meta/muse-glimmer-30b"
     nvidia_vision_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+    # OpenAI proper. Its /v1/chat/completions is the shape the other two providers
+    # imitate, so it needs no special handling - only a key, a model, and a
+    # vision-capable model. Both model ids are env-overridable and deliberately not
+    # pinned to anything exotic: check them against your own account's model list,
+    # since OpenAI retires ids on a published schedule and a stale default here
+    # fails at the first call with a 404 rather than at import.
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o"
+    openai_vision_model: str = "gpt-4o"
     max_discovery_steps: int = 25
     artifacts_dir: Path = Path("artifacts")
     evidence_dir: Path = Path("evidence")
@@ -85,4 +94,7 @@ def load_settings() -> Settings:
         nvidia_vision_model=os.environ.get(
             "NVIDIA_VISION_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
         ),
+        openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+        openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o"),
+        openai_vision_model=os.environ.get("OPENAI_VISION_MODEL", "gpt-4o"),
     )

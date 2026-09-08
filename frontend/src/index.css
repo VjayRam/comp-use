@@ -150,6 +150,9 @@ input { font: inherit; }
   font-size: 0.65rem; background: #6b4f00; color: #ffd166; padding: 0.1rem 0.4rem;
   border-radius: 4px; margin-left: auto;
 }
+/* Discovery runs are pinned to the top of the Runs list; this distinguishes them
+   from the amber "draft" badge on workflows. */
+.badge-discover { background: #1e3a5f; color: #9ec5ff; align-self: flex-start; }
 
 .main { flex: 1; min-width: 0; overflow-y: auto; padding: 1.25rem; }
 
@@ -323,6 +326,27 @@ input { font: inherit; }
   border-radius: 999px; padding: 0.3rem 0.85rem;
 }
 .chat-target-notice .mono { color: var(--text); }
+
+/* Typing indicator: shimmering label plus three dots that rise in sequence. The
+   dots carry the "still alive" signal on their own, so the shimmer degrading to
+   static text under reduced motion (see lib/text-shimmer) costs nothing. */
+.chat-pending p { display: flex; align-items: center; gap: 0.5rem; }
+.chat-typing-dots { display: inline-flex; gap: 0.22rem; align-items: flex-end; height: 0.9em; }
+.chat-typing-dots span {
+  width: 0.32rem; height: 0.32rem; border-radius: 50%; background: var(--muted);
+  animation: chat-typing-bounce 1.2s ease-in-out infinite;
+}
+.chat-typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.chat-typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chat-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-0.28rem); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Held mid-cycle rather than stopped flat, so the three dots still read as an
+     indicator instead of as punctuation. */
+  .chat-typing-dots span { animation: none; opacity: 0.7; }
+}
 
 /* Bubbles are flex items in a column, so they shrink below their own content once
    the conversation overflows - which pushed a tall embedded run panel out through
