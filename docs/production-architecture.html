@@ -137,6 +137,7 @@ td.num{font-family:"JetBrains Mono",monospace;font-variant-numeric:tabular-nums;
     <li><a href="#breaks">What breaks first</a></li>
     <li class="grp">Topology</li>
     <li><a href="#planes">Three planes</a></li>
+    <li><a href="#design">System design</a></li>
     <li><a href="#execution">Execution &amp; containers</a></li>
     <li><a href="#state">State &amp; storage</a></li>
     <li class="grp">The three axes</li>
@@ -304,6 +305,219 @@ td.num{font-family:"JetBrains Mono",monospace;font-variant-numeric:tabular-nums;
   of moving <code>RunManager</code>'s dict into Postgres and putting a queue between the
   <code>202</code> and the thread &mdash; both of which the API's existing shape already
   anticipates.</p>
+</section>
+
+<section id="design">
+  <div class="seg-head"><h2>System design</h2></div>
+  <p class="seg-sub">The component view, and the path a single <code>invoke</code> takes
+  through it. Dashed edges are the two flows that do not follow the request path &mdash;
+  a human taking control, and a container reaching its target.</p>
+
+  <div class="fig">
+  <svg viewBox="0 0 1040 620" role="img" aria-labelledby="sd-t sd-d">
+    <title id="sd-t">Production component diagram</title>
+    <desc id="sd-d">Clients reach a gateway that authenticates and resolves tenant. The gateway fronts the capability API, chat service and session broker. The API enqueues a job; a worker pool consumes it and starts one browser container per run. Containers reach target sites through an egress proxy. All components read and write a shared state plane of Postgres, object storage, Redis and a secrets manager, and emit to an observability sink.</desc>
+
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"></path>
+      </marker>
+      <marker id="ar-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--record)"></path>
+      </marker>
+    </defs>
+
+    <!-- clients -->
+    <text x="20" y="34" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.4">CLIENTS</text>
+    <rect x="20" y="46" width="120" height="50" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="32" y="70" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">AI agent</text>
+    <text x="32" y="86" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">invokes by name</text>
+    <rect x="20" y="106" width="120" height="50" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="32" y="130" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Operator</text>
+    <text x="32" y="146" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">records, reviews</text>
+    <rect x="20" y="166" width="120" height="50" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="32" y="190" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Chat user</text>
+    <text x="32" y="206" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">natural language</text>
+
+    <!-- gateway -->
+    <rect x="172" y="46" width="112" height="170" rx="4" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.5"></rect>
+    <text x="184" y="72" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Gateway</text>
+    <text x="184" y="96" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">authenticate</text>
+    <text x="184" y="114" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">resolve tenant</text>
+    <text x="184" y="132" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">role check</text>
+    <text x="184" y="150" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">per-tenant rate</text>
+    <text x="184" y="176" fill="var(--alert)" font-family="JetBrains Mono, monospace" font-size="9">absent today</text>
+
+    <path d="M140 71 L168 71" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ar)"></path>
+    <path d="M140 131 L168 131" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ar)"></path>
+    <path d="M140 191 L168 191" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ar)"></path>
+    <circle cx="154" cy="57" r="9" fill="var(--surface-2)"></circle>
+    <text x="154" y="61" fill="var(--ink-2)" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">1</text>
+
+    <!-- control plane -->
+    <rect x="308" y="30" width="200" height="200" rx="5" fill="var(--surface-2)"></rect>
+    <text x="320" y="48" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.4">CONTROL PLANE</text>
+    <rect x="320" y="58" width="176" height="50" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="332" y="80" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Capability API</text>
+    <text x="332" y="96" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">catalog, invoke, run status</text>
+    <rect x="320" y="116" width="176" height="50" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="332" y="138" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Chat service</text>
+    <text x="332" y="154" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">proposes, never executes</text>
+    <rect x="320" y="174" width="176" height="46" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="332" y="196" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Session broker</text>
+    <text x="332" y="211" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">scoped noVNC tickets</text>
+
+    <path d="M284 131 L316 131" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ar)"></path>
+    <circle cx="300" cy="112" r="9" fill="var(--surface-2)"></circle>
+    <text x="300" y="116" fill="var(--ink-2)" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">2</text>
+
+    <!-- queue + workers -->
+    <rect x="548" y="58" width="132" height="50" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="560" y="80" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Job queue</text>
+    <text x="560" y="96" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="9">tenant_id &middot; target_id</text>
+
+    <rect x="548" y="132" width="132" height="98" rx="4" fill="var(--record-soft)" stroke="var(--record)"></rect>
+    <text x="560" y="156" fill="var(--record)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Worker pool</text>
+    <text x="560" y="176" fill="var(--ink-2)" font-family="Archivo, sans-serif" font-size="10">holds a run lease</text>
+    <text x="560" y="192" fill="var(--ink-2)" font-family="Archivo, sans-serif" font-size="10">owns container life</text>
+    <text x="560" y="208" fill="var(--ink-2)" font-family="Archivo, sans-serif" font-size="10">per-tenant caps</text>
+    <text x="560" y="224" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="9">scales independently</text>
+
+    <path d="M496 83 L544 83" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ar)"></path>
+    <circle cx="520" cy="64" r="9" fill="var(--surface-2)"></circle>
+    <text x="520" y="68" fill="var(--ink-2)" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">3</text>
+
+    <path d="M614 108 L614 128" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ar)"></path>
+    <circle cx="640" cy="118" r="9" fill="var(--surface-2)"></circle>
+    <text x="640" y="122" fill="var(--ink-2)" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">4</text>
+
+    <!-- containers -->
+    <rect x="712" y="40" width="176" height="76" rx="4" fill="var(--surface)" stroke="var(--record)" stroke-dasharray="3 3"></rect>
+    <text x="724" y="62" fill="var(--record)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Run container</text>
+    <text x="724" y="80" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">Chromium + Xvfb + noVNC</text>
+    <text x="724" y="96" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="9">1.5 GiB &middot; 2 cpu &middot; 15 min</text>
+    <text x="724" y="110" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="9">labels: run, tenant, target</text>
+
+    <rect x="712" y="128" width="176" height="76" rx="4" fill="var(--surface)" stroke="var(--record)" stroke-dasharray="3 3"></rect>
+    <text x="724" y="150" fill="var(--record)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Run container</text>
+    <text x="724" y="168" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">one tenant, one target</text>
+    <text x="724" y="184" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">never reused across either</text>
+    <text x="724" y="198" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="9">torn down on any exit</text>
+
+    <path d="M680 78 L708 78" stroke="var(--record)" stroke-width="1.5" fill="none" marker-end="url(#ar-r)"></path>
+    <path d="M680 166 L708 166" stroke="var(--record)" stroke-width="1.5" fill="none" marker-end="url(#ar-r)"></path>
+    <circle cx="694" cy="122" r="9" fill="var(--record-soft)"></circle>
+    <text x="694" y="126" fill="var(--record)" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">5</text>
+
+    <!-- reaper -->
+    <rect x="712" y="216" width="176" height="46" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="724" y="238" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Reaper</text>
+    <text x="724" y="253" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">kills orphans by label</text>
+
+    <!-- egress + targets -->
+    <rect x="912" y="40" width="108" height="76" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="924" y="62" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Egress</text>
+    <text x="924" y="78" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">per-target</text>
+    <text x="924" y="94" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">allowlist</text>
+    <text x="924" y="110" fill="var(--alert)" font-family="JetBrains Mono, monospace" font-size="9">absent today</text>
+
+    <rect x="912" y="128" width="108" height="76" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="924" y="150" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Targets</text>
+    <text x="924" y="168" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">MERIDIAN</text>
+    <text x="924" y="184" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">other hosts</text>
+    <text x="924" y="199" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="9">shared, stateful</text>
+
+    <path d="M888 78 L908 78" stroke="var(--record)" stroke-width="1.5" stroke-dasharray="4 3" fill="none" marker-end="url(#ar-r)"></path>
+    <path d="M966 116 L966 124" stroke="var(--record)" stroke-width="1.5" stroke-dasharray="4 3" fill="none" marker-end="url(#ar-r)"></path>
+    <path d="M888 166 C 900 166, 900 120, 908 100" stroke="var(--record)" stroke-width="1.5" stroke-dasharray="4 3" fill="none" marker-end="url(#ar-r)"></path>
+    <circle cx="898" cy="58" r="9" fill="var(--record-soft)"></circle>
+    <text x="898" y="62" fill="var(--record)" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">6</text>
+
+    <!-- takeover path: broker to container -->
+    <path d="M408 220 C 408 300, 700 300, 780 210" stroke="var(--replay)" stroke-width="1.5" stroke-dasharray="5 4" fill="none" marker-end="url(#ar)"></path>
+    <text x="470" y="292" fill="var(--replay)" font-family="Archivo, sans-serif" font-size="10">ticketed noVNC &mdash; operator drives the same live session</text>
+
+    <!-- state plane -->
+    <rect x="20" y="330" width="1000" height="120" rx="5" fill="var(--replay-soft)"></rect>
+    <text x="34" y="352" fill="var(--replay)" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.4">STATE PLANE &mdash; THE ONLY THING BOTH PLANES SHARE</text>
+
+    <rect x="34" y="364" width="222" height="70" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="46" y="386" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Postgres</text>
+    <text x="46" y="403" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">artifacts, runs, events, leases</text>
+    <text x="46" y="420" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="9">row-level security by tenant</text>
+
+    <rect x="270" y="364" width="180" height="70" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="282" y="386" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Object store</text>
+    <text x="282" y="403" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">screenshots</text>
+    <text x="282" y="420" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">retention per tenant</text>
+
+    <rect x="464" y="364" width="180" height="70" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="476" y="386" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Redis</text>
+    <text x="476" y="403" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">chat sessions, catalog cache</text>
+    <text x="476" y="420" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">shared model quota</text>
+
+    <rect x="658" y="364" width="170" height="70" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="670" y="386" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Secrets</text>
+    <text x="670" y="403" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">provider keys</text>
+    <text x="670" y="420" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">target credentials</text>
+
+    <rect x="842" y="364" width="164" height="70" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="854" y="386" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="12" font-weight="600">Observability</text>
+    <text x="854" y="403" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="10">metrics, traces, alerts</text>
+    <text x="854" y="420" fill="var(--alert)" font-family="JetBrains Mono, monospace" font-size="9">absent today</text>
+
+    <path d="M408 230 L408 326" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 3" fill="none" marker-end="url(#ar)"></path>
+    <path d="M614 234 L614 326" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ar)"></path>
+    <circle cx="640" cy="290" r="9" fill="var(--surface-2)"></circle>
+    <text x="640" y="294" fill="var(--ink-2)" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">7</text>
+    <path d="M800 266 L800 326" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 3" fill="none" marker-end="url(#ar)"></path>
+
+    <text x="20" y="486" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">Solid: the invoke request path. Dashed: flows that do not follow it &mdash; state reads, container egress, and an operator taking control.</text>
+    <text x="20" y="508" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">Control and execution never call each other directly; escalation state crosses the boundary as a Postgres row.</text>
+  </svg>
+  </div>
+  <p class="cap">Boxes marked <span class="mono">absent today</span> are the three that do
+  not exist in any form yet &mdash; the gateway, the egress allowlist, and the
+  observability sink. Everything else either exists or exists in a single-process form
+  that this diagram splits apart.</p>
+
+  <h3>What happens on one invoke</h3>
+  <ol>
+    <li><strong>Client calls the API.</strong> An agent invokes a capability by name with
+    typed params. The gateway authenticates, resolves the tenant, checks the role &mdash;
+    a caller may invoke but not record &mdash; and applies the tenant's rate limit.</li>
+    <li><strong>The API validates and writes the run.</strong> The capability must be
+    <code>approved</code> for that tenant; a draft is not callable. A <code>runs</code> row
+    is inserted with <code>tenant_id</code>, <code>target_id</code> and status
+    <code>queued</code>, and the <code>run_id</code> returns immediately as
+    <code>202</code>. The request is done here; nothing waits.</li>
+    <li><strong>A job is enqueued</strong> carrying <code>tenant_id</code> and
+    <code>target_id</code>, which is what per-tenant concurrency caps and fair scheduling
+    key on.</li>
+    <li><strong>A worker claims it with a lease</strong> it renews while running. A worker
+    that dies stops renewing, and the run is re-queued or failed by the reaper rather than
+    sitting at <code>running</code> forever.</li>
+    <li><strong>The worker starts one container</strong> for this run: memory, CPU, pid and
+    lifetime capped, labelled with run, tenant and target. Target credentials are injected
+    from the secrets manager at start, so their blast radius is this container's
+    lifetime.</li>
+    <li><strong>The container reaches only its target</strong>, through an egress allowlist
+    derived from that target's host list &mdash; so the network enforces the same policy the
+    guardrail enforces against the agent's intent.</li>
+    <li><strong>Evidence streams to the state plane</strong> as it happens: events and
+    status to Postgres, screenshots to object storage. The API serves run status by reading
+    those rows, which is why it never needs to talk to the worker.</li>
+    <li><strong>The run ends</strong> &mdash; success, business outcome, or failure &mdash;
+    the container is torn down, the lease released, and the typed result written for the
+    caller to poll.</li>
+  </ol>
+
+  <p>Escalation cuts across this path rather than extending it. A worker that needs a human
+  writes the <code>InterventionRequest</code> to the run's row; the operator's dashboard sees
+  it on its next poll; the session broker mints a single-use, run-scoped ticket, and the
+  gateway proxies a noVNC connection into that one container. The operator drives the same
+  authenticated session the agent was driving, hands it back, and the run continues from the
+  step it paused on.</p>
 </section>
 
 <section id="execution">
