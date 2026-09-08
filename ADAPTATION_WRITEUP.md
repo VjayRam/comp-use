@@ -1,8 +1,7 @@
 # MERIDIAN CORE Adaptation — Write-up
 
-Full engineering detail lives in `CODEMAP.md` (per-file walkthrough), `ENHANCEMENTS.md`
-(every fix and why), and `IMPACTS.md` (design decisions vs. their effect on cost/
-latency/reliability). This is the short version.
+Full engineering detail lives in `CODEMAP.md` (per-file walkthrough) and
+`ENHANCEMENTS.md` (every fix and why). This is the short version.
 
 ## 1. What adapting took, and what actually had to change
 
@@ -121,7 +120,56 @@ confirmation number.
   production system, acceptable for a demo target with no real PII, called
   out explicitly rather than left implicit.
 
-## 5. What's cut, and what's next
+## 5. Known trade-offs: cost, latency, reliability
+
+Six decisions where the design deliberately bought one property with another, and
+where the cost is real enough to state rather than gloss. Each is a live property
+of the code today, not a hypothetical.
+
+**1. Token cost grows with the square of the run's length.** Every discovery turn
+resends the full history, so an *n*-step run costs O(n²) tokens rather than O(n).
+Nothing caps it at the source; the only bound is `max_discovery_steps`. In practice
+a median run is 13 turns and ~71k tokens, and the floor is high for a different
+reason — the system prompt and tool schema together are ~3,390 tokens re-sent on
+every single call, which is roughly 62% of a median run spent re-transmitting an
+identical prefix. Prompt caching is the obvious fix and is not wired up.
+
+**2. The default retry has no delay.** `OutcomePattern.retry_delay_seconds`
+defaults to `0`, so a `RECOVERABLE` condition is re-checked immediately unless an
+artifact author sets a delay explicitly. That helps against timing flakiness and
+does nothing for the case the assignment's own "wait and retry" language describes
+— a slow load or a transient outage that needs seconds, not microseconds.
+
+**3. `RunManager`'s record dict never shrinks on its own.** A `RunRecord` stays in
+memory until something explicitly deletes it, so the process grows with *cumulative*
+request volume rather than with concurrent load. That is the more insidious of the
+two memory-growth findings: concurrency is visible and self-limiting, while a slow
+leak tied to lifetime traffic only shows up in a long-lived deployment.
+
+**4. Schema defaults can retroactively change an approved artifact's behaviour.**
+Artifacts are stored as data and re-validated on load, so a new field shipping with
+a non-inert default applies to versions approved before that field existed. The
+`draft`/`approved` gate therefore guarantees "a human reviewed this recording",
+which is subtly weaker than "this exact behaviour was reviewed". The mitigation is
+discipline rather than mechanism: new schema fields default to inert.
+
+**5. `FallbackLLMClient` has no circuit breaker.** Every turn tries the primary
+provider and fails over on any error — so a provider that is comprehensively down
+is re-tried on every single call for the length of the run, each attempt paying its
+full timeout. Reliability is bought with unconditional cost rather than adaptive
+cost. The client-side rate limiter reduces how often this compounds into a 429, but
+does not change the shape.
+
+**6. Deterministic replay costs a hand-authored error vocabulary.** Keeping the LLM
+out of the replay path is what makes outcome classification reproducible — the same
+page always classifies the same way. The price is that every new target needs its
+error states observed by a human and written into `outcome_library.py` before
+replay can recognise them. Status-code classification and discovery-authored
+patterns are the way out, and both are deliberately deferred until a second target
+exists: with one target you cannot tell which parts of the vocabulary are genuinely
+site-specific and which are general.
+
+## 6. What's cut, and what's next
 
 - **Session/timeout recovery.** `OutcomePattern.recovery_action` is one UI
   step; a real session-expiry recovery is re-authenticate-then-resume the

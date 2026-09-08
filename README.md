@@ -7,18 +7,36 @@ UI, records the successful run as a typed, versioned, reusable capability artifa
 and replays that artifact deterministically (no LLM in the decision loop) with typed
 inputs/outputs, safety guardrails, and human-in-the-loop escalation.
 
-Built for the interface.ai take-home assignment
-(`Assignment A — Computer-Use Automation System.pdf`). **Status: implementation
-complete.** Setup and demo commands below; full design rationale is in
-[REPORT.md](REPORT.md) and the [design specs](docs/design/specs/).
+**The target is MERIDIAN CORE** (`https://web-sample.interface-hiring.com`) — a hosted,
+real, legacy-styled credit-union member-servicing console, per `Adaptation Project —
+MERIDIAN CORE.pdf`. Every capability described below is recorded against and replayed
+against that live host, wrapped in a callable capability API with a chatbot and a
+dashboard so the whole loop is demoable end to end. **Status: implementation complete**
+for all 7 required functions (check balance; member inquiry by number *and* by last
+name; funds transfer; open new share; update member info; place account hold) plus
+sign-on.
+
+The system began as the interface.ai take-home (`Assignment A — Computer-Use Automation
+System.pdf`) against a local mock bank, which is still in the repo (`mock_app/`) and
+still passes its tests — it is the offline fixture used when you want to exercise the
+pipeline without a network or an API key, and much of the design rationale in
+[REPORT.md](REPORT.md) is written against it. Section numbers (§3.1, §3.3, …) throughout
+these docs refer to that assignment.
+
+Start here: **[DEMO.md](DEMO.md)** to bring the stack up and drive it,
+[ADAPTATION_WRITEUP.md](ADAPTATION_WRITEUP.md) for what targeting MERIDIAN took,
+[REPORT.md](REPORT.md) for design rationale, [CODEMAP.md](CODEMAP.md) for a per-file
+walkthrough.
 
 ## What this will do
 
 1. Take a natural-language goal + target app.
-2. Run an LLM-driven discovery agent that drives a real (mock, legacy-styled) bank
-   back-office web app via Playwright, using an accessibility-tree view of the page
-   (screenshots are captured as evidence, not fed to the LLM's decision loop — see
-   REPORT.md's Cuts).
+2. Run an LLM-driven discovery agent that drives the live MERIDIAN CORE console (or the
+   local mock bank) via Playwright, using an accessibility-tree view of the page —
+   screenshots are captured as evidence, not fed to the LLM's decision loop, except on
+   the explicit vision fallback (see REPORT.md's Cuts). In sandbox mode each run gets
+   its own Docker container with a headed Chromium behind noVNC, so a human can watch
+   and take over the live session.
 3. Record a successful run as a versioned JSON capability artifact (typed inputs,
    typed outputs, per-step locators and checkpoints).
 4. Replay that artifact deterministically against new inputs, with no LLM call,
@@ -37,26 +55,32 @@ complete.** Setup and demo commands below; full design rationale is in
    signaled over HTTP instead of a terminal prompt. See
    [Capability server](#capability-server-optional-agent-facing-api) below.
 
-## MERIDIAN CORE adaptation — chatbot, dashboard, and a live legacy target
+## MERIDIAN CORE — the live target
 
-This same core also drives **MERIDIAN CORE**
-(`https://web-sample.interface-hiring.com`), a hosted, real, legacy-styled
-credit-union member-servicing console (`Adaptation Project — MERIDIAN CORE.pdf`) —
-wrapped with a callable capability API, a chatbot, and a dashboard so the
-whole thing is demoable end to end, not just runnable from the CLI. **Status:
-implementation complete** for all 7 required functions (check balance, member
-inquiry — by number *and* by last name, funds transfer, open new share, update
-member info, place account hold) plus sign-on, each recorded as a real,
-replayable capability against the live target. Full write-up (what adapting
-took, the API's shape, exceptional-state handling, how the safety/evidence/
-escalation guarantees survive the new surface, and what's cut):
-[`ADAPTATION_WRITEUP.md`](ADAPTATION_WRITEUP.md). Deeper engineering detail
-lives in [`CODEMAP.md`](CODEMAP.md) (per-file walkthrough),
-[`ENHANCEMENTS.md`](ENHANCEMENTS.md) (every fix, why), and
-[`IMPACTS.md`](IMPACTS.md) (design decisions vs. their effect on cost/latency/
-reliability).
+**MERIDIAN CORE** (`https://web-sample.interface-hiring.com`) is a hosted, real,
+legacy-styled credit-union member-servicing console. Every one of the 7 required
+functions is recorded as a real, replayable capability against it, plus sign-on, and
+the whole loop is wrapped in a capability API, a chatbot, and a dashboard so it is
+demoable end to end rather than only runnable from the CLI.
 
-### Extra setup (on top of the Setup section above)
+Two things about this target shape the code more than anything else. It is **hosted and
+shared** — nobody controls its state, it can be mid-fault-injection or wedged by someone
+else's session, and it changes without notice. And it is **genuinely legacy**: nested
+layout tables, no test IDs, dropdowns whose visible label differs from the `value` that
+Playwright matches on, balances rendered inside option text, error sentences broken
+across tags mid-sentence. The `OutcomePattern` library, the locator fallback chains, and
+the rendered-text checkpoint matching all exist because of specific failures against it,
+each documented with the live evidence that produced them.
+
+Full write-up (what adapting took, the API's shape, exceptional-state handling, how the
+safety/evidence/escalation guarantees survive the new surface, and what's cut):
+[`ADAPTATION_WRITEUP.md`](ADAPTATION_WRITEUP.md). Deeper engineering detail lives in
+[`CODEMAP.md`](CODEMAP.md) (per-file walkthrough) and [`ENHANCEMENTS.md`](ENHANCEMENTS.md)
+(every fix, why); the sharpest cost/latency/reliability trade-offs are written out in
+[`ADAPTATION_WRITEUP.md`](ADAPTATION_WRITEUP.md#known-trade-offs-cost-latency-reliability).
+To actually run a demo, use [`DEMO.md`](DEMO.md).
+
+### Setup for the live target (on top of the Setup section below)
 
 **Docker Desktop** — used for two things: a dedicated Postgres container (the
 primary store for artifacts/runs/evidence once the chatbot/dashboard are in
@@ -305,10 +329,15 @@ too.
 `python -m pytest -v` never touches the live target, Postgres, or a real LLM —
 every test spins up its own throwaway fixture and uses `FakeLLMClient`.
 Against MERIDIAN CORE specifically: `replay` never calls an LLM (only
-`discover` needs `OPENROUTER_API_KEY`, and the sample app's public demo
-credentials, already checked into `.env` — no real credentials or PII
-involved), so every capability above can be exercised with only the
-capability server running, no live LLM call in the loop.
+`discover` needs a provider key — `NVIDIA_API_KEY` by default, see the Setup
+section — plus the sample app's public demo operators, which the site's own
+sign-on page advertises: no real credentials or PII involved), so every
+capability above can be exercised with only the capability server running, no
+live LLM call in the loop.
+
+The mock bank (`mock_app/`) remains the offline fixture for the whole pipeline:
+`python run_mock_app.py` for local work, or `python run_mock_app_host.py` to bind
+`0.0.0.0` so a sandbox container reaches it at `host.docker.internal:5000`.
 
 ## System design
 
@@ -878,10 +907,10 @@ python -m pytest -v
 run_mock_app.py     start the mock bank app on :5000 (original take-home target)
 run_mock_app_host.py    same app bound to 0.0.0.0, so a sandbox container reaches it at host.docker.internal:5000
 demo_edge_cases.py  live demo: Locator.fallback + recoverable auto-retry (see "Exercising every outcome" step 8)
-REPORT.md           original take-home design write-up (architecture, schema, determinism, etc.)
-ADAPTATION_WRITEUP.md   MERIDIAN CORE adaptation write-up (what changed, why, what's cut)
+REPORT.md           design write-up (architecture, schema, determinism, safety, cuts)
+ADAPTATION_WRITEUP.md   what targeting MERIDIAN CORE took - the 7 required functions, what's cut
 DEMO.md             runbook: bring the stack up, then drive discovery/replay and their edge cases
-CODEMAP.md / ENHANCEMENTS.md / IMPACTS.md   full engineering log for the adaptation
+CODEMAP.md / ENHANCEMENTS.md   full engineering log for the adaptation
 ```
 
 ## System stats

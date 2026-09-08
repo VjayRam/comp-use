@@ -370,7 +370,217 @@ expect.
 
 ---
 
-## 7. Troubleshooting
+## 7. Command reference
+
+### 7.1 Postgres — run logs and artifacts
+
+Four tables: `runs`, `run_events`, `run_screenshots`, `artifacts` (`comp_use/pg/schema.sql`).
+Database and user are both `compuse`; the container publishes `127.0.0.1:51504`.
+
+```bash
+# Open a shell (keeps the password off the command line)
+docker exec -it comp-use-postgres psql -U compuse -d compuse
+
+# Or from the host, if psql is installed - it will prompt for the password
+psql -h 127.0.0.1 -p 51504 -U compuse -d compuse
+```
+
+**Run history**
+
+```sql
+-- Recent runs, newest first
+SELECT id, kind, capability_name, status, started_at,
+       finished_at - started_at AS duration
+FROM runs ORDER BY started_at DESC LIMIT 20;
+
+-- Anything still open. Nothing should sit here once the server has restarted:
+-- abandon_orphaned_runs() sweeps these to 'interrupted' at startup.
+SELECT id, kind, capability_name, started_at FROM runs
+WHERE status IN ('running','escalated') ORDER BY started_at DESC;
+
+-- Outcome breakdown
+SELECT status, count(*) FROM runs GROUP BY status ORDER BY 2 DESC;
+
+-- One run in full, including its goal and typed result
+SELECT * FROM runs WHERE id = '<run_id>';
+```
+
+**Run log (the evidence)**
+
+```sql
+-- What kinds of event a run produced - the fastest read on how it went
+SELECT event_type, count(*) FROM run_events
+WHERE run_id = '<run_id>' GROUP BY event_type ORDER BY 2 DESC;
+
+-- The full log in order
+SELECT created_at, event_type, data
+FROM run_events WHERE run_id = '<run_id>' ORDER BY created_at;
+
+-- Just the decisions: what the model actually chose each turn
+SELECT data->>'action'   AS action,
+       data->'locator'   AS locator,
+       data->>'text'     AS text,
+       data->'value_source'->>'param_name' AS param
+FROM run_events
+WHERE run_id = '<run_id>' AND event_type = 'decision'
+ORDER BY created_at;
+
+-- Why a run stopped: faults, escalations, skipped turns, loops
+SELECT event_type, data->>'reason' AS reason, data->>'detail' AS detail,
+       data->>'error' AS error
+FROM run_events
+WHERE run_id = '<run_id>'
+  AND event_type IN ('fault_detected','escalation_requested','skipped_decision','loop_detected')
+ORDER BY created_at;
+
+-- Token spend for a discovery run
+SELECT data FROM run_events
+WHERE run_id = '<run_id>' AND event_type = 'llm_usage_summary';
+```
+
+**Artifacts**
+
+```sql
+-- The catalog, all versions and statuses
+SELECT capability_name, version, status, created_from_run_id, created_at
+FROM artifacts ORDER BY capability_name, version;
+
+-- Drafts awaiting review
+SELECT capability_name, version, created_at FROM artifacts
+WHERE status = 'draft' ORDER BY created_at DESC;
+
+-- One artifact's shape, without dumping the whole blob
+SELECT jsonb_array_length(data->'steps') AS steps,
+       data->'input_schema'              AS inputs,
+       data->'output_schema'             AS outputs,
+       data->'success_checkpoint'        AS success_checkpoint
+FROM artifacts WHERE capability_name = '<name>' AND version = 1;
+
+-- Its steps, one row each
+SELECT ord, step->>'action' AS action, step->'locator' AS locator,
+       step->'value_source'->>'param_name' AS param, step->>'extract_as' AS extract_as
+FROM artifacts,
+     LATERAL jsonb_array_elements(data->'steps') WITH ORDINALITY AS s(step, ord)
+WHERE capability_name = '<name>' AND version = 1
+ORDER BY ord;
+
+-- Whole artifact as readable JSON
+SELECT jsonb_pretty(data) FROM artifacts
+WHERE capability_name = '<name>' AND version = 1;
+```
+
+Screenshots are stored as `BYTEA`. List them in SQL, then fetch the bytes over HTTP
+(§7.2) rather than out of psql:
+
+```sql
+SELECT label, length(png_bytes) AS bytes, created_at
+FROM run_screenshots WHERE run_id = '<run_id>' ORDER BY created_at;
+```
+
+### 7.2 HTTP API
+
+The server runs on `:8126` here (`--port 8000` is the default).
+
+```bash
+# Catalog - approved capabilities only; a draft 404s until it is approved
+curl -s http://127.0.0.1:8126/capabilities | jq
+curl -s http://127.0.0.1:8126/capabilities/<name> | jq
+curl -s http://127.0.0.1:8126/capabilities/<name>/versions | jq
+curl -s http://127.0.0.1:8126/capabilities/<name>/versions/1 | jq
+
+# Invoke - params keyed by input name; optional "version" pins one
+curl -s -X POST http://127.0.0.1:8126/capabilities/meridian_member_balance/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"params": {"member_number": "103001"}}'
+# -> {"run_id": "invoke_...", "status": "running"}
+
+# Record a new capability
+curl -s -X POST http://127.0.0.1:8126/capabilities/<name>/discover \
+  -H "Content-Type: application/json" \
+  -d '{"goal": "...", "start_url": "https://web-sample.interface-hiring.com",
+       "param_hints": ["member_number"]}'
+
+# Runs
+curl -s "http://127.0.0.1:8126/runs?limit=20" | jq
+curl -s http://127.0.0.1:8126/runs/<run_id> | jq
+curl -s http://127.0.0.1:8126/runs/<run_id>/events | jq
+curl -s http://127.0.0.1:8126/runs/<run_id>/screenshots/<label> -o shot.png
+
+# Run control - all 202, all take effect at the run's next step boundary
+curl -s -X POST http://127.0.0.1:8126/runs/<run_id>/takeover
+curl -s -X POST http://127.0.0.1:8126/runs/<run_id>/resume \
+  -H "Content-Type: application/json" -d '{"note": "did it by hand"}'
+curl -s -X POST http://127.0.0.1:8126/runs/<run_id>/interrupt
+curl -s -X DELETE "http://127.0.0.1:8126/runs/<run_id>?force=true"   # abandoned escalation
+curl -s -X DELETE "http://127.0.0.1:8126/runs/<run_id>"              # finished run
+
+# Version workflow
+curl -s -X POST http://127.0.0.1:8126/capabilities/<name>/versions/1/approve
+curl -s -X POST http://127.0.0.1:8126/capabilities/<name>/versions/2/reject
+curl -s -X POST http://127.0.0.1:8126/capabilities/<name>/versions/1/retire
+curl -s -X POST http://127.0.0.1:8126/capabilities/<name>/versions/1/set-default
+curl -s -X POST http://127.0.0.1:8126/capabilities/<name>/versions/1/clear-default
+
+# approve can also correct the examples a discovery run happened to record
+curl -s -X POST http://127.0.0.1:8126/capabilities/<name>/versions/1/approve \
+  -H "Content-Type: application/json" \
+  -d '{"input_examples": {"member_number": "103001"}}'
+
+# Chat
+curl -s -X POST http://127.0.0.1:8126/chat/sessions
+curl -s -X POST http://127.0.0.1:8126/chat/sessions/<session_id>/message \
+  -H "Content-Type: application/json" -d '{"message": "run meridian_member_balance for 103001"}'
+```
+
+`invoke` and `discover` return immediately with a `run_id`; poll `GET /runs/{run_id}`
+until `status` leaves `running`/`escalated`. The full route list, any time:
+
+```bash
+curl -s http://127.0.0.1:8126/openapi.json | jq '.paths | keys'
+```
+
+### 7.3 CLI
+
+Four subcommands: `discover`, `replay`, `approve`, `serve`.
+
+```bash
+# Record
+COMP_USE_SANDBOX=1 python -m comp_use.cli discover \
+  --capability-name <name> \
+  --start-url https://web-sample.interface-hiring.com \
+  --goal "..." \
+  --param-hint 'operator_id,password,branch,member_number' \
+  --derive-sum-output 'total_balance:shares_and_balances'
+
+# Replay
+COMP_USE_SANDBOX=1 python -m comp_use.cli replay \
+  --capability-name meridian_member_balance \
+  --params '{"member_number": "103001"}' \
+  --version 1 \
+  --confirm-risky \
+  --diagnose-drift-on-failure
+
+# Approve a draft, and serve
+python -m comp_use.cli approve --capability-name <name> --version 1
+python -m comp_use.cli serve --host 127.0.0.1 --port 8126
+```
+
+Flags worth knowing:
+
+- `--sandbox` on `discover`/`replay` overrides the `COMP_USE_SANDBOX` env var.
+- `--confirm-risky` skips the escalation pause on risky steps. The HTTP API never
+  passes it, which is why a `transfer_funds` invoke always stops for a human.
+- `--param-hint` is a comma-separated list of concepts that must become parameters.
+- `--derive-sum-output NAME:SOURCE_OUTPUT` adds a `sum_currency` computed output.
+
+> **A CLI `discover` that escalates needs an interactive terminal.** Run from a
+> background shell it dies with `ESCALATION TRANSPORT FAILED`, because
+> `LocalSharedBrowserTransport.wait_for_resume()` reads `resume` from stdin and there is
+> none. Use the chat UI for anything likely to escalate.
+
+---
+
+## 8. Troubleshooting
 
 | Symptom | Cause |
 |---|---|
@@ -381,3 +591,30 @@ expect.
 | `rate limit: waited Ns` in the backend log | The client-side limiter pacing NVIDIA to 40 requests/minute. Working as intended. |
 | Discovery types nothing into a field, then loops | The model emitted a parameter binding with no literal to type. Restate the goal with the concrete example value *and* the parameter name. |
 | A run is stuck `escalated` and nobody will resume it | `DELETE /runs/{id}?force=true`, or **Stop run** in the UI. |
+| `docker start comp-use-postgres` fails with *"ports are not available … bind: An attempt was made to access a socket in a way forbidden by its access permissions"* | Windows reserved a dynamic port range that swallowed 51504. See below. |
+| CLI `discover` dies with `ESCALATION TRANSPORT FAILED` | It escalated with no interactive stdin to read `resume` from. Use the chat UI. |
+
+### Postgres will not start: the port is reserved
+
+Windows' dynamic port ranges (Hyper-V/WinNAT) can reserve a block that includes
+`51504`, and Docker then cannot publish it. Confirm it:
+
+```powershell
+netsh interface ipv4 show excludedportrange protocol=tcp
+```
+
+If a range covers `51504` (e.g. `51423-51522`), release the reservations by restarting
+WinNAT from an **administrator** terminal, then start the container again:
+
+```powershell
+net stop winnat
+net start winnat
+docker start comp-use-postgres
+```
+
+The ranges are reassigned on each boot, so this can recur. To stop it permanently,
+reserve the port for yourself while it is free — Windows will then route around it:
+
+```powershell
+netsh int ipv4 add excludedportrange protocol=tcp startport=51504 numberofports=1
+```

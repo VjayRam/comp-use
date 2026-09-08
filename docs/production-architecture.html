@@ -1,0 +1,674 @@
+<title>Production Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+:root{
+  --ground:#F5F6F3; --surface:#FFFFFF; --surface-2:#EDEEE9;
+  --ink:#16191A; --ink-2:#3D4446; --muted:#6B7274; --rule:#DCDED7;
+  --record:#A2531A; --record-soft:#F3E7DC;
+  --replay:#186A5F; --replay-soft:#DCEBE7;
+  --alert:#9E2B26; --alert-soft:#F5E0DE;
+  --shadow:0 1px 2px rgba(20,25,26,.06), 0 8px 24px -16px rgba(20,25,26,.28);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#121517; --surface:#191D20; --surface-2:#212629;
+    --ink:#E9EAE5; --ink-2:#C2C6C4; --muted:#8E9495; --rule:#2C3236;
+    --record:#E29254; --record-soft:#2E2118;
+    --replay:#5FBFAE; --replay-soft:#152724;
+    --alert:#E0736C; --alert-soft:#2C1917;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#121517; --surface:#191D20; --surface-2:#212629;
+  --ink:#E9EAE5; --ink-2:#C2C6C4; --muted:#8E9495; --rule:#2C3236;
+  --record:#E29254; --record-soft:#2E2118;
+  --replay:#5FBFAE; --replay-soft:#152724;
+  --alert:#E0736C; --alert-soft:#2C1917;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:"Source Serif 4",Georgia,serif; font-size:17px; line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px 96px;display:grid;grid-template-columns:210px minmax(0,1fr);gap:56px;align-items:start}
+@media (max-width:940px){.wrap{grid-template-columns:1fr;gap:0}.rail{position:static;margin:0 0 40px}}
+
+h1,h2,h3,h4,.ui{font-family:Archivo,"Helvetica Neue",Arial,sans-serif}
+h1{font-size:2.6rem;line-height:1.08;font-weight:700;letter-spacing:-.022em;margin:0 0 14px;text-wrap:balance}
+h2{font-size:1.5rem;font-weight:700;letter-spacing:-.014em;margin:0 0 6px;text-wrap:balance}
+h3{font-size:1.06rem;font-weight:600;letter-spacing:-.005em;margin:26px 0 8px;text-wrap:balance}
+h4{font-size:.82rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+p{margin:0 0 14px;max-width:66ch}
+ul,ol{margin:0 0 14px;padding-left:1.15rem;max-width:66ch}
+li{margin:0 0 7px}
+a{color:var(--replay)}
+a:focus-visible,.rail a:focus-visible{outline:2px solid var(--replay);outline-offset:2px}
+code,.mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.855em}
+code{background:var(--surface-2);padding:.1em .34em;border-radius:3px;color:var(--ink-2)}
+strong{font-weight:600;color:var(--ink)}
+hr{border:0;border-top:1px solid var(--rule);margin:40px 0}
+
+header.top{grid-column:1/-1;padding:64px 0 40px;border-bottom:1px solid var(--rule);margin-bottom:44px}
+.eyebrow{font-family:"JetBrains Mono",monospace;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 18px}
+.lede{font-size:1.22rem;line-height:1.55;color:var(--ink-2);max-width:64ch;margin:0 0 22px}
+
+.rail{position:sticky;top:26px}
+.rail h4{margin-bottom:12px}
+.rail ul{list-style:none;padding:0;margin:0}
+.rail li{margin:0;border-left:2px solid var(--rule);padding:0}
+.rail a{display:block;padding:7px 0 7px 12px;font-family:Archivo,sans-serif;font-size:.855rem;line-height:1.3;color:var(--ink-2);text-decoration:none;border-radius:0 3px 3px 0}
+.rail a:hover{background:var(--surface-2);color:var(--ink)}
+.rail .grp{font-family:"JetBrains Mono",monospace;font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:18px 0 6px;border:0;padding-left:12px}
+.rail .grp:first-child{margin-top:0}
+
+section{scroll-margin-top:24px;margin:0 0 52px}
+.seg-head{display:flex;align-items:baseline;gap:14px;border-top:2px solid var(--ink);padding-top:12px;margin-bottom:16px}
+.seg-sub{font-family:Archivo,sans-serif;font-size:.95rem;color:var(--muted);margin:-2px 0 18px;max-width:64ch}
+
+/* State of a component today. Three states, because "partly built" is the honest
+   answer for most of this system and collapsing it to built/not-built would lie. */
+.st{display:inline-block;font-family:"JetBrains Mono",monospace;font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:3px;white-space:nowrap;font-weight:500}
+.st-y{background:var(--replay-soft);color:var(--replay)}
+.st-p{background:var(--record-soft);color:var(--record)}
+.st-n{background:var(--surface-2);color:var(--muted)}
+
+.tbl{overflow-x:auto;margin:0 0 18px;border:1px solid var(--rule);border-radius:5px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th{font-family:Archivo,sans-serif;font-size:.72rem;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);text-align:left;padding:11px 15px;border-bottom:1px solid var(--rule);white-space:nowrap;font-weight:600}
+td{padding:10px 15px;border-bottom:1px solid var(--rule);color:var(--ink-2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.mono{font-family:"JetBrains Mono",monospace;font-size:.79rem;color:var(--record);word-break:break-word}
+td.num{font-family:"JetBrains Mono",monospace;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+
+.war{background:var(--alert-soft);border-radius:5px;padding:15px 19px;margin:0 0 18px}
+.war h4{color:var(--alert);margin-bottom:7px}
+.war p{margin:0;font-size:.96rem;color:var(--ink-2);max-width:62ch}
+.war p+p{margin-top:9px}
+
+.keep{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--replay);border-radius:0 5px 5px 0;padding:16px 20px;margin:0 0 18px;box-shadow:var(--shadow)}
+.keep h4{color:var(--replay);margin-bottom:8px}
+.keep p{margin:0 0 10px;font-size:1.02rem}
+.keep p:last-child{margin:0}
+
+.files{display:flex;flex-direction:column;border:1px solid var(--rule);border-radius:5px;overflow:hidden;background:var(--surface);margin:0 0 18px}
+.files>div{display:grid;grid-template-columns:240px minmax(0,1fr);gap:18px;padding:12px 17px;border-bottom:1px solid var(--rule)}
+.files>div:last-child{border-bottom:0}
+@media (max-width:700px){.files>div{grid-template-columns:1fr;gap:5px}}
+.files .fp{font-family:"JetBrains Mono",monospace;font-size:.78rem;color:var(--record);line-height:1.5;word-break:break-word}
+.files .fd{font-size:.95rem;color:var(--ink-2);line-height:1.5}
+
+.fig{border:1px solid var(--rule);border-radius:5px;background:var(--surface);padding:20px;margin:0 0 10px;overflow-x:auto}
+.fig svg{display:block;min-width:660px;width:100%;height:auto}
+.cap{font-size:.86rem;color:var(--muted);max-width:64ch;margin:0 0 22px}
+
+.phase{display:grid;grid-template-columns:88px minmax(0,1fr);gap:20px;border-top:1px solid var(--rule);padding:18px 0 0;margin:0 0 18px}
+@media (max-width:620px){.phase{grid-template-columns:1fr;gap:6px}}
+.phase .pn{font-family:"JetBrains Mono",monospace;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding-top:.2em}
+.phase h3{margin:0 0 6px}
+.phase p{margin:0 0 8px;font-size:.98rem}
+.phase p:last-child{margin:0}
+
+.note{font-size:.9rem;color:var(--muted);max-width:64ch;font-style:italic}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">CompUse &middot; architecture</p>
+  <h1>From one operator on one box to a multi-tenant service</h1>
+  <p class="lede">What the system is today, what actually breaks first when several
+  users, several target institutions and several kinds of surface arrive at once, and
+  the topology that fixes each break &mdash; in the order the breaks bite.</p>
+  <p class="note">Current-state claims below were read out of the code, not recalled.
+  Where this contradicts <span class="mono">ENHANCEMENTS.md</span> &sect;5, that section
+  predates the sandbox, Postgres and takeover work and is superseded here.</p>
+</header>
+
+<nav class="rail">
+  <h4>Contents</h4>
+  <ul>
+    <li class="grp">Ground truth</li>
+    <li><a href="#today">Where it stands</a></li>
+    <li><a href="#breaks">What breaks first</a></li>
+    <li class="grp">Topology</li>
+    <li><a href="#planes">Three planes</a></li>
+    <li><a href="#execution">Execution &amp; containers</a></li>
+    <li><a href="#state">State &amp; storage</a></li>
+    <li class="grp">The three axes</li>
+    <li><a href="#tenants">Many users</a></li>
+    <li><a href="#targets">Many target sites</a></li>
+    <li><a href="#surfaces">Many surfaces</a></li>
+    <li class="grp">Cross-cutting</li>
+    <li><a href="#human">Human-in-the-loop</a></li>
+    <li><a href="#quota">Model quota</a></li>
+    <li><a href="#data">Data &amp; secrets</a></li>
+    <li><a href="#slo">Failure &amp; SLOs</a></li>
+    <li class="grp">Getting there</li>
+    <li><a href="#rollout">Rollout order</a></li>
+    <li><a href="#nonbuild">What not to build</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<section id="today">
+  <div class="seg-head"><h2>Where it stands</h2></div>
+  <p class="seg-sub">Half the production checklist is already built. Naming which half
+  precisely is what stops the rest from being designed against a system that no longer
+  exists.</p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Concern</th><th>State</th><th>What exists in the code</th></tr></thead>
+    <tbody>
+      <tr><td>Artifact &amp; evidence storage</td><td><span class="st st-y">built</span></td>
+        <td>Postgres is primary once <code>COMP_USE_DB_URL</code> is set &mdash; <code>artifacts</code>, <code>runs</code>, <code>run_events</code>, <code>run_screenshots</code>. Disk survives as the no-DB fallback.</td></tr>
+      <tr><td>Per-run isolation</td><td><span class="st st-y">built</span></td>
+        <td>One <code>docker run --rm</code> container per run: headed Chromium under Xvfb, driven over CDP, torn down by <code>_browser_session</code>'s <code>finally</code>.</td></tr>
+      <tr><td>Live view &amp; handover</td><td><span class="st st-y">built</span></td>
+        <td>noVNC per run, x11vnc deliberately <em>without</em> <code>-viewonly</code>. Takeover pauses at a step boundary; resume hands back to the same session.</td></tr>
+      <tr><td>Run cancellation</td><td><span class="st st-y">built</span></td>
+        <td><code>interrupt()</code> raises <code>RunInterrupted</code> at the next boundary; unwinding stops the container. Terminal status <code>interrupted</code>, distinct from <code>error</code>.</td></tr>
+      <tr><td>Crash recovery</td><td><span class="st st-p">partial</span></td>
+        <td><code>abandon_orphaned_runs()</code> sweeps stale <code>running</code>/<code>escalated</code> rows at startup. It fixes the <em>row</em>; a container outliving its process is not reaped.</td></tr>
+      <tr><td>Run execution</td><td><span class="st st-p">partial</span></td>
+        <td>A <code>threading.Thread</code> inside the API process. Isolated at the browser, not at the worker &mdash; a deploy still kills in-flight runs.</td></tr>
+      <tr><td>Run registry</td><td><span class="st st-p">partial</span></td>
+        <td>Runs are durable in Postgres, but <code>RunManager._runs</code> is an in-process dict and holds the only handle to a live run's transport.</td></tr>
+      <tr><td>Target configuration</td><td><span class="st st-p">partial</span></td>
+        <td><code>outcome_library</code> is keyed on <code>target["app"]</code> and resolved live, so several hosts already coexist. The allowlist, credentials and provider config are global.</td></tr>
+      <tr><td>Tenancy</td><td><span class="st st-n">absent</span></td>
+        <td>No tenant concept anywhere &mdash; no column, no scope, no filter. Every artifact and run is global.</td></tr>
+      <tr><td>Authentication</td><td><span class="st st-n">absent</span></td>
+        <td>Anyone who can reach the port can discover, invoke, approve, and take control of a live browser.</td></tr>
+      <tr><td>Queue &amp; worker pool</td><td><span class="st st-n">absent</span></td>
+        <td>The API's shape already fits one &mdash; <code>202</code> plus a <code>run_id</code> to poll &mdash; but nothing consumes a queue.</td></tr>
+      <tr><td>Observability</td><td><span class="st st-n">absent</span></td>
+        <td>Per-run evidence is excellent. Cross-run metrics, tracing and alerting do not exist.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="keep">
+    <h4>What none of this touches</h4>
+    <p><code>DiscoveryAgent</code>, <code>ReplayEngine</code>, <code>Guardrail</code>,
+    <code>SensitiveValueTokenizer</code>, <code>EscalationController</code> and the artifact
+    schema stay as they are. Everything below is topology and state management wrapped
+    <em>around</em> that core. If a proposal here requires editing the replay engine, it is
+    the wrong proposal.</p>
+  </div>
+</section>
+
+<section id="breaks">
+  <div class="seg-head"><h2>What breaks first</h2></div>
+  <p class="seg-sub">In the order it bites, not the order it appears on an architecture
+  diagram. Two of these are single lines of code today.</p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>#</th><th>Break</th><th>Trigger</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>Anyone can drive a bank console</td><td>The first time it is reachable from another machine</td><td class="mono">no auth anywhere</td></tr>
+      <tr><td class="num">2</td><td>Two API replicas disagree about a run</td><td>Second replica</td><td class="mono">run_manager.py &mdash; _runs dict</td></tr>
+      <tr><td class="num">3</td><td>Two versions of one capability collide</td><td>Second replica, concurrent discovery</td><td class="mono">cli.py &mdash; _version_lock</td></tr>
+      <tr><td class="num">4</td><td>Model quota is exceeded N&times;</td><td>Second worker process</td><td class="mono">llm_client.py &mdash; _NVIDIA_RATE_LIMITER</td></tr>
+      <tr><td class="num">5</td><td>A deploy kills live browser sessions</td><td>First deploy during a run</td><td class="mono">thread inside the API process</td></tr>
+      <tr><td class="num">6</td><td>One run's memory starves the box</td><td>Concurrency, or one bad run</td><td class="mono">sandbox.py &mdash; no --memory cap</td></tr>
+      <tr><td class="num">7</td><td>Tenant A reads tenant B's evidence</td><td>Second customer</td><td class="mono">no tenant scope on any query</td></tr>
+      <tr><td class="num">8</td><td>A chat session vanishes mid-conversation</td><td>Restart, or a second replica</td><td class="mono">chat/session.py &mdash; in memory</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="war">
+    <h4>Breaks 3 and 4 are the sharp ones</h4>
+    <p><code>_version_lock</code> is a <code>threading.Lock</code> and
+    <code>_NVIDIA_RATE_LIMITER</code> is a module-level object. Both are correct within one
+    process and silently wrong across two &mdash; no error, no warning. The version lock
+    lets two discoveries compute the same next version and one silently clobbers the other;
+    the limiter lets <em>N</em> workers each send the full 40 requests a minute. Neither
+    failure announces itself, which is what makes them worse than the outages above them.</p>
+  </div>
+</section>
+
+<section id="planes">
+  <div class="seg-head"><h2>Three planes</h2></div>
+  <p class="seg-sub">The split that makes everything else expressible: what accepts
+  requests, what drives browsers, and what remembers.</p>
+
+  <div class="fig">
+  <svg viewBox="0 0 900 420" role="img" aria-labelledby="planes-t planes-d">
+    <title id="planes-t">Control, execution and state planes</title>
+    <desc id="planes-d">The control plane holds stateless API and chat replicas behind a gateway. The execution plane holds a worker pool, each worker supervising per-run browser containers. The state plane holds Postgres, object storage, a queue and a cache. Control and execution communicate only through the state plane.</desc>
+
+    <rect x="8" y="8" width="884" height="120" rx="6" fill="var(--surface-2)"></rect>
+    <text x="22" y="30" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="1.6">CONTROL PLANE &mdash; STATELESS, HORIZONTALLY SCALED</text>
+    <rect x="22" y="44" width="150" height="66" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="38" y="70" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="13" font-weight="600">Gateway</text>
+    <text x="38" y="90" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">authn &middot; tenant &middot; rate</text>
+    <rect x="190" y="44" width="150" height="66" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="206" y="70" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="13" font-weight="600">Capability API</text>
+    <text x="206" y="90" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">catalog &middot; invoke &middot; runs</text>
+    <rect x="358" y="44" width="150" height="66" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="374" y="70" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="13" font-weight="600">Chat / dashboard</text>
+    <text x="374" y="90" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">sessions in Redis</text>
+    <rect x="526" y="44" width="180" height="66" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="542" y="70" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="13" font-weight="600">Session broker</text>
+    <text x="542" y="90" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">scoped noVNC tickets</text>
+
+    <path d="M450 128 L450 168" stroke="var(--rule)" stroke-width="2" fill="none"></path>
+    <path d="M444 160 L450 170 L456 160 Z" fill="var(--rule)"></path>
+
+    <rect x="8" y="176" width="884" height="128" rx="6" fill="var(--record-soft)"></rect>
+    <text x="22" y="198" fill="var(--record)" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="1.6">EXECUTION PLANE &mdash; ONE CONTAINER PER RUN</text>
+    <rect x="22" y="212" width="270" height="78" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="38" y="236" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="13" font-weight="600">Worker pool</text>
+    <text x="38" y="256" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">pulls jobs &middot; owns container lifecycle</text>
+    <text x="38" y="274" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">pools sized per tenant &amp; per target</text>
+
+    <rect x="310" y="212" width="176" height="78" rx="4" fill="var(--surface)" stroke="var(--record)" stroke-dasharray="3 3"></rect>
+    <text x="326" y="236" fill="var(--record)" font-family="Archivo, sans-serif" font-size="13" font-weight="600">Run container</text>
+    <text x="326" y="256" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">Chromium + Xvfb + noVNC</text>
+    <text x="326" y="274" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="10">mem cap &middot; egress allowlist</text>
+
+    <rect x="504" y="212" width="176" height="78" rx="4" fill="var(--surface)" stroke="var(--record)" stroke-dasharray="3 3"></rect>
+    <text x="520" y="236" fill="var(--record)" font-family="Archivo, sans-serif" font-size="13" font-weight="600">Run container</text>
+    <text x="520" y="256" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">one tenant, one target</text>
+    <text x="520" y="274" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="10">no shared kernel state</text>
+
+    <rect x="698" y="212" width="180" height="78" rx="4" fill="var(--surface)" stroke="var(--rule)"></rect>
+    <text x="714" y="236" fill="var(--ink)" font-family="Archivo, sans-serif" font-size="13" font-weight="600">Reaper</text>
+    <text x="714" y="256" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">kills orphans by label</text>
+    <text x="714" y="274" fill="var(--muted)" font-family="Archivo, sans-serif" font-size="11">enforces max lifetime</text>
+
+    <path d="M450 304 L450 344" stroke="var(--rule)" stroke-width="2" fill="none"></path>
+    <path d="M444 336 L450 346 L456 336 Z" fill="var(--rule)"></path>
+
+    <rect x="8" y="352" width="884" height="60" rx="6" fill="var(--replay-soft)"></rect>
+    <text x="22" y="374" fill="var(--replay)" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="1.6">STATE PLANE &mdash; THE ONLY THING BOTH PLANES SHARE</text>
+    <text x="22" y="396" fill="var(--ink-2)" font-family="Archivo, sans-serif" font-size="12">Postgres (artifacts, runs, events) &middot; object store (screenshots) &middot; queue (jobs) &middot; Redis (sessions, catalog cache, quota tokens)</text>
+  </svg>
+  </div>
+  <p class="cap">The rule that makes the split worth having: <strong>control and execution
+  never talk directly.</strong> A worker publishes escalation state by writing a row; the
+  API learns about it by reading one. That is what lets either side be restarted, scaled or
+  deployed without the other noticing.</p>
+
+  <p>Today's process is all three planes at once, which is why a deploy kills a browser
+  session and why one replica cannot see another's runs. Splitting them is mostly a matter
+  of moving <code>RunManager</code>'s dict into Postgres and putting a queue between the
+  <code>202</code> and the thread &mdash; both of which the API's existing shape already
+  anticipates.</p>
+</section>
+
+<section id="execution">
+  <div class="seg-head"><h2>Execution &amp; containers</h2></div>
+  <p class="seg-sub">The container per run already exists. What's missing is everything
+  around its lifecycle.</p>
+
+  <h3>Limits, which do not exist today</h3>
+  <p><code>sandbox.py</code> sets <code>--shm-size 1g</code> and no memory cap at all.
+  Measured peaks were <strong>428 MiB</strong> for a replay or a short discovery and
+  <strong>1126 MiB</strong> for a long one that reloaded pages through retries, with CPU
+  bursting to 380&ndash;1070% across cores. So the numbers to enforce are known:</p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Control</th><th>Value</th><th>Why this number</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">--memory</td><td class="num">1.5 GiB</td><td>Above the 1126 MiB worst case observed, below two-per-2GiB-box.</td></tr>
+      <tr><td class="mono">--cpus</td><td class="num">2.0</td><td>Chromium startup genuinely wants multiple cores; uncapped it takes every core on the box.</td></tr>
+      <tr><td class="mono">--pids-limit</td><td class="num">512</td><td>A fork bomb inside a browser container should not need a host reboot.</td></tr>
+      <tr><td>Max lifetime</td><td class="num">15 min</td><td>The longest legitimate run measured was 9m21s. Beyond that, something is wrong.</td></tr>
+      <tr><td>Egress policy</td><td>allowlist</td><td>The container should reach the target host and nothing else &mdash; see below.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Egress is the isolation gap that matters</h3>
+  <p>The <code>Guardrail</code> allowlist constrains what the <em>agent</em> navigates to.
+  It does not constrain the browser: a page can load a script from anywhere, and a
+  compromised target could use the container as a foothold. Isolation today is a container
+  boundary with an open network. In production the run container gets a per-target egress
+  allowlist at the network layer, so the guardrail's policy and the network's policy say the
+  same thing &mdash; one enforced against the agent's intent, one against the browser's
+  actual sockets.</p>
+
+  <h3>Reaping, which the current design cannot do</h3>
+  <p>Containers are torn down by a <code>finally</code> in the process that started them.
+  Kill that process and the container survives &mdash; live-observed this session: three
+  containers still running 38, 45 and 48 minutes after their runs were gone. A reaper keyed
+  on container labels (<code>run_id</code>, <code>tenant_id</code>, started-at) is the only
+  thing that closes it, because the owning process is precisely what has disappeared.</p>
+
+  <h3>Warm pools, carefully</h3>
+  <p>Container start is a real cost &mdash; <code>spawn()</code> polls for published ports
+  and then for Chromium answering CDP, tens of seconds against a ~7s median replay. A warm
+  pool is the obvious fix and a genuine hazard: a reused browser carries cookies, session
+  state and cached credentials across runs, and the one thing this system must never do is
+  leak one tenant's authenticated session into another's run. If pooled, containers are
+  <strong>scoped to a single tenant-and-target pair and never reused across either</strong>,
+  which limits the win to bursts of the same capability for the same customer.</p>
+</section>
+
+<section id="state">
+  <div class="seg-head"><h2>State &amp; storage</h2></div>
+  <p class="seg-sub">Postgres already holds the durable objects. Three additions and one
+  correction.</p>
+
+  <div class="files">
+    <div><div class="fp">runs &mdash; add tenant_id, target_id, worker_id, lease_expires_at</div>
+      <div class="fd">The lease is what makes a run recoverable: a worker holds a time-bounded claim it renews, and a run whose lease expires is re-queued or failed by the reaper rather than sitting at <code>running</code> forever. <code>abandon_orphaned_runs()</code> becomes a lease sweep instead of a startup-only sweep.</div></div>
+    <div><div class="fp">artifacts &mdash; add tenant_id, target_id to the primary key</div>
+      <div class="fd">Two customers will both want <code>member_balance</code>, against different hosts, with different steps. Version numbering scopes to the tenant.</div></div>
+    <div><div class="fp">artifact versioning &mdash; replace _version_lock</div>
+      <div class="fd">A <code>threading.Lock</code> becomes a unique constraint plus <code>INSERT … ON CONFLICT</code>, or <code>SELECT … FOR UPDATE</code> on a per-capability row. The race the lock was written to prevent is real; the lock's scope is one process.</div></div>
+    <div><div class="fp">run_screenshots &mdash; move bytes to object storage</div>
+      <div class="fd">Storing PNG bytes in Postgres was the right call at this volume and the wrong one at production scale. Rows keep the metadata and a key; the bytes move to S3-equivalent with a lifecycle policy.</div></div>
+    <div><div class="fp">Redis &mdash; chat sessions, catalog cache, quota tokens</div>
+      <div class="fd">Chat sessions are in-memory today, so a restart loses a conversation and a second replica cannot see it. The catalog does an approved-version scan per call, invalidated on approve/reject/retire. Quota tokens are covered below.</div></div>
+    <div><div class="fp">Queue &mdash; jobs carry tenant_id and target_id</div>
+      <div class="fd">Routing, per-tenant concurrency caps and fair scheduling all fall out of having those two fields on the job rather than looking them up later.</div></div>
+  </div>
+
+  <p>Escalation crossing the plane boundary needs no pub/sub. A worker writes the
+  <code>InterventionRequest</code> to the run's row; the API reads it when polled.
+  Escalations are rare and already polled by the dashboard on a 1.5-second timer, so a
+  dedicated bus would be infrastructure bought for nothing.</p>
+</section>
+
+<section id="tenants">
+  <div class="seg-head"><h2>Many users</h2></div>
+  <p class="seg-sub">Tenancy is the axis with the least existing support &mdash; no column,
+  no scope, no filter &mdash; and the one where a mistake is a breach rather than an outage.</p>
+
+  <h3>Two layers, not one</h3>
+  <p><strong>Tenant</strong> is the isolation boundary: a customer institution. Artifacts,
+  runs, evidence, credentials and target configuration all scope to it, and nothing crosses.
+  <strong>User</strong> is the identity within a tenant, and carries the role. Both belong on
+  the job, the run row and the container label, so a query, a schedule and a
+  <code>docker ps</code> all answer the same question the same way.</p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Role</th><th>May do</th><th>Why the line sits here</th></tr></thead>
+    <tbody>
+      <tr><td>Caller <span class="mono">(agent)</span></td><td>Invoke approved capabilities</td><td>The unattended path. Cannot record, cannot approve, cannot see another tenant.</td></tr>
+      <tr><td>Operator</td><td>+ discover, take control, interrupt</td><td>Taking control of a live authenticated banking session is an operator action, not a caller one.</td></tr>
+      <tr><td>Reviewer</td><td>+ approve, reject, retire</td><td>Approval is the gate that stops an unreviewed recording becoming what unattended invoke picks up. Separating it from discovery is the whole point.</td></tr>
+      <tr><td>Admin</td><td>+ manage targets, credentials, members</td><td>Credential and target configuration is a blast-radius change, not a daily one.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="war">
+    <h4>Discovery is an unusually privileged action</h4>
+    <p>A discovery run gives an LLM a live authenticated session on a financial console and
+    lets it decide what to click. The approval gate covers what gets <em>replayed</em>, not
+    what discovery does while recording. Per-tenant discovery quotas, an operator-only
+    role, and an audit trail per run are the compensating controls &mdash; and the fact that
+    discovery already refuses to record fault pages, escalates on risky steps and can be
+    interrupted mid-run is why this is defensible at all.</p>
+  </div>
+
+  <p>Every query gets a tenant predicate, enforced at a layer no route can forget &mdash;
+  Postgres row-level security keyed on a session variable the request handler sets, rather
+  than a <code>WHERE tenant_id = …</code> that a future endpoint omits. A tenant-scoped
+  concurrency cap on the queue keeps one customer's burst from starving another's, and a
+  per-tenant container label makes the boundary visible to the reaper and to anyone
+  debugging the host.</p>
+</section>
+
+<section id="targets">
+  <div class="seg-head"><h2>Many target sites</h2></div>
+  <p class="seg-sub">The axis the system is already closest to supporting &mdash; and where
+  the remaining work is mostly moving constants into rows.</p>
+
+  <p>The precedent is <code>outcome_library.py</code>: a registry keyed on
+  <code>target["app"]</code>, resolved live at replay rather than snapshotted into artifacts,
+  returning an empty list for an unrecognised host. Several targets already coexist. The
+  generalisation is to make that shape the norm for everything else that is currently
+  global.</p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Per-target</th><th>Today</th><th>In production</th></tr></thead>
+    <tbody>
+      <tr><td>Outcome patterns</td><td>Registry keyed on hostname, in code</td><td>Same shape, rows in Postgres, editable by an admin without a deploy</td></tr>
+      <tr><td>URL allowlist</td><td>One global <code>allowed_url_prefixes</code></td><td>Per target; the run inherits its target's, never the union of all</td></tr>
+      <tr><td>Credentials</td><td>Demo operators in <code>.env</code></td><td>Per tenant <em>and</em> target, in a secrets manager, injected into the container at start</td></tr>
+      <tr><td>Session model</td><td>Sign-on re-run inside each capability</td><td>A session capability whose output is a typed session other capabilities consume</td></tr>
+      <tr><td>Egress rules</td><td>None</td><td>Derived from the target's own host list</td></tr>
+      <tr><td>Health</td><td>Discovered by a run failing</td><td>A cheap synthetic replay per target, so "the host is wedged" is known before a customer's run finds out</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="war">
+    <h4>The session model is the real unfinished work</h4>
+    <p>Every capability today re-runs sign-on inside itself, which is why every artifact
+    carries <code>operator_id</code>, <code>password</code> and <code>branch</code>. It also
+    means a session timeout mid-run is classified correctly as recoverable and then cannot be
+    acted on, because <code>OutcomePattern.recovery_action</code> is a single UI step and
+    re-authenticating is a whole flow. Sessions as typed outputs consumed as typed inputs
+    fixes the duplication, the credential spread, <em>and</em> mid-run re-auth in one change
+    &mdash; and it is a schema change, so it is the one item here that touches the core.</p>
+  </div>
+</section>
+
+<section id="surfaces">
+  <div class="seg-head"><h2>Many surfaces</h2></div>
+  <p class="seg-sub">The abstraction exists and has never been tested by a second
+  implementation, which is the honest description of every interface in that position.</p>
+
+  <p><code>Surface</code> is already the seam: <code>observe()</code> returns an
+  accessibility tree, <code>act()</code> performs one <code>ActionType</code>,
+  <code>check_checkpoint()</code> answers whether a state holds. Both engines depend on the
+  interface, and <code>_derive_success_checkpoint()</code> was deliberately rewritten to go
+  through <code>Surface.get_heading_text()</code> rather than reach into a Playwright page,
+  precisely so a non-Playwright surface stays possible.</p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Surface</th><th>observe()</th><th>What genuinely differs</th></tr></thead>
+    <tbody>
+      <tr><td>Web <span class="mono">(built)</span></td><td>Playwright <code>aria_snapshot</code> + form-field hints</td><td>&mdash;</td></tr>
+      <tr><td>Desktop</td><td>UIA / AX / AT-SPI tree</td><td>Locators become window-and-control paths. No URL, so <code>URL_MATCHES</code> checkpoints have no meaning and the allowlist needs a different unit &mdash; an application identity rather than a prefix.</td></tr>
+      <tr><td>Terminal <span class="mono">(3270/5250)</span></td><td>Screen buffer as a field grid</td><td>Genuinely closer to the artifact model than the web is: fields are addressed by row and column, and a screen is identified by its own text. Risk classification loses every heuristic keyed on control names.</td></tr>
+      <tr><td>API-backed</td><td>Response shape</td><td>Not a UI at all; the honest answer is that a capability with a real API behind it should not be driven through a browser.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>Two things must change before a second surface is real, and both are cheap now and
+  expensive later. <code>ActionType</code> and <code>LocatorStrategy</code> are web-shaped
+  enums; a desktop surface needs its own strategies without web strategies leaking into its
+  artifacts. And <code>Guardrail</code>'s risk classification reads control names, which
+  assumes a naming convention a terminal screen does not have &mdash; risk rules become
+  per-surface, resolved the same way outcome patterns already are.</p>
+</section>
+
+<section id="human">
+  <div class="seg-head"><h2>Human-in-the-loop, at scale</h2></div>
+  <p class="seg-sub">One operator watching one noVNC tab is a solved problem. Twenty
+  operators and two hundred concurrent runs is a different one.</p>
+
+  <p>Today the noVNC URL is a <code>127.0.0.1</code> port published by the container, handed
+  to the dashboard, and reachable by anyone who can reach it. In production that becomes a
+  <strong>session broker</strong>: an escalated run mints a short-lived, single-use ticket
+  scoped to one run, one tenant and one operator; the gateway proxies the connection and
+  logs who connected, when, and for how long. Nothing else changes &mdash; the container
+  still serves noVNC, x11vnc still runs without <code>-viewonly</code>, and the
+  <code>EscalationController</code> state machine underneath is untouched.</p>
+
+  <p>Escalations also need routing rather than a dashboard someone happens to be looking at:
+  a queue per tenant, an assignment, a timeout, and an escalation-of-the-escalation when
+  nobody claims one. The mechanism already exists for the timeout case &mdash;
+  <code>cancel()</code> force-unwinds an abandoned escalation so the run reports a failure
+  instead of holding a browser open forever &mdash; but nothing decides <em>when</em> to
+  call it. An unclaimed-escalation SLA is what turns that from a manual escape hatch into a
+  policy.</p>
+</section>
+
+<section id="quota">
+  <div class="seg-head"><h2>Model quota across workers</h2></div>
+  <p class="seg-sub">A small component with an outsized failure mode, because it fails
+  silently.</p>
+
+  <p>The limiter is a sliding-window log, thread-safe, shared process-wide, correct for one
+  process and wrong for two: each worker independently paces to 40 requests a minute, so
+  <em>N</em> workers send 40<em>N</em>. The quota belongs to the API key, so the counter has
+  to live where the key does &mdash; a Redis-backed sliding window keyed on the provider
+  credential, with the same "a slot per HTTP attempt, retries included" rule the in-process
+  version already gets right.</p>
+
+  <p>Worth keeping the reason for pacing at all, because it is not politeness: a 429 burns
+  the retry budget, then fails the call over to the fallback provider, spending a free tier
+  capped at 50 requests a day across the whole account. A burst today exhausts tomorrow's
+  fallback. With per-tenant quotas layered on top, the same mechanism also stops one
+  customer's discovery spree from consuming another's capacity &mdash; the token bucket is
+  per credential, the fairness cap is per tenant.</p>
+</section>
+
+<section id="data">
+  <div class="seg-head"><h2>Data &amp; secrets</h2></div>
+
+  <h3>Redaction has a known gap on the live target</h3>
+  <p>The patterns cover the mock bank's ID shapes &mdash; <code>ACC-</code>,
+  <code>SUB-</code>, <code>TXN-</code>, <code>CONF-</code>, 9&ndash;12 digit numbers, dollar
+  amounts. MERIDIAN's member numbers and share ids such as <code>103001-MMKT-11</code> match
+  none of them and are <strong>not redacted today</strong>. The fix is one regex, because
+  both the LLM-facing tokenizer and the output redaction read the same list &mdash; but
+  per-target pattern sets are the production shape, since a pattern list that is a union of
+  every customer's ID formats over-redacts everyone's evidence.</p>
+
+  <h3>The vision channel stays an exposure</h3>
+  <p>Tokenization is regex over text. The drift-diagnosis path sends a raw screenshot to a
+  vision model, and pixels cannot be tokenized. This is documented rather than solved; at
+  production scale the answer is a per-tenant policy that either disables the vision fallback
+  or requires a self-hosted model for it.</p>
+
+  <h3>Retention and secrets</h3>
+  <p>Evidence is the audit trail and also a pile of screenshots of a financial console: it
+  needs a retention policy per tenant, deletion on request, and encryption at rest &mdash;
+  none of which exist. Provider keys and target credentials move from <code>.env</code> to a
+  secrets manager, injected per run rather than mounted into a long-lived process, so a
+  credential's blast radius is one container's lifetime.</p>
+</section>
+
+<section id="slo">
+  <div class="seg-head"><h2>Failure &amp; SLOs</h2></div>
+  <p class="seg-sub">The measured figures give real starting numbers rather than invented
+  ones.</p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Signal</th><th>Starting target</th><th>Grounded in</th></tr></thead>
+    <tbody>
+      <tr><td>Replay latency, p50 / p95</td><td class="num">7 s / 30 s</td><td>Measured 7 s median, 17 s mean, 159 s max (a human takeover)</td></tr>
+      <tr><td>Discovery latency, p50</td><td class="num">100 s</td><td>Measured median across 47 runs; dominated by provider latency</td></tr>
+      <tr><td>Replay success rate, per capability</td><td class="num">&ge; 99%</td><td>Excluding business outcomes &mdash; a correctly reported "no such member" is a success</td></tr>
+      <tr><td>Container memory, p99</td><td class="num">&lt; 1.5 GiB</td><td>Measured 1126 MiB worst case</td></tr>
+      <tr><td>Orphaned containers</td><td class="num">0</td><td>Observed 3 in one session; the reaper's own SLO</td></tr>
+      <tr><td>Unclaimed escalation age, p95</td><td class="num">&lt; 5 min</td><td>A held escalation holds a browser, a container and a session open</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>The distinction that matters for alerting is one the system already models correctly and
+  no dashboard yet reads: <strong>a business outcome is not a failure.</strong> A capability
+  reporting "insufficient funds" worked perfectly. Alerting on <code>hard_failure</code> and
+  on classification <em>drift</em> &mdash; a capability whose business-outcome rate suddenly
+  moves &mdash; is the signal that the target changed under you. Alerting on non-success
+  would page someone every time a member number was wrong.</p>
+</section>
+
+<section id="rollout">
+  <div class="seg-head"><h2>Rollout order</h2></div>
+  <p class="seg-sub">Ordered by what is unsafe or silently wrong first, not by architectural
+  tidiness. Each phase is shippable alone.</p>
+
+  <div class="phase">
+    <div class="pn">Phase 1</div>
+    <div>
+      <h3>Stop the silent wrongness</h3>
+      <p>Auth and roles on the API. Move <code>_version_lock</code> to a database constraint
+      and the rate limiter to Redis. Container memory, CPU, pid and lifetime caps. A reaper
+      keyed on labels.</p>
+      <p>All of it is small, none of it needs a topology change, and every item is either a
+      security hole or a bug that produces no error message. Single-box deployment still
+      works at the end of this phase.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="pn">Phase 2</div>
+    <div>
+      <h3>Split the planes</h3>
+      <p>Queue between the <code>202</code> and the work. Workers as their own processes,
+      owning container lifecycle. Run state and leases in Postgres; chat sessions in Redis;
+      screenshots to object storage.</p>
+      <p>This is what buys deploys that do not kill runs, and replicas that agree. The API's
+      shape does not change &mdash; it already returns a <code>run_id</code> to poll.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="pn">Phase 3</div>
+    <div>
+      <h3>Tenancy end to end</h3>
+      <p><code>tenant_id</code> on every row, job and container label, enforced by row-level
+      security rather than by remembering a predicate. Per-tenant targets, credentials,
+      allowlists, redaction patterns and concurrency caps. The session broker for scoped
+      noVNC access.</p>
+      <p>Deliberately after the split: retrofitting tenancy onto a single-process design
+      means doing it twice.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="pn">Phase 4</div>
+    <div>
+      <h3>Sessions, then a second surface</h3>
+      <p>The session model &mdash; typed session outputs consumed as typed inputs &mdash;
+      which removes the credential spread across every artifact and finally makes mid-run
+      re-authentication expressible. Then, and only with a real second target demanding it,
+      a second <code>Surface</code>.</p>
+      <p>Last because it is the only work here that touches the artifact schema, and schema
+      changes are cheapest once the storage and tenancy shapes have stopped moving.</p>
+    </div>
+  </div>
+</section>
+
+<section id="nonbuild">
+  <div class="seg-head"><h2>What not to build</h2></div>
+  <p class="seg-sub">Rejections are part of a design. Each of these is a plausible next
+  component that would be a mistake to add.</p>
+
+  <div class="files">
+    <div><div class="fp">A pub/sub bus for escalations</div>
+      <div class="fd">Escalations are rare and the dashboard already polls. A row in Postgres carries the state; a bus would be infrastructure bought to avoid a query.</div></div>
+    <div><div class="fp">Kubernetes-per-run, or Firecracker microVMs</div>
+      <div class="fd">A container per run already gives the isolation boundary that matters. MicroVMs buy protection against container escape &mdash; real, but a smaller risk than the open network egress the containers have today. Fix egress first; revisit if the threat model changes.</div></div>
+    <div><div class="fp">A general capability router</div>
+      <div class="fd">The caller names the capability. Inferring which one to run from a fuzzy goal is the upstream product's job, and building it here would put an LLM back in the invoke path &mdash; the exact property the whole design exists to avoid.</div></div>
+    <div><div class="fp">Cross-tenant artifact sharing or canonicalization</div>
+      <div class="fd">Tempting because two banks running the same core look similar. But an artifact is a recording of one host's DOM, and "these two targets are the same underneath" is a claim no evidence here supports.</div></div>
+    <div><div class="fp">Warm container pools shared across tenants</div>
+      <div class="fd">The saving is tens of seconds. The risk is one tenant's authenticated banking session leaking into another's run. Pool within a tenant-and-target pair or not at all.</div></div>
+  </div>
+</section>
+
+<hr>
+<p class="note">Current state read from <span class="mono">comp_use/</span> at the time of
+writing. Measured figures from README's System stats. Supersedes
+<span class="mono">ENHANCEMENTS.md</span> &sect;5, which predates the sandbox, the Postgres
+store and the takeover/interrupt work.</p>
+
+</main>
+</div>

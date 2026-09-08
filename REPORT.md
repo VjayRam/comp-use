@@ -4,13 +4,23 @@ Maps the implemented system to the design specs:
 [computer-use-automation-design.md](docs/design/specs/computer-use-automation-design.md) and
 [agent-facing-capability-server-design.md](docs/design/specs/agent-facing-capability-server-design.md).
 
+**On targets.** The production target is **MERIDIAN CORE**
+(`https://web-sample.interface-hiring.com`), a hosted legacy credit-union console; every
+shipped capability is recorded and replayed against it. The local mock bank (`mock_app/`)
+remains the offline fixture — it is what the test suite runs against, what the worked
+examples below use, and what much of this document's reasoning was originally written
+against. Where the two differ in a way that changed the design, this document says so.
+[ADAPTATION_WRITEUP.md](ADAPTATION_WRITEUP.md) covers the target switch in full.
+
 ## Architecture
 
 Single Python process, small interfaces between components. Only discovery talks to an LLM.
 
 | Component | Role | Code |
 |---|---|---|
-| Mock app | Legacy-styled Flask bank UI, deliberately hostile (§4) | `mock_app/` |
+| Target | MERIDIAN CORE, a hosted legacy console — or the mock app below, offline | live host |
+| Mock app | Legacy-styled Flask bank UI, deliberately hostile (§4); offline fixture | `mock_app/` |
+| Sandbox | One Docker container per run: headed Chromium + noVNC, watchable and controllable | `comp_use/sandbox.py` |
 | Discovery agent | Observe → decide → act; compiles a successful run into an artifact | `comp_use/discovery/` |
 | Replay engine | Deterministic step execution, no LLM | `comp_use/replay/engine.py` |
 | Guardrail | Allowlist, risk confirmation, redaction | `comp_use/guardrail.py` |
@@ -21,13 +31,18 @@ Single Python process, small interfaces between components. Only discovery talks
 
 **The mock app is deliberately hostile** — nested/decoy tables, an inert `<iframe>`, no test IDs or `aria-label`, a disabled decoy "Advanced Search" button sharing a name with the real "Search" button, and a confirm-interstitial on both risky flows. This caught a real bug: Playwright's `get_by_role(name=...)` substring-matches by default, so the decoy matched too — fixed by passing `exact=True` in `_resolve()`.
 
+**MERIDIAN was hostile in ways we had not thought to simulate**, which is the argument for testing against a real host rather than a fixture you wrote yourself. Three examples, each of which produced a defect and then a general fix: a `<select>` whose visible label carries a live balance (`"…Regular Shares ($13.00)"`) that moves between recording and replay, while `select_option` matches the `value` attribute — now a three-step fallback in `_select_option_robust`; error sentences broken across tags and lines mid-sentence, so source matching never fired — now rendered-text matching; and a member record that lists share balances with **no total**, so a "total balance" capability has to compute one — now `DerivedOutputSpec`/`sum_currency`, resolved by arithmetic at replay rather than by a model. None of these are MERIDIAN-specific in the code; all of them are MERIDIAN-specific in origin.
+
+**The target is shared and stateful, which is a design constraint, not a nuisance.** Nobody owns its state: another session can leave a global fault-injection mode set, and every authenticated page then renders that fault. A system that treated an unexpected page as a crash would be unusable here — which is precisely why recognising a host's own error states (`OutcomePattern`) and refusing to *record* them (discovery's fault classification) are load-bearing rather than polish.
+
 **Capability server** — a second entrypoint (FastAPI, `comp_use/server/app.py`) wrapping the same `run_discover`/`run_replay` functions the CLI calls. `ReplayEngine`, `DiscoveryAgent`, `Guardrail`, `EscalationController` are untouched by it. Escalation over HTTP uses `QueueTransport` (blocks on a queue instead of `input()`) plus a background-thread `RunManager`: `POST /invoke` returns immediately with a `run_id`, `POST /runs/{id}/resume` unblocks it from a different thread.
 
 **Scope assumption:** the caller (an upstream agent-facing product) picks discover vs. replay by name — this system executes reliably, it doesn't infer intent (§1: *"the agent-facing product decides what to do; this system is how it reliably and safely does it"*). No fuzzy-goal-to-capability router was built.
 
 **Known caveats:**
-- `TEXT_PRESENT` checks raw `page.content()`, not rendered text — correct here since the mock app has no client-side JS hiding content, but would false-positive against an app that hides matching text via CSS/JS.
+- `TEXT_PRESENT` now matches the page's **rendered** text (`page.inner_text("body")`, whitespace-collapsed), falling back to `page.content()` only if the rendered text can't be read at all. It originally checked raw source, which was fine against the mock app but silently failed on MERIDIAN, whose denial sentence is split across a tag and a newline mid-sentence — two live cases were reported as bare hard failures for exactly that reason. The remaining exposure is the mirror image: text present in the DOM but hidden by CSS still counts as visible to the fallback path.
 - The mock app's ID counters are module-level globals, not scoped per instance — a latent test-isolation risk, not an active bug.
+- Redaction patterns are hand-picked for the mock bank's ID shapes (`ACC-`, `SUB-`, `TXN-`, `CONF-`) and dollar amounts. MERIDIAN's own identifiers (member numbers, share ids like `103001-MMKT-11`) are **not** covered by default — adding them is one regex in `Settings.redaction_patterns`, picked up by both the LLM-facing tokenizer and output redaction, but it has not been done.
 
 ## Artifact schema
 
@@ -135,7 +150,7 @@ Hosted OpenRouter still receives tokenized text on `discover` (not raw UI conten
 
 Not built:
 - `ServerStreamingTransport` (remote operator console) — designed only. The *capability* it was meant to provide now exists by another route: the MERIDIAN adaptation runs each session in a Docker sandbox with noVNC, so an operator watches and drives the live browser from a tab (`comp_use/sandbox.py`). The designed transport itself was never built.
-- Production artifact/evidence storage (DB + object store) — files on disk only.
+- ~~Production artifact/evidence storage (DB + object store) — files on disk only.~~ **Built since:** Postgres (`comp_use/pg/`) is the primary store for artifacts, runs, events, and screenshots once `COMP_USE_DB_URL` is set; the on-disk layout survives as the no-database fallback. Screenshot bytes live in the DB rather than an object store — fine at this volume, the wrong call at production scale.
 - Desktop `Surface` and true multi-tenant execution.
 - On-prem LLM for discovery — documented, not built.
 - Auth on the capability server, and hard delete — designed (per-key admin/operator roles), deliberately not built until auth exists.
@@ -146,6 +161,8 @@ Not built:
 ## Evidence walkthrough
 
 Every run below is against the live mock app + real Playwright Chromium. Discovery rows use `FakeLLMClient` (scripted, same tool-call shape as the real client) unless marked "real LLM"; every replay row used `ReplayEngine` with no LLM.
+
+**These rows predate the target switch and are kept as-is**, because they are the reproducible ones: the mock app is deterministic and always available, so anyone can re-run them. Evidence for the live MERIDIAN target is necessarily different in kind — the host is shared and its state moves — and lives where it can carry its screenshots and page copy: `EXT_TASK_FIXES.md` §9 (the exceptional-state stress test, one section per outcome class, with the live page text that produced each classification), `ADAPTATION_WRITEUP.md` (the 7 required functions, each as a recorded capability), and Postgres itself, which holds every run's full event log and screenshots (`DEMO.md` §7.1 has the queries). Measured cost and resource figures for real MERIDIAN runs are in [README.md's System stats](README.md#system-stats).
 
 | Scenario | Result | Evidence |
 |---|---|---|
