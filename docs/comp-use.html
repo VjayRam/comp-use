@@ -1,0 +1,535 @@
+<title>MERIDIAN Adaptation Walkthrough</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+:root{
+  --ground:#F5F6F3; --surface:#FFFFFF; --surface-2:#EDEEE9;
+  --ink:#16191A; --ink-2:#3D4446; --muted:#6B7274; --rule:#DCDED7;
+  --record:#A2531A; --record-soft:#F3E7DC;
+  --replay:#186A5F; --replay-soft:#DCEBE7;
+  --alert:#9E2B26; --alert-soft:#F5E0DE;
+  --shadow:0 1px 2px rgba(20,25,26,.06), 0 8px 24px -16px rgba(20,25,26,.28);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#121517; --surface:#191D20; --surface-2:#212629;
+    --ink:#E9EAE5; --ink-2:#C2C6C4; --muted:#8E9495; --rule:#2C3236;
+    --record:#E29254; --record-soft:#2E2118;
+    --replay:#5FBFAE; --replay-soft:#152724;
+    --alert:#E0736C; --alert-soft:#2C1917;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#121517; --surface:#191D20; --surface-2:#212629;
+  --ink:#E9EAE5; --ink-2:#C2C6C4; --muted:#8E9495; --rule:#2C3236;
+  --record:#E29254; --record-soft:#2E2118;
+  --replay:#5FBFAE; --replay-soft:#152724;
+  --alert:#E0736C; --alert-soft:#2C1917;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:"Source Serif 4",Georgia,serif; font-size:17px; line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px 96px;display:grid;grid-template-columns:210px minmax(0,1fr);gap:56px;align-items:start}
+@media (max-width:940px){.wrap{grid-template-columns:1fr;gap:0}.rail{position:static;margin:0 0 40px}}
+
+h1,h2,h3,h4,.ui{font-family:Archivo,"Helvetica Neue",Arial,sans-serif}
+h1{font-size:2.6rem;line-height:1.08;font-weight:700;letter-spacing:-.022em;margin:0 0 14px;text-wrap:balance}
+h2{font-size:1.5rem;font-weight:700;letter-spacing:-.014em;margin:0 0 6px;text-wrap:balance}
+h3{font-size:1.06rem;font-weight:600;letter-spacing:-.005em;margin:26px 0 8px;text-wrap:balance}
+h4{font-size:.82rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+p{margin:0 0 14px;max-width:66ch}
+ul,ol{margin:0 0 14px;padding-left:1.15rem;max-width:66ch}
+li{margin:0 0 7px}
+a{color:var(--replay)}
+a:focus-visible,.rail a:focus-visible{outline:2px solid var(--replay);outline-offset:2px}
+code,.mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.855em}
+code{background:var(--surface-2);padding:.1em .34em;border-radius:3px;color:var(--ink-2)}
+strong{font-weight:600;color:var(--ink)}
+hr{border:0;border-top:1px solid var(--rule);margin:40px 0}
+
+header.top{grid-column:1/-1;padding:64px 0 40px;border-bottom:1px solid var(--rule);margin-bottom:44px}
+.eyebrow{font-family:"JetBrains Mono",monospace;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 18px}
+.lede{font-size:1.22rem;line-height:1.55;color:var(--ink-2);max-width:64ch;margin:0 0 22px}
+
+.thesis{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:5px;overflow:hidden;margin:26px 0 0;max-width:680px}
+@media (max-width:620px){.thesis{grid-template-columns:1fr}}
+.thesis>div{background:var(--surface);padding:18px 20px}
+.thesis .k{font-family:"JetBrains Mono",monospace;font-size:.7rem;letter-spacing:.13em;text-transform:uppercase;margin:0 0 9px}
+.thesis .v{font-family:Archivo,sans-serif;font-size:1.75rem;font-weight:700;letter-spacing:-.02em;line-height:1;font-variant-numeric:tabular-nums}
+.thesis .s{font-size:.9rem;color:var(--muted);margin:7px 0 0;line-height:1.4}
+.tr .k,.tr .v{color:var(--record)}
+.tp .k,.tp .v{color:var(--replay)}
+
+.rail{position:sticky;top:26px}
+.rail h4{margin-bottom:12px}
+.rail ol{list-style:none;padding:0;margin:0;counter-reset:seg}
+.rail li{counter-increment:seg;margin:0;border-left:2px solid var(--rule);padding:0}
+.rail a{display:flex;gap:9px;padding:7px 0 7px 12px;font-family:Archivo,sans-serif;font-size:.855rem;line-height:1.3;color:var(--ink-2);text-decoration:none;border-radius:0 3px 3px 0}
+.rail a:hover{background:var(--surface-2);color:var(--ink)}
+.rail a::before{content:counter(seg,decimal-leading-zero);font-family:"JetBrains Mono",monospace;font-size:.7rem;color:var(--muted);padding-top:.15em}
+.rail .plain{counter-increment:none}
+.rail .plain a{padding-left:12px}
+.rail .plain a::before{content:none}
+.rail .mins{display:block;font-family:"JetBrains Mono",monospace;font-size:.68rem;color:var(--muted);margin-top:2px}
+
+section{scroll-margin-top:24px;margin:0 0 52px}
+.seg-head{display:flex;align-items:baseline;gap:14px;border-top:2px solid var(--ink);padding-top:12px;margin-bottom:16px}
+.seg-n{font-family:"JetBrains Mono",monospace;font-size:.78rem;font-weight:700;color:var(--muted);padding-top:.35em}
+.seg-time{margin-left:auto;font-family:"JetBrains Mono",monospace;font-size:.72rem;color:var(--muted);white-space:nowrap;padding-top:.5em}
+.seg-sub{font-family:Archivo,sans-serif;font-size:.95rem;color:var(--muted);margin:-2px 0 18px;max-width:64ch}
+
+.say{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--replay);border-radius:0 5px 5px 0;padding:16px 20px;margin:0 0 18px;box-shadow:var(--shadow)}
+.say h4{color:var(--replay);margin-bottom:8px}
+.say p{margin:0 0 10px;font-size:1.02rem}
+.say p:last-child{margin:0}
+.say em{font-style:italic;color:var(--ink)}
+
+.war{background:var(--alert-soft);border-radius:5px;padding:15px 19px;margin:0 0 18px}
+.war h4{color:var(--alert);margin-bottom:7px}
+.war p{margin:0;font-size:.96rem;color:var(--ink-2);max-width:62ch}
+.war p+p{margin-top:9px}
+
+.files{display:flex;flex-direction:column;border:1px solid var(--rule);border-radius:5px;overflow:hidden;background:var(--surface);margin:0 0 18px}
+.files>div{display:grid;grid-template-columns:255px minmax(0,1fr);gap:18px;padding:12px 17px;border-bottom:1px solid var(--rule)}
+.files>div:last-child{border-bottom:0}
+@media (max-width:700px){.files>div{grid-template-columns:1fr;gap:5px}}
+.files .fp{font-family:"JetBrains Mono",monospace;font-size:.78rem;color:var(--record);line-height:1.5;word-break:break-word}
+.files .fd{font-size:.95rem;color:var(--ink-2);line-height:1.5}
+
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 18px}
+.tag{font-family:"JetBrains Mono",monospace;font-size:.71rem;background:var(--surface-2);color:var(--ink-2);padding:4px 9px;border-radius:3px;white-space:nowrap}
+.tag.hot{background:var(--record-soft);color:var(--record)}
+
+.tbl{overflow-x:auto;margin:0 0 18px;border:1px solid var(--rule);border-radius:5px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th{font-family:Archivo,sans-serif;font-size:.72rem;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);text-align:left;padding:11px 15px;border-bottom:1px solid var(--rule);white-space:nowrap;font-weight:600}
+td{padding:10px 15px;border-bottom:1px solid var(--rule);color:var(--ink-2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.num{font-family:"JetBrains Mono",monospace;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+td.mono{font-family:"JetBrains Mono",monospace;font-size:.8rem}
+.oc{display:inline-block;font-family:"JetBrains Mono",monospace;font-size:.73rem;padding:2px 7px;border-radius:3px;white-space:nowrap}
+.oc-s{background:var(--replay-soft);color:var(--replay)}
+.oc-b{background:var(--record-soft);color:var(--record)}
+.oc-h{background:var(--alert-soft);color:var(--alert)}
+.oc-n{background:var(--surface-2);color:var(--muted)}
+
+.qa{border-top:1px solid var(--rule);padding:16px 0 0;margin:0 0 16px}
+.qa .q{font-family:Archivo,sans-serif;font-weight:600;font-size:1rem;margin:0 0 7px;color:var(--ink)}
+.qa .a{margin:0;font-size:.98rem;color:var(--ink-2);max-width:64ch}
+
+.note{font-size:.9rem;color:var(--muted);max-width:64ch;font-style:italic}
+.kicker{font-family:Archivo,sans-serif;font-weight:600;color:var(--ink)}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Presentation brief &middot; interface.ai &middot; backend walkthrough</p>
+  <h1>Record once with a model.<br>Replay forever without one.</h1>
+  <p class="lede">A computer-use automation system for a legacy core-banking web app. An LLM drives the browser exactly one time, to record a reviewable capability artifact. Every invocation after that re-executes that artifact deterministically &mdash; no model, no tokens, no non-determinism in the path that touches money.</p>
+  <div class="thesis">
+    <div class="tr">
+      <p class="k">Discovery &middot; with LLM</p>
+      <p class="v">100 s</p>
+      <p class="s">median wall time &middot; 13 tool calls &middot; ~71k tokens &middot; 47 runs measured</p>
+    </div>
+    <div class="tp">
+      <p class="k">Replay &middot; no LLM</p>
+      <p class="v">7 s</p>
+      <p class="s">median wall time &middot; 0 tool calls &middot; 0 tokens &middot; 74 runs measured</p>
+    </div>
+  </div>
+</header>
+
+<nav class="rail">
+  <h4>Running order</h4>
+  <ol>
+    <li><a href="#s0">Open with the thesis<span class="mins">2 min</span></a></li>
+    <li><a href="#s1">Live demo<span class="mins">8 min</span></a></li>
+    <li><a href="#s2">The artifact<span class="mins">5 min</span></a></li>
+    <li><a href="#s3">Discovery loop<span class="mins">8 min</span></a></li>
+    <li><a href="#s4">Replay + outcomes<span class="mins">7 min</span></a></li>
+    <li><a href="#s5">Human-in-the-loop<span class="mins">5 min</span></a></li>
+    <li><a href="#s6">Isolation &amp; evidence<span class="mins">5 min</span></a></li>
+    <li><a href="#s7">Chat surface<span class="mins">3 min</span></a></li>
+    <li><a href="#s8">Metrics &amp; gaps<span class="mins">4 min</span></a></li>
+  </ol>
+  <h4 style="margin-top:26px">Reference</h4>
+  <ol>
+    <li class="plain"><a href="#mock">The mock-app question</a></li>
+    <li class="plain"><a href="#ref-files">Every backend file</a></li>
+    <li class="plain"><a href="#ref-patterns">Patterns &amp; keywords</a></li>
+    <li class="plain"><a href="#ref-qa">Questions to expect</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="verdict">
+  <div class="seg-head"><h2>On your proposed order</h2></div>
+  <p><span class="kicker">Your instinct is right on the two endpoints and wrong in the middle.</span> Opening on the live demo is correct &mdash; it buys the attention you then spend on architecture. Ending on metrics is correct. Three changes move this from "good engineering walkthrough" to "this person has shipped into a regulated environment":</p>
+  <ol>
+    <li><span class="kicker">Do not call Docker and Postgres "cosmetic."</span> A per-run ephemeral container and an append-only, redacted evidence store <em>are</em> the compliance story. In a bank they aren't garnish &mdash; they're the reason the thing is deployable at all. Move them later (after the engines) and reframe as <em>"how this survives a security review."</em> Calling them cosmetic invites the CTO to discount them, and they're some of your strongest material.</li>
+    <li><span class="kicker">Put the artifact second, before discovery.</span> Everything in your system either <em>produces</em> an artifact or <em>consumes</em> one. Show the noun before the verbs and both engines explain themselves in half the time. Right now discovery lands before the audience knows what it's building.</li>
+    <li><span class="kicker">Don't defer edge cases to their own segment.</span> In a regulated domain the CTO is thinking about failure the entire time &mdash; a dedicated late slot reads as an afterthought. Fold the outcome taxonomy into replay, where it lives in the code, and spend the freed slot on <em>known gaps and what I'd do next</em>, which is the segment that actually demonstrates seniority.</li>
+  </ol>
+  <p>One structural addition: give the talk a spine by naming the thesis in the first sixty seconds and hanging every segment off it. The record-once / replay-free split is the genuinely interesting idea here. Say it before the demo, not after.</p>
+</section>
+
+<hr>
+
+<section id="s0">
+  <div class="seg-head"><span class="seg-n">01</span><h2>Open with the thesis</h2><span class="seg-time">2 min &middot; no slides</span></div>
+  <p class="seg-sub">Before anything runs. This is the sentence the rest of the talk is evidence for.</p>
+  <div class="say">
+    <h4>Say roughly this</h4>
+    <p><em>"A general computer-use agent is the wrong shape for core banking. It's slow, it costs tokens on every run, and it can make a different decision on Tuesday than it made on Monday. You can't put that in front of a ledger.</em></p>
+    <p><em>So I split it. The model runs exactly once, to record &mdash; it explores the flow and compiles a reviewable artifact. Every invocation afterwards replays that artifact deterministically, with no model in the loop at all. Recording takes a hundred seconds and seventy thousand tokens. Replaying takes seven seconds and zero. Same flow, same result, and the second one is auditable."</em></p>
+  </div>
+  <p>Then name the three consequences, because they're your next three segments: the artifact is a <span class="kicker">reviewable, versioned, approvable object</span>; the replay path is <span class="kicker">deterministic enough to classify failures precisely</span>; and the expensive, non-deterministic part is <span class="kicker">confined to a recording session a human signs off on</span>.</p>
+</section>
+
+<section id="s1">
+  <div class="seg-head"><span class="seg-n">02</span><h2>Live demo</h2><span class="seg-time">8 min</span></div>
+  <p class="seg-sub">Chat &rarr; proposal &rarr; confirmation &rarr; live browser &rarr; escalation &rarr; resume &rarr; structured result.</p>
+  <p>Drive it from the chat surface with the noVNC feed visible. The beat you want is <span class="kicker">the escalation</span> &mdash; that's the moment the room understands this isn't a demo toy. Pick a capability with a risky commit step (<code>meridian_transfer_funds</code> or <code>meridian_open_new_share</code>) so the run genuinely stops and waits for you.</p>
+  <h3>The sequence to narrate</h3>
+  <ol>
+    <li>Ask in plain language. The agent matches against the catalog of <em>already-approved</em> capabilities &mdash; it can only propose what a human has signed off.</li>
+    <li>It returns a proposal with the exact parameters. <span class="kicker">Nothing runs on a proposal.</span> Note that the confirmation gate is parsed deterministically before the model is ever asked to interpret the reply.</li>
+    <li>Confirm. A real browser starts in a container; the feed appears.</li>
+    <li>It walks the flow and <span class="kicker">stops at the commit step</span>. Show the escalation banner: run id, step index, screenshot, reason.</li>
+    <li>Take control in the same live session &mdash; not a fresh one. Do the step yourself.</li>
+    <li>Resume. It picks up, verifies the success checkpoint, returns a structured result with a real confirmation number.</li>
+    <li>Open the run's event log. Every decision, action and screenshot, redacted, in order.</li>
+  </ol>
+  <div class="say">
+    <h4>The line to land while it's paused</h4>
+    <p><em>"It stopped here because this step was classified risky when it was recorded. And the important part is that the human takes over the same browser session the agent was driving &mdash; not a copy, not a re-login. Whatever I do here, the agent picks up from the state I leave behind. If I finish the whole flow myself, it notices and reports success rather than trying to run it a second time."</em></p>
+  </div>
+  <div class="war">
+    <h4>Keep in your pocket</h4>
+    <p>That last clause is a real guard, not a hypothetical. A transfer had already posted &mdash; confirmation number in hand &mdash; and a completeness check pushed the agent back for a missing memo field. It returned to the member record, reopened Funds Transfer, and started selecting shares for a <em>second</em> transfer. It stopped only because it ran out of steps.</p>
+    <p>The fix is in <code>discovery/agent.py</code>: once any step classified risky has executed, <code>finish</code> is final and no quality gate may send the loop around again. <em>"An incomplete recording is a bad artifact. A duplicated financial transaction is a different category of problem."</em></p>
+  </div>
+</section>
+
+<section id="s2">
+  <div class="seg-head"><span class="seg-n">03</span><h2>The artifact</h2><span class="seg-time">5 min</span></div>
+  <p class="seg-sub">The contract. Show the actual JSON on screen.</p>
+  <p>Pull up a recorded artifact and walk the fields. This is the highest-leverage screen in the talk: it makes both engines self-explanatory, and it's the thing a bank's change-management process would actually review.</p>
+  <div class="files">
+    <div><div class="fp">schemas.py &rarr; Artifact</div><div class="fd">Capability name, version, target host, description, input schema, output schema, ordered steps, success checkpoint, outcome patterns, approval status.</div></div>
+    <div><div class="fp">schemas.py &rarr; Step</div><div class="fd">One UI action: type, locator, value <em>or</em> a parameter binding, extraction name, risk tier, optional checkpoint.</div></div>
+    <div><div class="fp">schemas.py &rarr; Locator</div><div class="fd">Role / text / CSS strategy, plus an optional <code>fallback</code> chain &mdash; a second way to find the same control when the first stops resolving.</div></div>
+    <div><div class="fp">schemas.py &rarr; ValueSource</div><div class="fd">Deliberately binary. Absent means "literal, baked in." Present means "replay substitutes the caller's parameter here." There is no third state.</div></div>
+    <div><div class="fp">schemas.py &rarr; Checkpoint</div><div class="fd">Element visible / text present / URL matches. How a step or a whole run proves it actually worked.</div></div>
+    <div><div class="fp">schemas.py &rarr; OutcomePattern</div><div class="fd">A page state that is neither success nor a bug &mdash; "insufficient funds", "no such member" &mdash; with its retry budget and optional recovery action.</div></div>
+  </div>
+  <h3>Four points to make</h3>
+  <ul>
+    <li><span class="kicker">It's diffable.</span> A capability is a JSON document. Two versions compare in a pull request. That's change management for automation, in a vocabulary a bank already has.</li>
+    <li><span class="kicker">It has a lifecycle.</span> <code>draft &rarr; approved &rarr; retired</code>, with <code>rejected</code> as a distinct terminal state. A retired version can be re-approved &mdash; that's your rollback path. A rejected one cannot. Before those were separate states, rollback was a one-way door.</li>
+    <li><span class="kicker">Discovery-time secrets never land in it.</span> A parameter's literal value from the recording session is kept aside and surfaced as an <em>example</em> for a reviewer &mdash; and suppressed entirely for anything credential-shaped. A real password typed during recording has no business in a JSON file on disk.</li>
+    <li><span class="kicker">Risk is recorded, not inferred at runtime.</span> Each step carries its tier from the moment it was recorded and reviewed. Replay doesn't re-decide what's dangerous.</li>
+  </ul>
+  <div class="tags">
+    <span class="tag hot">schema-first design</span><span class="tag">Pydantic validation</span><span class="tag">versioned contract</span><span class="tag">DTO / value object</span><span class="tag">approval workflow</span><span class="tag">immutable artifact</span>
+  </div>
+</section>
+
+<section id="s3">
+  <div class="seg-head"><span class="seg-n">04</span><h2>The discovery loop</h2><span class="seg-time">8 min</span></div>
+  <p class="seg-sub">How an artifact gets made &mdash; and the eight guards that stop it making a bad one.</p>
+  <p>One file: <code>comp_use/discovery/agent.py</code>. Walk the loop as a sequence, then spend the back half on the guards, because the guards are the interesting engineering.</p>
+  <h3>The loop, per step</h3>
+  <ol>
+    <li><span class="kicker">Check for human intent.</span> Stop-run beats takeover-request; both checked before spending a token.</li>
+    <li><span class="kicker">Observe.</span> Read the accessibility tree, not the HTML &mdash; supplemented with form field <code>name</code>/<code>id</code>/<code>type</code> attributes, never field <em>values</em>.</li>
+    <li><span class="kicker">Tokenize.</span> Account numbers, transaction ids and dollar amounts are reversibly swapped for placeholders before the tree reaches the model.</li>
+    <li><span class="kicker">Decide.</span> One LLM call returns one JSON action. Provider usage is logged per call, so cost accrues visibly rather than as a total at the end.</li>
+    <li><span class="kicker">Validate and detokenize</span> at a single boundary &mdash; everything downstream sees real values.</li>
+    <li><span class="kicker">Allowlist check</span> on URL and action type.</li>
+    <li><span class="kicker">Classify risk</span> from the control's label and the current URL.</li>
+    <li><span class="kicker">Escalate if risky</span>, then act on the live page.</li>
+    <li><span class="kicker">Re-check the allowlist</span> &mdash; a click may have navigated somewhere new, and that was never validated.</li>
+    <li><span class="kicker">Check for a known fault page</span> <em>before</em> recording the step.</li>
+    <li><span class="kicker">Record the step</span> &mdash; value omitted if it's a parameter.</li>
+  </ol>
+  <div class="say">
+    <h4>The framing line</h4>
+    <p><em>"A naive version of this loop is about forty lines. Most of this file is not the loop &mdash; it's the guards. Every one of them is a specific way a recording went wrong against the real system, and every one produces a bad artifact that records perfectly and only fails on first real use. That's the worst possible shape for a bug, so they're all checked while the model is still around to be asked for something better."</em></p>
+  </div>
+  <h3>The guards worth naming</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Guard</th><th>What it catches</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">loop detection</td><td>Counts every <code>(url, action, locator)</code> signature. Three repeats escalates. Catches multi-step cycles too, since each component accumulates its own count.</td></tr>
+      <tr><td class="mono">dead-end counter</td><td>Three consecutive invalid or skipped decisions escalates. Distinct from loop detection, which fires on <em>valid</em> decisions that make no progress.</td></tr>
+      <tr><td class="mono">post-commit finish lock</td><td>Once a risky step has run, <code>finish</code> is final. No quality gate may re-run the flow.</td></tr>
+      <tr><td class="mono">missing-parameter gate</td><td>An operator-declared parameter that never became a real parameter means the flow never entered that value &mdash; the capability would submit a pre-filled form unchanged and report success.</td></tr>
+      <tr><td class="mono">no-extract gate</td><td>A read-only capability with an empty output schema returns nothing to its caller. Asked once, never enforced &mdash; some goals genuinely have nothing to report.</td></tr>
+      <tr><td class="mono">unusable-extract check</td><td>Rejects a locator anchored on the value it just read, or one grabbing the whole page. Uses a length ratio, so a short leading label still passes.</td></tr>
+      <tr><td class="mono">dropdown completeness</td><td>Warns if a combobox was ever visible but no selection was performed &mdash; a field may have silently shipped at its default.</td></tr>
+      <tr><td class="mono">fault detection</td><td>Recognises the host's own error pages before recording, so an improvised recovery doesn't get baked in as canonical steps.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="war">
+    <h4>The best story in this segment</h4>
+    <p>The balance-reading capability oscillated for six minutes across ten progressively more elaborate selectors &mdash; every one of which had already worked. Because every dollar amount on the page matched a redaction pattern, the model saw a table of <code>[[TOK&hellip;]]</code> and read it as a failed extract.</p>
+    <p>The fix isn't code, it's a sentence appended to the history: <em>the tokens mark real values that were captured and redacted; their presence means the extract worked; the rows and columns around them are the proof; you will never be shown them.</em> Worth telling because it's a failure that only appears when privacy controls and an agent loop meet in production.</p>
+  </div>
+  <div class="tags">
+    <span class="tag hot">sense&ndash;plan&ndash;act loop</span><span class="tag hot">ReAct</span><span class="tag">circuit breaker</span><span class="tag">critic / verifier gate</span><span class="tag">bounded retry</span><span class="tag">pseudonymization at trust boundary</span><span class="tag">allowlist over denylist</span><span class="tag">accessibility-tree grounding</span>
+  </div>
+</section>
+
+<section id="s4">
+  <div class="seg-head"><span class="seg-n">05</span><h2>Replay and the outcome taxonomy</h2><span class="seg-time">7 min</span></div>
+  <p class="seg-sub">Fold your "edge cases and failure modes" segment in here. This is where it lives in the code.</p>
+  <p><code>comp_use/replay/engine.py</code> is an interpreter over the recorded step list. Open by stating the constraint plainly: <span class="kicker">this file imports no LLM client and never will.</span> That's the promise the whole architecture rests on, and it's checkable in one grep.</p>
+  <h3>Per step</h3>
+  <p>Validate inputs against the declared schema &rarr; check for a diverged outcome page <em>before</em> attempting the step &rarr; escalate if risky &rarr; substitute parameters &rarr; allowlist &rarr; act &rarr; re-check the allowlist &rarr; verify the step checkpoint. Then verify the artifact's success checkpoint at the end.</p>
+  <h3>The taxonomy &mdash; the centrepiece of this segment</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Outcome</th><th>Means</th><th>Retried?</th></tr></thead>
+    <tbody>
+      <tr><td><span class="oc oc-s">success</span></td><td>The success checkpoint is satisfied. Outputs returned.</td><td>&mdash;</td></tr>
+      <tr><td><span class="oc oc-b">business_outcome</span></td><td><span class="kicker">The automation worked perfectly and the answer is no.</span> Insufficient funds, no such member, supervisor override required, invalid email format.</td><td>Never</td></tr>
+      <tr><td><span class="oc oc-n">recoverable</span></td><td>A transient host condition &mdash; a maintenance interstitial, a session timeout. Has a retry budget and optionally a declared recovery action.</td><td>Up to 3</td></tr>
+      <tr><td><span class="oc oc-h">hard_failure</span></td><td>Nothing explains it. A locator stopped resolving, a checkpoint didn't match, or the host returned its own application error.</td><td>No</td></tr>
+      <tr><td><span class="oc oc-n">input_error</span></td><td>Outside the taxonomy on purpose: the request never reached the host, because the caller didn't supply what the artifact declares it needs.</td><td>No</td></tr>
+    </tbody>
+  </table></div>
+  <div class="say">
+    <h4>The distinction to sell hard</h4>
+    <p><em>"The one worth dwelling on is business_outcome. Most agent frameworks have two states &mdash; it worked, or it didn't. But 'insufficient funds' is not a failure. The automation did exactly its job and the bank correctly said no. If you report that as an incident you'll wake someone up at 3am for a customer who's overdrawn.</em></p>
+    <p><em>And it goes further than the category. The host names the actual rule that failed underneath a generic banner, so the pattern carries a locator for that line and appends it. The caller doesn't get 'transaction could not be validated' &mdash; they get 'insufficient available balance in the source share.' For a rejected request, the category is the less useful half of the answer."</em></p>
+  </div>
+  <h3>Two subtle behaviours to mention</h3>
+  <ul>
+    <li><span class="kicker">Partial outputs travel with every result.</span> A run that read three values and then died still returns those three. Dropping them made a partial answer indistinguishable from no answer.</li>
+    <li><span class="kicker">A recovered-from condition downgrades a later failure.</span> A maintenance interstitial was correctly matched and dismissed &mdash; and the dismissal returned the host to a signed-out page, so every later step failed against a page showing no error at all. Reporting that as a hard failure blames the automation for a host condition it handled correctly, so it reports <em>recoverable</em>: re-invoke from the start. Deliberately not solved by auto-restarting from step zero, because the earlier steps may be irreversible.</li>
+  </ul>
+  <div class="war">
+    <h4>The false-positive story</h4>
+    <p>The permission-denied pattern was originally anchored on the banner text <code>SUPERVISOR OVERRIDE REQUIRED</code>. But the legitimate Place Hold <em>form</em> carries that same banner as a "restricted function" warning label. So every Place Hold replay matched it the instant it reached the form &mdash; reporting "not authorized" even when signed on as a supervisor who <em>was</em> authorized, and bailing out before the flow ran at all.</p>
+    <p>It's now anchored on the sentence that appears only on the real denial page. Good story because it shows the failure mode of pattern-matching a page, and shows you found it.</p>
+  </div>
+  <div class="tags">
+    <span class="tag hot">deterministic replay</span><span class="tag">interpreter pattern</span><span class="tag">typed result object</span><span class="tag">retry budget</span><span class="tag">graceful degradation</span><span class="tag">fail-closed</span>
+  </div>
+</section>
+
+<section id="s5">
+  <div class="seg-head"><span class="seg-n">06</span><h2>Human-in-the-loop</h2><span class="seg-time">5 min</span></div>
+  <p class="seg-sub">Four distinct control operations that are easy to conflate and are deliberately kept apart.</p>
+  <p>Both engines poll the same controller. The transport behind it is swappable: a terminal prompt for CLI runs, a thread-safe queue for HTTP-driven runs.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Operation</th><th>Intent</th><th>After</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">escalate</td><td>The engine stops itself &mdash; risky step, loop, unrecognised fault.</td><td>Human resumes; same run continues.</td></tr>
+      <tr><td class="mono">takeover</td><td>A human asks to drive. Honoured at the next step boundary, before a token is spent.</td><td>Same handshake, same run.</td></tr>
+      <tr><td class="mono">interrupt</td><td>End the run for good.</td><td>Run marked <em>interrupted</em>, not <em>failed</em>.</td></tr>
+      <tr><td class="mono">cancel</td><td>Unblock an escalation nobody is going to resume.</td><td>Run finishes reporting a clean failure.</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Three details worth surfacing</h3>
+  <ul>
+    <li><span class="kicker">Interrupt is a <code>BaseException</code>, on purpose.</span> Every layer between the step loop and the worker thread catches broad <code>except Exception</code> and converts what it caught into a <em>reported failure</em>. An operator stopping a run is not a failure of the capability and must not be recorded as one &mdash; subclassing <code>BaseException</code> makes that true by construction rather than by remembering to re-raise it in a dozen places. A good answer if you're asked about code quality.</li>
+    <li><span class="kicker">Every handoff is evidenced as a diff.</span> Accessibility tree and screenshot before, the same after, plus the human's own one-line note. You can see exactly what a person changed while they had control &mdash; bounded at 200 diff lines so one handoff can't dominate the log.</li>
+    <li><span class="kicker">Resume checks for success before attempting anything.</span> A human who takes over has no obligation to stop where the agent stopped. Confirmed live: a supervisor-override denial was resolved by the operator completing the entire Place Hold themselves. Without that check, the next recorded step runs against a page that has already moved past it and reports a hard failure for a run that succeeded.</li>
+  </ul>
+  <div class="tags">
+    <span class="tag hot">human-in-the-loop</span><span class="tag">strategy pattern</span><span class="tag">producer&ndash;consumer queue</span><span class="tag">dual control</span><span class="tag">four-eyes principle</span><span class="tag">idempotent resume</span>
+  </div>
+</section>
+
+<section id="s6">
+  <div class="seg-head"><span class="seg-n">07</span><h2>Isolation and evidence</h2><span class="seg-time">5 min</span></div>
+  <p class="seg-sub">Reframed from "cosmetic" to: how this survives a bank's security review.</p>
+  <p>This is the segment you were going to demote. Don't &mdash; it's the part a CTO in finance is obliged to care about, and you have real answers.</p>
+  <h3>Isolation &mdash; one container per run</h3>
+  <p><code>comp_use/sandbox.py</code> spawns an ephemeral Docker container per run: headed Chromium under Xvfb, driven over CDP, viewable and controllable over noVNC, torn down by a context manager's <code>finally</code> &mdash; which means even an interrupt unwinding through the stack stops the container. <span class="kicker">The container-per-run lifetime is what makes "take over the same live session" true</span> when the browser isn't running somewhere a human can just look at.</p>
+  <p>Say the numbers: <span class="kicker">~450 MiB per concurrent run, 1.2 GiB worst case, no containers left behind.</span> Then the honest one &mdash; 187 MB and 37% CPU is the XFCE desktop, pure overhead you'd strip for production.</p>
+  <h3>Evidence &mdash; append-only and redacted at the boundary</h3>
+  <p>Three tables: <code>runs</code>, <code>run_events</code>, <code>run_screenshots</code>, cascading on delete. Every event is redacted <em>before</em> it is written &mdash; the store never holds an unredacted value. Points to make:</p>
+  <ul>
+    <li><span class="kicker">Every write is best-effort and non-fatal.</span> A Postgres outage must never crash a run driving a banking flow. Reads degrade to empty rather than raising.</li>
+    <li><span class="kicker">Orphan reaping at startup.</span> A killed process leaves rows saying <em>running</em> forever. A fresh process owns no threads from a previous one, so anything still open at startup is by definition orphaned &mdash; no race to lose. This was five phantom runs whose browsers hadn't existed for hours.</li>
+    <li><span class="kicker">Postgres is primary, not a mirror.</span> The filesystem layout survives only as the no-database fallback for local dev.</li>
+  </ul>
+  <h3>The three-layer data boundary</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Layer</th><th>Direction</th><th>Protects</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">allowlist</td><td>&mdash;</td><td>URL prefixes and action types. Checked before <em>and</em> after every action, because a click can navigate off-domain and that was never validated by the pre-check.</td></tr>
+      <tr><td class="mono">redact()</td><td>one-way</td><td>Logs, console, evidence. Replaces matches with <code>[REDACTED]</code>.</td></tr>
+      <tr><td class="mono">tokenizer</td><td>two-way</td><td>The LLM call. The model reasons over stable placeholders; the browser always acts on real data.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Both read the same regex list from settings. Neither has any field-specific logic. Covering a new sensitive shape &mdash; SSN, phone &mdash; is one regex, picked up by both consumers, with no code change to either. Say that: it's the difference between a privacy feature and a privacy architecture.</p>
+  <div class="say">
+    <h4>Volunteer the gap before they find it</h4>
+    <p><em>"One channel isn't covered. When the accessibility tree isn't enough to pin down a control, it falls back to sending a screenshot to a vision model &mdash; and you can't regex pixels. That's a documented exposure, and the mitigation is pointing the client at a local or on-prem model, which is a config change, not a rewrite."</em></p>
+    <p>Naming your own gap unprompted is worth more here than any feature you could describe instead.</p>
+  </div>
+  <div class="tags">
+    <span class="tag hot">ephemeral infrastructure</span><span class="tag">blast-radius containment</span><span class="tag">append-only audit log</span><span class="tag">data minimization</span><span class="tag">defence in depth</span><span class="tag">readiness probe</span><span class="tag">graceful degradation</span>
+  </div>
+</section>
+
+<section id="s7">
+  <div class="seg-head"><span class="seg-n">08</span><h2>The chat surface</h2><span class="seg-time">3 min</span></div>
+  <p class="seg-sub">Keep it short. It's the least differentiated part of the system and you've already demoed it.</p>
+  <p>The point is architectural, not conversational: <span class="kicker">the chat agent never imports the engines.</span> It's a pure client of the same HTTP surface everything else uses. It proposes; the endpoint executes through the identical code path a direct API call takes. There is no second, weaker way to start a run.</p>
+  <ul>
+    <li>The model gets three tools: propose an invoke, propose a discovery, resolve a pending confirmation. It can only propose capabilities a human has already approved.</li>
+    <li><span class="kicker">The confirmation gate is parsed deterministically first.</span> An exact <em>yes</em> or <em>no</em> resolves without asking the model at all; anything nuanced falls through to it, and a malformed or unhonoured tool call <span class="kicker">fails closed to "amend"</span> &mdash; never to "confirm."</li>
+    <li>Sessions carry their own tokenizer, so token-to-value mappings stay stable across a conversation and sensitive values never reach the provider.</li>
+    <li>Proposals are re-validated before execution &mdash; a capability can be deleted between the proposal and the confirmation.</li>
+    <li>A per-session lock, because two overlapping requests could otherwise both read the same pending action and both start a run.</li>
+  </ul>
+  <div class="war">
+    <h4>Why the deterministic pre-parse exists</h4>
+    <p>A free-tier model was observed ignoring a forced <code>tool_choice</code> entirely. The fallback path silently cleared the pending action and looped the user back to square one <em>no matter how many times they said yes</em> &mdash; on the single most safety-critical gate in the product. Hence: parse the obvious cases in code, and let the model handle only genuine ambiguity.</p>
+  </div>
+  <div class="tags">
+    <span class="tag hot">tool / function calling</span><span class="tag">fail-closed default</span><span class="tag">confirm-before-execute</span><span class="tag">per-session lock</span><span class="tag">thin client over shared API</span>
+  </div>
+</section>
+
+<section id="s8">
+  <div class="seg-head"><span class="seg-n">09</span><h2>Metrics, then gaps</h2><span class="seg-time">4 min</span></div>
+  <p class="seg-sub">Close on what it costs and what you'd do next. The gaps segment is the one that reads as senior.</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>Discovery <span class="oc oc-b">with LLM</span></th><th>Replay <span class="oc oc-s">no LLM</span></th></tr></thead>
+    <tbody>
+      <tr><td>Runs measured</td><td class="num">47</td><td class="num">74</td></tr>
+      <tr><td>Wall time &mdash; median</td><td class="num">100 s</td><td class="num">7 s</td></tr>
+      <tr><td>Wall time &mdash; mean</td><td class="num">117 s</td><td class="num">17 s</td></tr>
+      <tr><td>Wall time &mdash; min / max</td><td class="num">12 s / 561 s</td><td class="num">2 s / 159 s</td></tr>
+      <tr><td>LLM tool calls &mdash; median</td><td class="num">13</td><td class="num">0</td></tr>
+      <tr><td>Total tokens &mdash; median</td><td class="num">70,898</td><td class="num">0</td></tr>
+      <tr><td>Total tokens &mdash; range</td><td class="num">15,815 &ndash; 122,737</td><td class="num">0</td></tr>
+      <tr><td>Container peak memory</td><td class="num">428 MiB</td><td class="num">428 MiB</td></tr>
+    </tbody>
+  </table></div>
+  <p>Two things to say about the numbers rather than just showing them: <span class="kicker">discovery time is dominated by waiting on the model, not by driving the browser</span> &mdash; so it scales with model latency, not flow complexity. And <span class="kicker">the 561-second outlier was provider timeouts; the 159-second replay was a human takeover.</span> Naming your outliers reads as someone who actually looked at the data.</p>
+  <h3>End-to-end verification</h3>
+  <p>All eight capabilities replayed against the live host, not mocked: five clean successes, two escalate&rarr;confirm&rarr;resume&rarr;success cycles returning real confirmation numbers, and one clean <code>business_outcome</code> &mdash; a teller attempting a supervisor-only hold, classified correctly rather than timing out.</p>
+  <h3>The gaps &mdash; say these before you're asked</h3>
+  <ul>
+    <li><span class="kicker">Session-timeout recovery is architecturally incomplete.</span> Recovering means re-authenticating and resuming the remaining steps, which a single-UI-step recovery action can't express. It's reported honestly as <em>recoverable</em> with no automatic recovery attempted, rather than misclassified.</li>
+    <li><span class="kicker">The vision fallback isn't tokenized.</span> Pixels can't be regexed.</li>
+    <li><span class="kicker">Chat sessions are in-memory.</span> A restart drops them. Deliberate, matching the run manager, but it wouldn't survive production.</li>
+    <li><span class="kicker">Drift repair is diagnosis-only.</span> A failed locator gets a proposed patch saved as a new unapproved version and a human is asked to review it. Nothing is ever auto-applied. Frame this as the right default, not a limitation &mdash; self-healing selectors that silently rewrite themselves are exactly what you don't want touching a ledger.</li>
+    <li><span class="kicker">XFCE is ~187 MB of pure overhead</span> per container. First thing to strip.</li>
+  </ul>
+</section>
+
+<hr>
+
+<section id="mock">
+  <div class="seg-head"><h2>On "it was built for the mock app and now only works on MERIDIAN"</h2></div>
+  <p>You raised this as a weakness. <span class="kicker">At the code level it is substantially less true than you think, and the accurate version is a strength.</span> I checked: across the entire backend, exactly two places name the target host.</p>
+  <div class="files">
+    <div><div class="fp">discovery/outcome_library.py</div><div class="fd">A registry keyed by hostname. Returns an <em>empty list</em> for any host it doesn't recognise &mdash; so an unknown target degrades to "no known outcome patterns," which is the pre-existing behaviour, not a crash.</div></div>
+    <div><div class="fp">chat/agent.py &mdash; system prompt</div><div class="fd">One adjective in one sentence. Cosmetic.</div></div>
+  </div>
+  <p>Everything else that mentions the host mentions it <em>in a comment</em>, documenting which live failure motivated a general mechanism. The mechanisms themselves are host-agnostic: selecting a dropdown by label before value, matching rendered text rather than HTML source, supplementing the accessibility tree with form field attributes, wildcarding numeric URL segments, the locator fallback chain.</p>
+  <div class="say">
+    <h4>How to say it &mdash; volunteer it, don't wait to be asked</h4>
+    <p><em>"I want to be straight about the trajectory. I built this against a mock app I controlled, then pointed it at a real legacy system, and it broke in about fifteen specific ways. The mock was too clean &mdash; real labels, real form semantics, no error taxonomy. MERIDIAN has table-based layouts with no label association, banner text that collides across pages, and dropdowns with balances baked into the option labels.</em></p>
+    <p><em>Every one of those breakages is now a named guard with a comment explaining the failure that caused it. And the host-specific part is one registry file &mdash; onboarding a new core system means adding its error pages to that registry, not touching either engine. So the honest claim isn't 'this is general' &mdash; it's 'this got general by contact with one genuinely ugly system, and the seam where the next one plugs in is a single file.'"</em></p>
+  </div>
+  <p>That framing does three things at once: it's honest, it shows you know the difference between abstraction and generality, and it answers "what would it take to point this at <em>our</em> system" before the CTO has to ask &mdash; which is the question they're actually there to have answered.</p>
+  <p class="note">Verified before you present: the full suite is 368 passing. But note the mock-app tests exercise the Flask routes directly, not an agent run against them &mdash; so they don't prove end-to-end discovery still works there. If you plan to demo against the mock at all, check it first; if it's broken, say the mock drifted out of support once the real target became the reference implementation, which is a defensible call.</p>
+</section>
+
+<hr>
+
+<section id="ref-files">
+  <div class="seg-head"><h2>Every backend file</h2></div>
+  <p class="seg-sub">~4,500 lines of backend, 368 tests. In rough dependency order.</p>
+  <div class="files">
+    <div><div class="fp">comp_use/schemas.py</div><div class="fd"><span class="kicker">208 lines. The contract.</span> Every Pydantic model in the system: Artifact, Step, Locator, Checkpoint, ValueSource, OutcomePattern, ReplayResult, OutcomeType, InterventionRequest. If you read one file, read this.</div></div>
+    <div><div class="fp">comp_use/config.py</div><div class="fd">Environment-driven settings. Single source of truth for the URL allowlist, allowed action types, redaction regexes, model providers, step budget.</div></div>
+    <div><div class="fp">comp_use/guardrail.py</div><div class="fd">The policy enforcement point. Allowlist check, risky-step confirmation, one-way redaction, and the credential-shaped-parameter test that keeps passwords out of artifacts.</div></div>
+    <div><div class="fp">comp_use/tokenizer.py</div><div class="fd">Reversible tokenization. Stable placeholders per run, so the model can still recognise "I've seen this account before" without ever seeing the account.</div></div>
+    <div><div class="fp">comp_use/surface.py</div><div class="fd"><span class="kicker">The browser abstraction.</span> An abstract <code>Surface</code> plus a Playwright implementation. Holds the locator fallback chain, robust dropdown selection, rendered-text matching and safe screenshot capture. A desktop or native surface would implement the same five methods.</div></div>
+    <div><div class="fp">comp_use/evidence.py</div><div class="fd">Redact-then-write logger. Postgres when configured, JSONL plus PNGs otherwise.</div></div>
+    <div><div class="fp">comp_use/pg/store.py<br>comp_use/pg/schema.sql</div><div class="fd">Sync psycopg2 with a threaded connection pool &mdash; sync because the whole engine is synchronous and an async driver would need every call site wrapped. Every write non-fatal. Three cascading tables plus artifact storage.</div></div>
+    <div><div class="fp">comp_use/llm_client.py</div><div class="fd">Abstract client, an OpenAI-compatible base, two provider subclasses, a fallback wrapper that tries the second provider when the first fails, and a fake for tests. Also holds the ~130-line discovery system prompt &mdash; worth showing, since most guards have a prompt-side counterpart.</div></div>
+    <div><div class="fp">comp_use/discovery/agent.py</div><div class="fd"><span class="kicker">849 lines. The recording loop</span> and its eight guards.</div></div>
+    <div><div class="fp">comp_use/discovery/compiler.py</div><div class="fd">Trace &rarr; Artifact. Derives the input schema from parameter bindings and the output schema from extractions; collapses adjacent duplicate steps and drops superseded extracts (output-preserving by construction &mdash; only the last write per name ever survived).</div></div>
+    <div><div class="fp">comp_use/discovery/outcome_library.py</div><div class="fd">Host-keyed registry of known error and business states. Resolved live at replay time rather than snapshotted into artifacts, so fixing a shared pattern reaches every already-recorded capability.</div></div>
+    <div><div class="fp">comp_use/replay/engine.py</div><div class="fd"><span class="kicker">593 lines. The deterministic executor.</span> Type-checks inputs, substitutes parameters, runs steps, matches outcome patterns, manages retry budgets, resolves derived outputs by arithmetic. Imports no LLM.</div></div>
+    <div><div class="fp">comp_use/escalation/controller.py<br>comp_use/escalation/transport.py</div><div class="fd">Human handoff. The controller evidences before/after state as a bounded tree diff; the transport swaps between a terminal prompt and a thread-safe queue, and defines the four control operations.</div></div>
+    <div><div class="fp">comp_use/sandbox.py</div><div class="fd">One Docker container per run. Publishes ports, then polls the CDP endpoint until Chromium actually answers &mdash; a published port only means Docker is forwarding it.</div></div>
+    <div><div class="fp">comp_use/drift.py</div><div class="fd">Post-mortem locator repair. Runs strictly <em>after</em> a replay has produced its final LLM-free result, so the determinism guarantee holds. Proposes a patched version; never saves, applies or replays it.</div></div>
+    <div><div class="fp">comp_use/cli.py</div><div class="fd"><span class="kicker">828 lines. The orchestration facade.</span> Browser session lifetime as a context manager, the artifact store with its approve/reject/retire/default lifecycle, version allocation under a process-wide lock, success-checkpoint derivation, per-run allowlist widening.</div></div>
+    <div><div class="fp">comp_use/server/app.py</div><div class="fd">FastAPI. Capability CRUD, invoke and discover returning <code>202</code> with a run id to poll, run control, version lifecycle, chat. Validates capability names and run ids against a strict pattern before they ever reach a filesystem path.</div></div>
+    <div><div class="fp">comp_use/server/run_manager.py</div><div class="fd">One background thread per run, with a lifecycle state machine: running &rarr; escalated &rarr; done / error / interrupted. Publishes the transport into the record before the record becomes visible, so a concurrent control request can't observe a half-built record.</div></div>
+    <div><div class="fp">comp_use/chat/{agent,session,catalog}.py</div><div class="fd">The conversational client. Tool definitions, the deterministic confirmation pre-parse, per-session locking and tokenization, and the catalog builder that scopes the model's search space to approved capabilities on the selected site.</div></div>
+  </div>
+</section>
+
+<section id="ref-patterns">
+  <div class="seg-head"><h2>Patterns and keywords</h2></div>
+  <p class="seg-sub">Named patterns you can drop in conversation, with where they actually appear.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Pattern</th><th>Where</th><th>Say it as</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">Ports &amp; Adapters<br>(Hexagonal)</td><td><code>surface.py</code>, <code>llm_client.py</code>, <code>transport.py</code></td><td>"Three abstract interfaces with swappable implementations &mdash; browser, model provider, human transport. None of the engine code knows which it's talking to."</td></tr>
+      <tr><td class="mono">Record &amp; Replay</td><td>The whole architecture</td><td>The thesis. Also called <em>trace-based</em> or <em>demonstration-based</em> automation.</td></tr>
+      <tr><td class="mono">Interpreter</td><td><code>replay/engine.py</code></td><td>"The artifact is a program; the engine is its interpreter."</td></tr>
+      <tr><td class="mono">Compiler pass</td><td><code>discovery/compiler.py</code></td><td>Trace to artifact, with dedup and dead-extract-elimination passes.</td></tr>
+      <tr><td class="mono">Chain of Responsibility</td><td>Locator <code>fallback</code></td><td>Recursive fallback with a short probe timeout for every non-terminal attempt.</td></tr>
+      <tr><td class="mono">Circuit breaker</td><td>Loop and dead-end detection</td><td>Bounded attempts before escalating to a human.</td></tr>
+      <tr><td class="mono">Registry</td><td><code>outcome_library.py</code></td><td>Host-keyed lookup, resolved at runtime, empty for unknown hosts.</td></tr>
+      <tr><td class="mono">Decorator</td><td><code>FallbackLLMClient</code></td><td>Wraps a client, transparently falls through to a second provider.</td></tr>
+      <tr><td class="mono">Template Method</td><td><code>_OpenAICompatibleClient</code></td><td>Shared request flow; subclasses override endpoint, headers, model names.</td></tr>
+      <tr><td class="mono">Facade</td><td><code>cli.py</code></td><td>One entry point that both the CLI and the HTTP server call.</td></tr>
+      <tr><td class="mono">Test double</td><td><code>FakeLLMClient</code></td><td>Why 368 tests run without a network or an API key.</td></tr>
+      <tr><td class="mono">Async job + polling</td><td><code>app.py</code> + <code>run_manager.py</code></td><td><code>202 Accepted</code> with a run id; the client polls. Browser runs outlive an HTTP request.</td></tr>
+      <tr><td class="mono">Fail-closed</td><td>Chat confirmation, risky steps</td><td>Every ambiguous path resolves to the safe outcome.</td></tr>
+      <tr><td class="mono">Defence in depth</td><td>Allowlist / redact / tokenize</td><td>Three independent layers, one shared config.</td></tr>
+      <tr><td class="mono">Dual control<br>(four-eyes)</td><td>Risk tiers + approval lifecycle</td><td>Native banking vocabulary &mdash; use it. A human confirms risky steps <em>and</em> a human approves the artifact before it can ever be invoked.</td></tr>
+      <tr><td class="mono">Immutable versioning</td><td>Artifact store</td><td>Never overwrite; bump. Re-recording produces a draft while the approved version keeps serving.</td></tr>
+      <tr><td class="mono">Graceful degradation</td><td>Postgres, screenshots, derived outputs</td><td>Every non-load-bearing subsystem fails soft.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="ref-qa">
+  <div class="seg-head"><h2>Questions to expect</h2></div>
+  <p class="seg-sub">Prepared answers. The first four are near-certain.</p>
+
+  <div class="qa"><p class="q">What happens when the site changes?</p><p class="a">Three layers. The locator fallback chain handles a control findable a second way. Drift diagnosis handles a control that moved or got renamed &mdash; it proposes a patched version and escalates for human review, and nothing is auto-applied. Beyond that, the capability fails cleanly as a hard failure naming the step and what it expected, and you re-record. Be explicit that auto-applying a self-healed selector against a ledger is a deliberate non-goal.</p></div>
+
+  <div class="qa"><p class="q">Why not just use their API?</p><p class="a">Because the premise is systems that don't have one. This targets a legacy core-banking web app with table-based layouts and no label semantics. Where an API exists, use it &mdash; this is for the tier below that, where today the alternative is a human clicking through a green screen.</p></div>
+
+  <div class="qa"><p class="q">How do we point this at our system?</p><p class="a">Add an entry to the outcome registry for your host's error and denial pages, and set the allowlist. Then record capabilities against it. The registry is the only host-specific file; both engines are untouched. Recording a capability is one ~100-second session plus a human review.</p></div>
+
+  <div class="qa"><p class="q">What does it cost at scale?</p><p class="a">Recording: ~71k tokens once per capability. Invoking: zero tokens, forever. Compute: budget ~450 MiB per concurrent run, 1.2 GiB worst case, one ephemeral container each, nothing left behind. The economics are the argument for the split &mdash; cost is per <em>capability</em>, not per <em>call</em>.</p></div>
+
+  <div class="qa"><p class="q">You're using free-tier models &mdash; is that serious?</p><p class="a">The provider is a config line. The architecture is deliberately provider-agnostic and there's a fallback wrapper that fails over between two. For a bank the target is an on-prem or VPC-hosted model, and the tokenization boundary means most of the pipeline never sends real values anywhere regardless. Volunteer that the vision fallback is the exception.</p></div>
+
+  <div class="qa"><p class="q">How do you know a recorded capability is correct?</p><p class="a">Three ways, and say all three. Discovery refuses to finish on several classes of incomplete recording. The artifact is a JSON document a human reviews and explicitly approves before it can ever be invoked &mdash; an unapproved draft is not invocable. And the artifact carries its own success checkpoint, so every replay proves it reached the intended end state rather than assuming it.</p></div>
+
+  <div class="qa"><p class="q">What about concurrency and races?</p><p class="a">Version allocation is under a process-wide lock, never held across a blocking call. Run ids carry a uuid suffix because a millisecond timestamp collides under real load. The run manager refuses to overwrite a live record rather than silently evicting it. Chat sessions hold a per-session lock so two overlapping requests can't both confirm the same pending action. Each of those was a real bug.</p></div>
+
+  <div class="qa"><p class="q">Test coverage?</p><p class="a">368 tests, no network required &mdash; the LLM client has a fake, and the mock app exercises the browser paths. The heaviest suites are the two engines: ~1,400 lines testing discovery, ~1,270 testing replay.</p></div>
+
+  <div class="qa"><p class="q">What would you do differently?</p><p class="a">Have an answer ready. Candidates: model session-timeout recovery as a first-class re-authenticate-and-resume rather than a single recovery step; persist chat sessions; strip the desktop environment from the sandbox image; and make the outcome registry data rather than code, so onboarding a host is a config change instead of a deploy.</p></div>
+</section>
+
+</main>
+</div>

@@ -1,0 +1,624 @@
+<title>Anatomy of a Run</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+:root{
+  --ground:#F5F6F3; --surface:#FFFFFF; --surface-2:#EDEEE9;
+  --ink:#16191A; --ink-2:#3D4446; --muted:#6B7274; --rule:#C9CCC4;
+  --record:#A2531A; --record-soft:#F6EADE;
+  --replay:#186A5F; --replay-soft:#DEEDE9;
+  --alert:#9E2B26; --alert-soft:#F7E4E2;
+  --shadow:0 1px 2px rgba(20,25,26,.06), 0 8px 24px -16px rgba(20,25,26,.28);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#121517; --surface:#191D20; --surface-2:#212629;
+    --ink:#E9EAE5; --ink-2:#BFC4C2; --muted:#8E9495; --rule:#39403F;
+    --record:#E29254; --record-soft:#2E2118;
+    --replay:#5FBFAE; --replay-soft:#152724;
+    --alert:#E0736C; --alert-soft:#2C1917;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#121517; --surface:#191D20; --surface-2:#212629;
+  --ink:#E9EAE5; --ink-2:#BFC4C2; --muted:#8E9495; --rule:#39403F;
+  --record:#E29254; --record-soft:#2E2118;
+  --replay:#5FBFAE; --replay-soft:#152724;
+  --alert:#E0736C; --alert-soft:#2C1917;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:"Source Serif 4",Georgia,serif;font-size:17px;line-height:1.62;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:0 28px 96px}
+h1,h2,h3,h4,.ui{font-family:Archivo,"Helvetica Neue",Arial,sans-serif}
+h1{font-size:2.5rem;line-height:1.08;font-weight:700;letter-spacing:-.022em;margin:0 0 14px;text-wrap:balance}
+h2{font-size:1.42rem;font-weight:700;letter-spacing:-.014em;margin:0 0 4px;text-wrap:balance}
+h3{font-size:1rem;font-weight:600;margin:24px 0 8px}
+p{margin:0 0 14px;max-width:68ch}
+ul,ol{margin:0 0 14px;padding-left:1.15rem;max-width:68ch}
+li{margin:0 0 6px}
+code{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.85em;background:var(--surface-2);padding:.1em .34em;border-radius:3px;color:var(--ink-2)}
+strong,.kicker{font-family:Archivo,sans-serif;font-weight:600;color:var(--ink)}
+.eyebrow{font-family:"JetBrains Mono",monospace;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 18px}
+.lede{font-size:1.18rem;line-height:1.55;color:var(--ink-2);max-width:66ch;margin:0 0 22px}
+header.top{padding:60px 0 34px;border-bottom:1px solid var(--rule);margin-bottom:34px}
+
+.legend{display:flex;flex-wrap:wrap;gap:22px;align-items:center;background:var(--surface);border:1px solid var(--rule);border-radius:5px;padding:13px 18px;margin:0 0 40px}
+.legend div{display:flex;align-items:center;gap:8px;font-family:Archivo,sans-serif;font-size:.85rem;color:var(--ink-2)}
+.sw{width:26px;height:14px;border-radius:3px;border:1.5px solid;flex:none}
+.sw-rec{background:var(--record-soft);border-color:var(--record)}
+.sw-rep{background:var(--replay-soft);border-color:var(--replay)}
+.sw-alert{background:var(--alert-soft);border-color:var(--alert)}
+.sw-n{background:var(--surface);border-color:var(--rule)}
+
+figure{margin:0 0 12px;background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:22px 20px 16px;box-shadow:var(--shadow);overflow-x:auto}
+figure svg{display:block;max-width:100%;height:auto;min-width:640px;color:var(--ink-2)}
+figcaption{font-family:Archivo,sans-serif;font-size:.86rem;line-height:1.5;color:var(--muted);margin-top:16px;padding-top:12px;border-top:1px solid var(--rule);max-width:none}
+figcaption b{color:var(--ink);font-weight:600}
+
+section{margin:0 0 56px;scroll-margin-top:20px}
+.fig-head{display:flex;align-items:baseline;gap:13px;border-top:2px solid var(--ink);padding-top:11px;margin-bottom:6px}
+.fig-n{font-family:"JetBrains Mono",monospace;font-size:.76rem;font-weight:700;color:var(--muted);padding-top:.35em}
+.fig-sub{font-family:Archivo,sans-serif;font-size:.94rem;color:var(--muted);margin:0 0 18px;max-width:66ch}
+
+/* svg primitives */
+.b{fill:var(--surface);stroke:var(--rule);stroke-width:1.5}
+.b-rec{fill:var(--record-soft);stroke:var(--record);stroke-width:1.5}
+.b-rep{fill:var(--replay-soft);stroke:var(--replay);stroke-width:1.5}
+.b-al{fill:var(--alert-soft);stroke:var(--alert);stroke-width:1.5}
+.b-out{fill:none;stroke:var(--rule);stroke-width:1.5;stroke-dasharray:5 4}
+.t{fill:var(--ink);font-family:Archivo,sans-serif;font-size:12.5px;font-weight:600}
+.t2{fill:var(--muted);font-family:"JetBrains Mono",monospace;font-size:9.5px}
+.t-rec{fill:var(--record);font-family:"JetBrains Mono",monospace;font-size:9.5px;font-weight:700}
+.t-rep{fill:var(--replay);font-family:"JetBrains Mono",monospace;font-size:9.5px;font-weight:700}
+.t-al{fill:var(--alert);font-family:"JetBrains Mono",monospace;font-size:9.5px;font-weight:700}
+.band{fill:var(--muted);font-family:"JetBrains Mono",monospace;font-size:9px;letter-spacing:.14em}
+.lbl{fill:var(--ink-2);font-family:"JetBrains Mono",monospace;font-size:9.5px}
+.ln{stroke:currentColor;stroke-width:1.4;fill:none}
+.ln-m{stroke:var(--muted);stroke-width:1.2;fill:none;stroke-dasharray:4 3}
+.ln-a{stroke:var(--alert);stroke-width:1.5;fill:none}
+.ln-r{stroke:var(--record);stroke-width:1.4;fill:none}
+.life{stroke:var(--rule);stroke-width:1.2;fill:none;stroke-dasharray:3 4}
+.mk-ink{fill:var(--ink-2)}
+.mk-m{fill:var(--muted)}
+.mk-a{fill:var(--alert)}
+.mk-r{fill:var(--record)}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">System design &middot; comp-use &middot; companion to the presentation brief</p>
+  <h1>Anatomy of a Run</h1>
+  <p class="lede">Six views of what happens between a person typing a request and a structured result coming back &mdash; the component map, the capability lifecycle, both conversational turns, the guard chain inside a single replay step, and where sensitive data is allowed to travel.</p>
+</header>
+
+<div class="legend">
+  <div><span class="sw sw-rec"></span> A model is in this path</div>
+  <div><span class="sw sw-rep"></span> Deterministic &mdash; no model</div>
+  <div><span class="sw sw-alert"></span> Failure or human-stop path</div>
+  <div><span class="sw sw-n"></span> Infrastructure &amp; plumbing</div>
+</div>
+
+<!-- ===================== FIG 1 ===================== -->
+<section id="f1">
+  <div class="fig-head"><span class="fig-n">FIG 1</span><h2>Component map</h2></div>
+  <p class="fig-sub">Who calls whom. The claim: exactly one engine touches a model, and the shared services beneath both are the same six.</p>
+  <figure>
+    <svg viewBox="0 0 980 720" role="img" aria-label="Layered component map: client surfaces call the FastAPI app, which calls the chat agent, run manager and CLI facade; the CLI facade drives the DiscoveryAgent, which calls the LLM client, and the ReplayEngine, which does not. Both engines sit on six shared services, which reach Postgres, a Docker sandbox container, and the target host.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-ink" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a1m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-m" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+
+      <text class="band" x="32" y="36">CLIENT SURFACES</text>
+      <rect class="b" x="40" y="46" width="170" height="52" rx="4"/>
+      <text class="t" x="125" y="70" text-anchor="middle">Dashboard</text>
+      <text class="t2" x="125" y="85" text-anchor="middle">React &middot; review + approve</text>
+      <rect class="b" x="230" y="46" width="170" height="52" rx="4"/>
+      <text class="t" x="315" y="70" text-anchor="middle">Chat</text>
+      <text class="t2" x="315" y="85" text-anchor="middle">React &middot; ask + confirm</text>
+      <rect class="b" x="560" y="46" width="120" height="52" rx="4"/>
+      <text class="t" x="620" y="70" text-anchor="middle">CLI</text>
+      <text class="t2" x="620" y="85" text-anchor="middle">comp-use</text>
+
+      <text class="band" x="32" y="130">HTTP API</text>
+      <rect class="b" x="40" y="140" width="500" height="52" rx="4"/>
+      <text class="t" x="290" y="164" text-anchor="middle">FastAPI &mdash; server/app.py</text>
+      <text class="t2" x="290" y="179" text-anchor="middle">/capabilities &nbsp; /runs &nbsp; /chat &nbsp;&middot;&nbsp; name + run_id validated before any Path()</text>
+
+      <text class="band" x="32" y="224">ORCHESTRATION</text>
+      <rect class="b" x="40" y="234" width="190" height="52" rx="4"/>
+      <text class="t" x="135" y="258" text-anchor="middle">RunManager</text>
+      <text class="t2" x="135" y="273" text-anchor="middle">one thread per run</text>
+      <rect class="b" x="260" y="234" width="100" height="52" rx="4"/>
+      <text class="t" x="310" y="258" text-anchor="middle">cli.py</text>
+      <text class="t2" x="310" y="273" text-anchor="middle">facade</text>
+      <rect class="b" x="400" y="234" width="180" height="52" rx="4"/>
+      <text class="t" x="490" y="258" text-anchor="middle">ChatAgent</text>
+      <text class="t2" x="490" y="273" text-anchor="middle">+ SessionManager</text>
+
+      <text class="band" x="32" y="318">ENGINES</text>
+      <rect class="b-rep" x="40" y="328" width="200" height="58" rx="4"/>
+      <text class="t" x="140" y="352" text-anchor="middle">ReplayEngine</text>
+      <text class="t-rep" x="140" y="370" text-anchor="middle">imports no LLM client</text>
+      <rect class="b-rec" x="270" y="328" width="200" height="58" rx="4"/>
+      <text class="t" x="370" y="352" text-anchor="middle">DiscoveryAgent</text>
+      <text class="t-rec" x="370" y="370" text-anchor="middle">1 LLM call per step</text>
+      <rect class="b-rec" x="740" y="328" width="200" height="58" rx="4"/>
+      <text class="t" x="840" y="352" text-anchor="middle">LLMClient</text>
+      <text class="t-rec" x="840" y="370" text-anchor="middle">NVIDIA &rarr; OpenRouter</text>
+
+      <text class="band" x="32" y="434">SHARED SERVICES &mdash; BOTH ENGINES DEPEND ON ALL SIX</text>
+      <rect class="b-out" x="32" y="442" width="746" height="72" rx="5"/>
+      <rect class="b" x="40" y="456" width="115" height="44" rx="3"/>
+      <text class="t" x="97" y="476" text-anchor="middle">Guardrail</text>
+      <text class="t2" x="97" y="490" text-anchor="middle">allowlist</text>
+      <rect class="b" x="161" y="456" width="115" height="44" rx="3"/>
+      <text class="t" x="218" y="476" text-anchor="middle">Tokenizer</text>
+      <text class="t2" x="218" y="490" text-anchor="middle">two-way</text>
+      <rect class="b" x="282" y="456" width="115" height="44" rx="3"/>
+      <text class="t" x="339" y="476" text-anchor="middle">Evidence</text>
+      <text class="t2" x="339" y="490" text-anchor="middle">redact + write</text>
+      <rect class="b" x="403" y="456" width="115" height="44" rx="3"/>
+      <text class="t" x="460" y="476" text-anchor="middle">Escalation</text>
+      <text class="t2" x="460" y="490" text-anchor="middle">+ transport</text>
+      <rect class="b" x="524" y="456" width="115" height="44" rx="3"/>
+      <text class="t" x="581" y="476" text-anchor="middle">Surface</text>
+      <text class="t2" x="581" y="490" text-anchor="middle">Playwright</text>
+      <rect class="b" x="645" y="456" width="115" height="44" rx="3"/>
+      <text class="t" x="702" y="476" text-anchor="middle">Outcome lib</text>
+      <text class="t2" x="702" y="490" text-anchor="middle">by host</text>
+
+      <text class="band" x="32" y="544">EXTERNAL</text>
+      <rect class="b" x="250" y="554" width="180" height="52" rx="4"/>
+      <text class="t" x="340" y="578" text-anchor="middle">Postgres</text>
+      <text class="t2" x="340" y="593" text-anchor="middle">runs &middot; events &middot; artifacts</text>
+      <rect class="b" x="460" y="554" width="260" height="52" rx="4"/>
+      <text class="t" x="590" y="578" text-anchor="middle">Docker sandbox &mdash; one per run</text>
+      <text class="t2" x="590" y="593" text-anchor="middle">Chromium + Xvfb + noVNC :6080 + CDP :9223</text>
+      <rect class="b-rec" x="750" y="554" width="190" height="52" rx="4"/>
+      <text class="t" x="845" y="578" text-anchor="middle">LLM provider</text>
+      <text class="t2" x="845" y="593" text-anchor="middle">NVIDIA NIM / OpenRouter</text>
+      <rect class="b" x="460" y="636" width="260" height="46" rx="4"/>
+      <text class="t" x="590" y="657" text-anchor="middle">Target host &mdash; MERIDIAN CORE</text>
+      <text class="t2" x="590" y="671" text-anchor="middle">legacy core-banking web app</text>
+
+      <line class="ln" x1="125" y1="98" x2="125" y2="136" marker-end="url(#a1)"/>
+      <line class="ln" x1="315" y1="98" x2="315" y2="136" marker-end="url(#a1)"/>
+      <polyline class="ln" points="620,98 620,206 310,206 310,230" marker-end="url(#a1)"/>
+      <line class="ln" x1="135" y1="192" x2="135" y2="230" marker-end="url(#a1)"/>
+      <line class="ln" x1="490" y1="192" x2="490" y2="230" marker-end="url(#a1)"/>
+      <line class="ln" x1="230" y1="260" x2="256" y2="260" marker-end="url(#a1)"/>
+
+      <line class="ln" x1="310" y1="286" x2="310" y2="306"/>
+      <line class="ln" x1="140" y1="306" x2="370" y2="306"/>
+      <line class="ln" x1="140" y1="306" x2="140" y2="324" marker-end="url(#a1)"/>
+      <line class="ln" x1="370" y1="306" x2="370" y2="324" marker-end="url(#a1)"/>
+      <text class="lbl" x="560" y="303">cli.run_replay() / run_discover()</text>
+
+      <polyline class="ln" points="580,260 840,260 840,324" marker-end="url(#a1)"/>
+      <text class="lbl" x="710" y="252" text-anchor="middle">chat() &mdash; tool calling</text>
+      <line class="ln" x1="470" y1="357" x2="736" y2="357" marker-end="url(#a1)"/>
+      <text class="lbl" x="603" y="349" text-anchor="middle">decide_next_action()</text>
+
+      <line class="ln" x1="140" y1="386" x2="140" y2="438" marker-end="url(#a1)"/>
+      <line class="ln" x1="370" y1="386" x2="370" y2="438" marker-end="url(#a1)"/>
+
+      <line class="ln" x1="339" y1="500" x2="340" y2="550" marker-end="url(#a1)"/>
+      <line class="ln" x1="581" y1="500" x2="589" y2="550" marker-end="url(#a1)"/>
+      <text class="lbl" x="600" y="528">CDP</text>
+      <line class="ln" x1="840" y1="386" x2="845" y2="550" marker-end="url(#a1)"/>
+      <text class="lbl" x="854" y="452">HTTPS</text>
+      <text class="lbl" x="854" y="466">tokens only</text>
+      <line class="ln" x1="590" y1="606" x2="590" y2="632" marker-end="url(#a1)"/>
+      <text class="lbl" x="600" y="624">HTTPS</text>
+
+      <polyline class="ln-m" points="460,580 440,580 440,706 16,706 16,72 36,72" marker-end="url(#a1m)"/>
+      <text class="lbl" x="30" y="698">noVNC feed &mdash; the operator's browser connects to the container directly</text>
+    </svg>
+    <figcaption><b>Read it top-down as a dependency stack.</b> The two engines are siblings on the same shared services, but only <code>DiscoveryAgent</code> has an edge to <code>LLMClient</code> &mdash; <code>ReplayEngine</code> has none, and that absence is the architecture's central guarantee. <code>drift.py</code> is omitted: it also calls the model, but runs strictly after a replay has produced its final result, so it can't affect one. The dashed line on the left is the video channel: the noVNC feed goes straight from the container to the operator's browser and never passes through FastAPI.</figcaption>
+  </figure>
+</section>
+
+<!-- ===================== FIG 2 ===================== -->
+<section id="f2">
+  <div class="fig-head"><span class="fig-n">FIG 2</span><h2>Capability lifecycle</h2></div>
+  <p class="fig-sub">The economic argument in one line: the expensive half runs once, the cheap half runs forever, and a human stands between them.</p>
+  <figure>
+    <svg viewBox="0 0 980 300" role="img" aria-label="A goal enters the DiscoveryAgent which makes thirteen LLM calls, is compiled into a draft artifact, passes a human approval gate, and is then replayed by the ReplayEngine with no model, returning a result. The left half runs once at about 100 seconds and 71,000 tokens; the right half runs on every call at about 7 seconds and zero tokens.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-ink" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+      <rect x="30" y="40" width="432" height="130" rx="6" fill="var(--record-soft)" opacity=".55"/>
+      <rect x="518" y="40" width="432" height="130" rx="6" fill="var(--replay-soft)" opacity=".55"/>
+
+      <rect class="b" x="46" y="78" width="92" height="54" rx="4"/>
+      <text class="t" x="92" y="100" text-anchor="middle">Goal</text>
+      <text class="t2" x="92" y="115" text-anchor="middle">plain text</text>
+
+      <rect class="b-rec" x="160" y="78" width="164" height="54" rx="4"/>
+      <text class="t" x="242" y="100" text-anchor="middle">DiscoveryAgent</text>
+      <text class="t-rec" x="242" y="116" text-anchor="middle">13 LLM calls</text>
+
+      <rect class="b" x="346" y="78" width="100" height="54" rx="4"/>
+      <text class="t" x="396" y="100" text-anchor="middle">compile</text>
+      <text class="t2" x="396" y="115" text-anchor="middle">trace &rarr; JSON</text>
+
+      <rect class="b-al" x="470" y="52" width="56" height="106" rx="4"/>
+      <text class="t-al" x="498" y="105" text-anchor="middle" transform="rotate(-90 498 105)">HUMAN APPROVAL</text>
+
+      <rect class="b" x="552" y="78" width="140" height="54" rx="4"/>
+      <text class="t" x="622" y="100" text-anchor="middle">Artifact vN</text>
+      <text class="t2" x="622" y="115" text-anchor="middle">status = approved</text>
+
+      <rect class="b-rep" x="712" y="78" width="140" height="54" rx="4"/>
+      <text class="t" x="782" y="100" text-anchor="middle">ReplayEngine</text>
+      <text class="t-rep" x="782" y="116" text-anchor="middle">0 LLM calls</text>
+
+      <rect class="b" x="872" y="78" width="80" height="54" rx="4"/>
+      <text class="t" x="912" y="100" text-anchor="middle">Result</text>
+      <text class="t2" x="912" y="115" text-anchor="middle">typed</text>
+
+      <line class="ln" x1="138" y1="105" x2="156" y2="105" marker-end="url(#a2)"/>
+      <line class="ln" x1="324" y1="105" x2="342" y2="105" marker-end="url(#a2)"/>
+      <line class="ln" x1="446" y1="105" x2="466" y2="105" marker-end="url(#a2)"/>
+      <line class="ln" x1="526" y1="105" x2="548" y2="105" marker-end="url(#a2)"/>
+      <line class="ln" x1="692" y1="105" x2="708" y2="105" marker-end="url(#a2)"/>
+      <line class="ln" x1="852" y1="105" x2="868" y2="105" marker-end="url(#a2)"/>
+
+      <path class="ln" d="M912 132 L912 158 Q912 168 902 168 L792 168 Q782 168 782 158 L782 136" marker-end="url(#a2)"/>
+      <text class="lbl" x="847" y="182" text-anchor="middle">every subsequent invocation</text>
+
+      <text class="t-rec" x="246" y="200" text-anchor="middle">ONCE PER CAPABILITY</text>
+      <text class="lbl" x="246" y="218" text-anchor="middle">100 s median &middot; ~71,000 tokens &middot; 47 runs measured</text>
+      <text class="t-rep" x="734" y="200" text-anchor="middle">EVERY CALL, FOREVER</text>
+      <text class="lbl" x="734" y="218" text-anchor="middle">7 s median &middot; 0 tokens &middot; 74 runs measured</text>
+
+      <rect class="b" x="336" y="244" width="334" height="42" rx="4"/>
+      <text class="t2" x="503" y="261" text-anchor="middle">re-recording produces a NEW draft version &mdash; the approved</text>
+      <text class="t2" x="503" y="276" text-anchor="middle">version keeps serving until someone approves the draft</text>
+      <line class="ln-m" x1="503" y1="240" x2="503" y2="162" marker-end="url(#a2)"/>
+    </svg>
+    <figcaption><b>The approval gate is the only way across.</b> An artifact leaves discovery as a <code>draft</code>, and a draft is not invocable &mdash; <code>load_artifact()</code> with no pinned version returns only approved ones, and a pinned request for a non-approved version is rejected with a 409 before a run is even started. Cost is therefore per <em>capability</em>, not per <em>call</em>: the orange half is paid once, the teal half is what production actually runs.</figcaption>
+  </figure>
+</section>
+
+<!-- ===================== FIG 3 ===================== -->
+<section id="f3">
+  <div class="fig-head"><span class="fig-n">FIG 3</span><h2>Turn one &mdash; request becomes a proposal</h2></div>
+  <p class="fig-sub">The user asks for something. A model interprets it. Nothing runs.</p>
+  <figure>
+    <svg viewBox="0 0 960 520" role="img" aria-label="Sequence diagram: the chat UI posts a message to FastAPI, which locks the session, builds a catalog of approved capabilities from the artifact store, and hands it to the ChatAgent. The agent tokenizes the conversation, calls the LLM with two proposal tools, gets back a propose_invoke tool call, detokenizes and validates it, and returns a pending action. The user is asked to confirm. No run has started.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-ink" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a3m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-m" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+
+      <rect class="b" x="10" y="24" width="150" height="38" rx="4"/>
+      <text class="t" x="85" y="48" text-anchor="middle">Chat UI</text>
+      <rect class="b" x="190" y="24" width="150" height="38" rx="4"/>
+      <text class="t" x="265" y="48" text-anchor="middle">FastAPI</text>
+      <rect class="b" x="370" y="24" width="150" height="38" rx="4"/>
+      <text class="t" x="445" y="48" text-anchor="middle">ChatAgent</text>
+      <rect class="b" x="565" y="24" width="150" height="38" rx="4"/>
+      <text class="t" x="640" y="48" text-anchor="middle">Artifact store</text>
+      <rect class="b-rec" x="775" y="24" width="150" height="38" rx="4"/>
+      <text class="t" x="850" y="48" text-anchor="middle">LLM provider</text>
+
+      <line class="life" x1="85" y1="62" x2="85" y2="466"/>
+      <line class="life" x1="265" y1="62" x2="265" y2="466"/>
+      <line class="life" x1="445" y1="62" x2="445" y2="466"/>
+      <line class="life" x1="640" y1="62" x2="640" y2="466"/>
+      <line class="life" x1="850" y1="62" x2="850" y2="466"/>
+
+      <line class="ln" x1="85" y1="98" x2="261" y2="98" marker-end="url(#a3)"/>
+      <text class="lbl" x="173" y="90" text-anchor="middle">POST /chat/sessions/{id}/message</text>
+
+      <polyline class="ln" points="265,124 305,124 305,142 269,142" marker-end="url(#a3)"/>
+      <text class="lbl" x="313" y="137">acquire session.lock</text>
+
+      <line class="ln" x1="265" y1="180" x2="636" y2="180" marker-end="url(#a3)"/>
+      <text class="lbl" x="450" y="172" text-anchor="middle">build_chat_catalog()</text>
+      <line class="ln-m" x1="640" y1="210" x2="269" y2="210" marker-end="url(#a3m)"/>
+      <text class="lbl" x="454" y="202" text-anchor="middle">approved capabilities only &middot; drafts are invisible here</text>
+
+      <line class="ln" x1="265" y1="248" x2="441" y2="248" marker-end="url(#a3)"/>
+      <text class="lbl" x="353" y="240" text-anchor="middle">turn(session, message, catalog)</text>
+
+      <polyline class="ln" points="445,274 485,274 485,292 449,292" marker-end="url(#a3)"/>
+      <text class="lbl" x="493" y="287">tokenize the outgoing copy only</text>
+
+      <line class="ln" x1="445" y1="330" x2="846" y2="330" marker-end="url(#a3)"/>
+      <text class="lbl" x="646" y="322" text-anchor="middle">chat(tools=[propose_invoke, propose_discovery])</text>
+      <line class="ln-m" x1="850" y1="360" x2="449" y2="360" marker-end="url(#a3m)"/>
+      <text class="lbl" x="650" y="352" text-anchor="middle">tool_call: propose_invoke(name, params)</text>
+
+      <polyline class="ln" points="445,386 485,386 485,404 449,404" marker-end="url(#a3)"/>
+      <text class="lbl" x="493" y="399">detokenize &middot; capability exists? &middot; required params present?</text>
+
+      <line class="ln-m" x1="445" y1="434" x2="269" y2="434" marker-end="url(#a3m)"/>
+      <text class="lbl" x="357" y="426" text-anchor="middle">reply + PendingAction stored on session</text>
+      <line class="ln-m" x1="265" y1="462" x2="89" y2="462" marker-end="url(#a3m)"/>
+      <text class="lbl" x="177" y="454" text-anchor="middle">{ reply: "&hellip; proceed? (yes/no)", run_id: null }</text>
+
+      <rect class="b-rep" x="240" y="482" width="480" height="28" rx="4"/>
+      <text class="t-rep" x="480" y="500" text-anchor="middle">NO RUN HAS STARTED &middot; NOTHING HAS TOUCHED THE TARGET HOST</text>
+    </svg>
+    <figcaption><b>The model's output is a proposal, not an instruction.</b> Two things bound it: the catalog it reasons over contains only human-approved capabilities, so it cannot propose something nobody signed off; and its proposed parameters are re-checked against the artifact's declared <code>input_schema</code> before the user is even asked. The conversation sent to the provider is a tokenized copy &mdash; <code>session.messages</code> keeps the real text for the app's own display.</figcaption>
+  </figure>
+</section>
+
+<!-- ===================== FIG 4 ===================== -->
+<section id="f4">
+  <div class="fig-head"><span class="fig-n">FIG 4</span><h2>Turn two &mdash; confirm, run, escalate, resume</h2></div>
+  <p class="fig-sub">The user says yes. This is the full path from that word to a structured result, including the human handoff.</p>
+  <figure>
+    <svg viewBox="0 0 1040 680" role="img" aria-label="Sequence diagram of the execution turn: the user confirms, FastAPI parses the confirmation deterministically without a model, re-validates, and asks the RunManager to start a run. The RunManager spawns a transport and a daemon thread, launches a Docker container, and returns a run id immediately. The ReplayEngine drives the container per step, logs redacted events to Postgres, escalates at the risky step, and resumes when a human hands control back, returning a typed result.">
+      <defs>
+        <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-ink" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a4m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-m" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-a" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+
+      <rect class="b" x="5" y="24" width="140" height="38" rx="4"/>
+      <text class="t" x="75" y="48" text-anchor="middle">Chat UI</text>
+      <rect class="b" x="165" y="24" width="140" height="38" rx="4"/>
+      <text class="t" x="235" y="48" text-anchor="middle">FastAPI</text>
+      <rect class="b" x="340" y="24" width="140" height="38" rx="4"/>
+      <text class="t" x="410" y="48" text-anchor="middle">RunManager</text>
+      <rect class="b-rep" x="520" y="24" width="140" height="38" rx="4"/>
+      <text class="t" x="590" y="48" text-anchor="middle">ReplayEngine</text>
+      <rect class="b" x="705" y="24" width="150" height="38" rx="4"/>
+      <text class="t" x="780" y="42" text-anchor="middle">Sandbox</text>
+      <text class="t2" x="780" y="56" text-anchor="middle">container + host</text>
+      <rect class="b" x="895" y="24" width="140" height="38" rx="4"/>
+      <text class="t" x="965" y="48" text-anchor="middle">Postgres</text>
+
+      <line class="life" x1="75" y1="62" x2="75" y2="640"/>
+      <line class="life" x1="235" y1="62" x2="235" y2="640"/>
+      <line class="life" x1="410" y1="62" x2="410" y2="640"/>
+      <line class="life" x1="590" y1="62" x2="590" y2="640"/>
+      <line class="life" x1="780" y1="62" x2="780" y2="640"/>
+      <line class="life" x1="965" y1="62" x2="965" y2="640"/>
+
+      <line class="ln" x1="75" y1="96" x2="231" y2="96" marker-end="url(#a4)"/>
+      <text class="lbl" x="153" y="88" text-anchor="middle">POST &hellip;/message &nbsp; "yes"</text>
+
+      <polyline class="ln" points="235,120 273,120 273,136 239,136" marker-end="url(#a4)"/>
+      <text class="t-rep" x="281" y="132">_parse_explicit_decision() &rarr; confirm &nbsp;&mdash;&nbsp; deterministic, the model is not asked</text>
+
+      <polyline class="ln" points="235,160 273,160 273,176 239,176" marker-end="url(#a4)"/>
+      <text class="lbl" x="281" y="172">re-validate: artifact still exists, params still satisfy input_schema</text>
+
+      <line class="ln" x1="235" y1="204" x2="406" y2="204" marker-end="url(#a4)"/>
+      <text class="lbl" x="320" y="196" text-anchor="middle">start("invoke", name, target_fn, run_id)</text>
+
+      <polyline class="ln" points="410,228 448,228 448,244 414,244" marker-end="url(#a4)"/>
+      <text class="lbl" x="456" y="240">QueueTransport + RunRecord published under one lock, then a daemon thread</text>
+
+      <line class="ln-m" x1="235" y1="272" x2="79" y2="272" marker-end="url(#a4m)"/>
+      <text class="lbl" x="157" y="264" text-anchor="middle">202 { run_id, status: "running" }</text>
+
+      <line class="ln" x1="410" y1="302" x2="776" y2="302" marker-end="url(#a4)"/>
+      <text class="lbl" x="593" y="294" text-anchor="middle">docker run --rm &rarr; poll ports &rarr; poll CDP until Chromium answers</text>
+      <line class="ln-m" x1="780" y1="330" x2="414" y2="330" marker-end="url(#a4m)"/>
+      <text class="lbl" x="597" y="322" text-anchor="middle">novnc_url + cdp_url</text>
+
+      <line class="ln-m" x1="75" y1="358" x2="776" y2="358" marker-end="url(#a4m)"/>
+      <text class="lbl" x="425" y="350" text-anchor="middle">iframe the noVNC feed &mdash; direct, bypasses the API</text>
+
+      <line class="ln" x1="410" y1="392" x2="586" y2="392" marker-end="url(#a4)"/>
+      <text class="lbl" x="498" y="384" text-anchor="middle">run(artifact, params)</text>
+
+      <line class="ln" x1="590" y1="422" x2="776" y2="422" marker-end="url(#a4)"/>
+      <text class="lbl" x="683" y="414" text-anchor="middle">per step: act() over CDP &mdash; see Fig 5</text>
+      <line class="ln" x1="590" y1="450" x2="961" y2="450" marker-end="url(#a4)"/>
+      <text class="lbl" x="775" y="442" text-anchor="middle">log_event() &mdash; redacted before it is written</text>
+
+      <line class="ln-a" x1="590" y1="486" x2="414" y2="486" marker-end="url(#a4a)"/>
+      <text class="t-al" x="502" y="478" text-anchor="middle">ESCALATION &mdash; risky step, thread blocks on the queue</text>
+
+      <line class="ln-m" x1="75" y1="514" x2="231" y2="514" marker-end="url(#a4m)"/>
+      <text class="lbl" x="153" y="506" text-anchor="middle">GET /runs/{id} every 1.5 s &rarr; "escalated"</text>
+
+      <line class="ln" x1="75" y1="546" x2="406" y2="546" marker-end="url(#a4)"/>
+      <text class="lbl" x="240" y="538" text-anchor="middle">human drives the container, then POST /runs/{id}/resume</text>
+
+      <line class="ln" x1="590" y1="578" x2="776" y2="578" marker-end="url(#a4)"/>
+      <text class="lbl" x="683" y="570" text-anchor="middle">already succeeded? &nbsp;else continue remaining steps</text>
+
+      <line class="ln-m" x1="590" y1="608" x2="414" y2="608" marker-end="url(#a4m)"/>
+      <text class="lbl" x="502" y="600" text-anchor="middle">ReplayResult(outcome, outputs)</text>
+      <line class="ln" x1="410" y1="636" x2="961" y2="636" marker-end="url(#a4)"/>
+      <text class="lbl" x="686" y="628" text-anchor="middle">finish_run() &middot; container torn down by the context manager's finally</text>
+    </svg>
+    <figcaption><b>The confirmation is parsed in code before the model gets a vote.</b> An exact "yes" or "no" resolves deterministically; only an ambiguous reply reaches the model, and a malformed tool call there fails closed to "amend", never to "confirm". Note also that the HTTP request returns at <code>202</code> while the browser keeps working &mdash; the run outlives the request, which is why the UI polls and why <code>RunManager</code> owns a thread rather than the web handler.</figcaption>
+  </figure>
+</section>
+
+<!-- ===================== FIG 5 ===================== -->
+<section id="f5">
+  <div class="fig-head"><span class="fig-n">FIG 5</span><h2>Inside one replay step</h2></div>
+  <p class="fig-sub">The granular view. Happy path runs straight down; every exception exits right.</p>
+  <figure>
+    <svg viewBox="0 0 880 910" role="img" aria-label="Flowchart of one replay step: check for interrupt or takeover, match outcome patterns before acting, escalate if the step is risky, substitute parameters, check the allowlist, perform the action over CDP, log a redacted event, check the allowlist again, verify the step checkpoint, then advance. Each stage has an exit to the right for its failure or escalation path. After the last step the success checkpoint is verified and derived outputs are computed.">
+      <defs>
+        <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-ink" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-a" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a5m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-m" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+
+      <rect class="b-rep" x="120" y="36" width="240" height="40" rx="20"/>
+      <text class="t" x="240" y="61" text-anchor="middle">step i</text>
+
+      <rect class="b" x="120" y="104" width="240" height="46" rx="4"/>
+      <text class="t" x="240" y="124" text-anchor="middle">interrupt? &nbsp;takeover?</text>
+      <text class="t2" x="240" y="139" text-anchor="middle">polled at every boundary</text>
+      <rect class="b-al" x="460" y="104" width="390" height="46" rx="4"/>
+      <text class="t2" x="470" y="123">raise RunInterrupted &rarr; status "interrupted"</text>
+      <text class="t2" x="470" y="139">or escalate &rarr; block &rarr; resume &rarr; already succeeded?</text>
+
+      <rect class="b" x="120" y="172" width="240" height="46" rx="4"/>
+      <text class="t" x="240" y="192" text-anchor="middle">match outcome pattern</text>
+      <text class="t2" x="240" y="207" text-anchor="middle">before acting, not after failing</text>
+      <rect class="b-al" x="460" y="172" width="390" height="46" rx="4"/>
+      <text class="t2" x="470" y="191">business_outcome &middot; recoverable (retry &le; 3, then recover)</text>
+      <text class="t2" x="470" y="207">hard_failure &mdash; each reported in the host's own words</text>
+
+      <rect class="b" x="120" y="240" width="240" height="46" rx="4"/>
+      <text class="t" x="240" y="260" text-anchor="middle">risk_tier == risky?</text>
+      <text class="t2" x="240" y="275" text-anchor="middle">recorded, not re-decided</text>
+      <rect class="b-al" x="460" y="240" width="390" height="46" rx="4"/>
+      <text class="t2" x="470" y="259">escalate &rarr; human confirms in the same live session</text>
+      <text class="t2" x="470" y="275">then re-check: did they finish the whole flow themselves?</text>
+
+      <rect class="b" x="120" y="308" width="240" height="46" rx="4"/>
+      <text class="t" x="240" y="328" text-anchor="middle">substitute params</text>
+      <text class="t2" x="240" y="343" text-anchor="middle">from step.value_source</text>
+      <rect class="b-al" x="460" y="308" width="390" height="46" rx="4"/>
+      <text class="t2" x="470" y="334">param not supplied &rarr; INPUT_ERROR, before the browser moves</text>
+
+      <rect class="b" x="120" y="376" width="240" height="46" rx="4"/>
+      <text class="t" x="240" y="396" text-anchor="middle">allowlist check &mdash; before</text>
+      <text class="t2" x="240" y="411" text-anchor="middle">url + action type</text>
+      <rect class="b-al" x="460" y="376" width="390" height="46" rx="4"/>
+      <text class="t2" x="470" y="402">HARD_FAILURE &mdash; a policy breach, never softened to recoverable</text>
+
+      <rect class="b" x="120" y="444" width="240" height="46" rx="4"/>
+      <text class="t" x="240" y="464" text-anchor="middle">surface.act()</text>
+      <text class="t2" x="240" y="479" text-anchor="middle">CDP &rarr; live page, locator + fallback</text>
+      <rect class="b-al" x="460" y="444" width="390" height="46" rx="4"/>
+      <text class="t2" x="470" y="463">raises &rarr; re-match outcome pattern FIRST</text>
+      <text class="t2" x="470" y="479">then "human already did it?", else HARD_FAILURE</text>
+
+      <rect class="b" x="120" y="512" width="240" height="46" rx="4"/>
+      <text class="t" x="240" y="532" text-anchor="middle">log_event("replay_step")</text>
+      <text class="t2" x="240" y="547" text-anchor="middle">redacted at the boundary</text>
+      <rect class="b" x="460" y="512" width="390" height="46" rx="4"/>
+      <text class="t2" x="470" y="538">&rarr; Postgres run_events &middot; credential params masked by name</text>
+
+      <rect class="b" x="120" y="580" width="240" height="46" rx="4"/>
+      <text class="t" x="240" y="600" text-anchor="middle">allowlist check &mdash; after</text>
+      <text class="t2" x="240" y="615" text-anchor="middle">re-read the current URL</text>
+      <rect class="b-al" x="460" y="580" width="390" height="46" rx="4"/>
+      <text class="t2" x="470" y="606">a click can navigate off-domain &mdash; the pre-check never saw that</text>
+
+      <rect class="b" x="120" y="648" width="240" height="46" rx="4"/>
+      <text class="t" x="240" y="668" text-anchor="middle">step checkpoint</text>
+      <text class="t2" x="240" y="683" text-anchor="middle">prove it worked</text>
+      <rect class="b-al" x="460" y="648" width="390" height="46" rx="4"/>
+      <text class="t2" x="470" y="667">fails &rarr; re-match outcome pattern, else HARD_FAILURE</text>
+      <text class="t2" x="470" y="683">partial outputs still travel with the result</text>
+
+      <rect class="b" x="120" y="716" width="240" height="40" rx="4"/>
+      <text class="t" x="240" y="741" text-anchor="middle">i += 1</text>
+
+      <rect class="b-rep" x="120" y="812" width="400" height="52" rx="4"/>
+      <text class="t" x="320" y="833" text-anchor="middle">success_checkpoint &rarr; SUCCESS</text>
+      <text class="t2" x="320" y="849" text-anchor="middle">+ derived outputs computed by arithmetic, never by a model</text>
+
+      <line class="ln" x1="240" y1="76" x2="240" y2="100" marker-end="url(#a5)"/>
+      <line class="ln" x1="240" y1="150" x2="240" y2="168" marker-end="url(#a5)"/>
+      <line class="ln" x1="240" y1="218" x2="240" y2="236" marker-end="url(#a5)"/>
+      <line class="ln" x1="240" y1="286" x2="240" y2="304" marker-end="url(#a5)"/>
+      <line class="ln" x1="240" y1="354" x2="240" y2="372" marker-end="url(#a5)"/>
+      <line class="ln" x1="240" y1="422" x2="240" y2="440" marker-end="url(#a5)"/>
+      <line class="ln" x1="240" y1="490" x2="240" y2="508" marker-end="url(#a5)"/>
+      <line class="ln" x1="240" y1="558" x2="240" y2="576" marker-end="url(#a5)"/>
+      <line class="ln" x1="240" y1="626" x2="240" y2="644" marker-end="url(#a5)"/>
+      <line class="ln" x1="240" y1="694" x2="240" y2="712" marker-end="url(#a5)"/>
+
+      <line class="ln-a" x1="360" y1="127" x2="456" y2="127" marker-end="url(#a5a)"/>
+      <line class="ln-a" x1="360" y1="195" x2="456" y2="195" marker-end="url(#a5a)"/>
+      <line class="ln-a" x1="360" y1="263" x2="456" y2="263" marker-end="url(#a5a)"/>
+      <line class="ln-a" x1="360" y1="331" x2="456" y2="331" marker-end="url(#a5a)"/>
+      <line class="ln-a" x1="360" y1="399" x2="456" y2="399" marker-end="url(#a5a)"/>
+      <line class="ln-a" x1="360" y1="467" x2="456" y2="467" marker-end="url(#a5a)"/>
+      <line class="ln-m" x1="360" y1="535" x2="456" y2="535" marker-end="url(#a5m)"/>
+      <line class="ln-a" x1="360" y1="603" x2="456" y2="603" marker-end="url(#a5a)"/>
+      <line class="ln-a" x1="360" y1="671" x2="456" y2="671" marker-end="url(#a5a)"/>
+
+      <polyline class="ln" points="120,736 80,736 80,56 116,56" marker-end="url(#a5)"/>
+      <text class="lbl" x="88" y="400" transform="rotate(-90 88 400)" text-anchor="middle">next step</text>
+
+      <line class="ln" x1="240" y1="756" x2="240" y2="808" marker-end="url(#a5)"/>
+      <text class="lbl" x="250" y="784">no steps left</text>
+    </svg>
+    <figcaption><b>Two things to point at.</b> The allowlist is checked twice per step, before and after &mdash; because the pre-check validates where the browser <em>was</em>, and a click that navigates off-domain would otherwise never be seen. And outcome patterns are matched <em>before</em> attempting a step, not only after one fails: if the app has already diverged onto "insufficient funds", the next recorded step targets a control that no longer exists, and blaming the locator would hide the real answer.</figcaption>
+  </figure>
+</section>
+
+<!-- ===================== FIG 6 ===================== -->
+<section id="f6">
+  <div class="fig-head"><span class="fig-n">FIG 6</span><h2>Where sensitive data is allowed to go</h2></div>
+  <p class="fig-sub">Three destinations, three different treatments &mdash; and one honest hole.</p>
+  <figure>
+    <svg viewBox="0 0 940 430" role="img" aria-label="Data boundary diagram: the target host and browser hold real values, which enter the comp_use process. The tokenizer replaces sensitive values with placeholders before anything reaches the LLM provider, and detokenizes the model's reply. The redactor one-way replaces them before anything reaches Postgres and logs. The vision fallback sends a raw screenshot to the model provider and is not covered.">
+      <defs>
+        <marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-ink" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a6a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-a" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+
+      <rect class="b" x="24" y="158" width="216" height="96" rx="5"/>
+      <text class="t" x="132" y="192" text-anchor="middle">Target host + browser</text>
+      <text class="t2" x="132" y="212" text-anchor="middle">real account numbers,</text>
+      <text class="t2" x="132" y="226" text-anchor="middle">balances, confirmations</text>
+
+      <rect class="b-out" x="326" y="96" width="292" height="230" rx="6"/>
+      <text class="band" x="332" y="88">COMP_USE PROCESS &mdash; HOLDS REAL VALUES</text>
+      <rect class="b" x="346" y="150" width="252" height="58" rx="4"/>
+      <text class="t" x="472" y="173" text-anchor="middle">SensitiveValueTokenizer</text>
+      <text class="t2" x="472" y="190" text-anchor="middle">two-way &middot; stable per run</text>
+      <rect class="b" x="346" y="234" width="252" height="58" rx="4"/>
+      <text class="t" x="472" y="257" text-anchor="middle">Guardrail.redact()</text>
+      <text class="t2" x="472" y="274" text-anchor="middle">one-way &middot; [REDACTED]</text>
+
+      <rect class="b-rec" x="700" y="96" width="216" height="76" rx="5"/>
+      <text class="t" x="808" y="126" text-anchor="middle">LLM provider</text>
+      <text class="t-rec" x="808" y="146" text-anchor="middle">sees [[TOK1]], [[TOK2]] &hellip;</text>
+      <text class="t2" x="808" y="161" text-anchor="middle">never a real value, on this path</text>
+
+      <rect class="b" x="700" y="272" width="216" height="76" rx="5"/>
+      <text class="t" x="808" y="302" text-anchor="middle">Postgres &middot; logs &middot; console</text>
+      <text class="t2" x="808" y="322" text-anchor="middle">[REDACTED] &mdash; the store never</text>
+      <text class="t2" x="808" y="336" text-anchor="middle">holds an unredacted value</text>
+
+      <line class="ln" x1="240" y1="186" x2="322" y2="186" marker-end="url(#a6)"/>
+      <text class="lbl" x="281" y="150" text-anchor="middle">observe()</text>
+      <text class="lbl" x="281" y="164" text-anchor="middle">real values in</text>
+      <line class="ln" x1="326" y1="230" x2="244" y2="230" marker-end="url(#a6)"/>
+      <text class="lbl" x="285" y="256" text-anchor="middle">act()</text>
+      <text class="lbl" x="285" y="270" text-anchor="middle">real values out</text>
+
+      <line class="ln" x1="618" y1="160" x2="696" y2="139" marker-end="url(#a6)"/>
+      <text class="lbl" x="657" y="196" text-anchor="middle">tokenize()</text>
+      <line class="ln" x1="700" y1="158" x2="622" y2="182" marker-end="url(#a6)"/>
+      <text class="lbl" x="657" y="210" text-anchor="middle">detokenize()</text>
+
+      <line class="ln" x1="618" y1="278" x2="696" y2="300" marker-end="url(#a6)"/>
+      <text class="lbl" x="657" y="330" text-anchor="middle">redact(), then write</text>
+
+      <line class="ln-a" x1="560" y1="146" x2="700" y2="106" marker-end="url(#a6a)"/>
+      <text class="t-al" x="600" y="50" text-anchor="middle">&#9888; VISION FALLBACK &mdash; RAW SCREENSHOT, NOT TOKENIZED</text>
+      <text class="lbl" x="600" y="66" text-anchor="middle">pixels can't be matched by regex &middot; mitigated by an on-prem model, not by this boundary</text>
+
+      <rect class="b" x="24" y="356" width="892" height="48" rx="4"/>
+      <text class="t2" x="40" y="376">Both layers read the SAME regex list from Settings.redaction_patterns. Neither has any field-specific logic.</text>
+      <text class="t2" x="40" y="392">Covering a new shape &mdash; an SSN, a phone number &mdash; is one regex, picked up by both consumers, with no code change to either.</text>
+    </svg>
+    <figcaption><b>Two mechanisms, one config.</b> Redaction is one-way and protects anything durable; tokenization is two-way and protects the model call, because the model still has to reason about the page while the browser still has to act on real data. The alert-coloured arrow is the gap worth volunteering before anyone finds it: the vision fallback sends a screenshot, and no regex can redact pixels.</figcaption>
+  </figure>
+</section>
+
+<section id="notes">
+  <div class="fig-head"><h2>Using these in the room</h2></div>
+  <p><span class="kicker">Fig 2 is your opener.</span> It carries the thesis on its own &mdash; put it up while you say the "record once, replay forever" line and you won't need to explain it twice.</p>
+  <p><span class="kicker">Fig 1 goes up once and stays available.</span> Don't walk every box. Point at three things: the two engines are siblings, only one has an edge to the model, and everything below the engines is shared. Then move on.</p>
+  <p><span class="kicker">Figs 3 and 4 are the answer to "walk me through a request."</span> The split matters &mdash; Fig 3 ends with nothing having happened, which is the safety property. If you only have time for one, use Fig 4 and mention that a proposal turn preceded it.</p>
+  <p><span class="kicker">Fig 5 is your depth card.</span> Hold it back. Bring it out when someone asks how failures are handled or how you know a step actually worked &mdash; it answers both, and producing it on demand lands better than presenting it unprompted.</p>
+  <p><span class="kicker">Fig 6 is for the security question</span>, which in a regulated domain is coming whether or not it's on the agenda. Volunteering the vision-fallback gap off this diagram is worth more than any control you could describe instead.</p>
+</section>
+</div>

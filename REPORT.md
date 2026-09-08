@@ -78,12 +78,44 @@ Designed, not built as extra runtimes (§9):
 
 `EscalationController` holds `control` in `{agent, human, none}`. `escalate()` notifies the transport, blocks on `wait_for_resume()`, returns to `agent`. Every `InterventionRequest` carries a real screenshot.
 
-`LocalSharedBrowserTransport` is the built transport: print the request, wait for the operator to type `resume` in the **same headed browser window**. (`ServerStreamingTransport` — a remote operator console — is designed only, see Cuts.)
+`LocalSharedBrowserTransport` is the CLI transport: print the request, wait for the operator to type `resume` in the **same headed browser window**. `QueueTransport` is its server-side counterpart — `notify()` reports to a callback so `GET /runs/{id}` can surface the escalation, and `wait_for_resume()` blocks on a thread-safe queue that `POST /runs/{id}/resume` unblocks from the HTTP thread. Both implement the same `ControlTransport` interface, so `EscalationController` is unchanged by which one is in play.
+
+For the MERIDIAN adaptation the "same headed browser window" is a headed Chromium inside a per-run Docker container, reachable over noVNC (`comp_use/sandbox.py`, `sandbox_image/`). x11vnc runs **without** `-viewonly` precisely because §3.6 requires a human to take control of the live session rather than only watch it, so the remote-console gap below is now closed for viewing and control, though not by `ServerStreamingTransport`.
 
 **Discovery escalates on all three §3.6 triggers**, not just replay:
 1. A `risky` step — checked *before* the action runs, so it never happens unconfirmed.
 2. `max_steps` exhausted without `finish`.
 3. Three consecutive skipped/invalid decisions — fires mid-run, not just at the end.
+
+**Three ways a human interrupts a run, and they are not the same thing.** All are
+`ControlTransport` methods with no-op defaults, implemented only by `QueueTransport`
+(the server's HTTP-driven runs); a CLI-local run has no button to wire them to.
+
+| | Intent | Mechanism | Where the run ends up |
+|---|---|---|---|
+| `request_takeover()` | Pause; let a human drive the same live session, then hand it back | Flag polled once per step; escalates with a "manual takeover" reason, so `resume()` continues the run | continues, then `done` |
+| `cancel()` | Unblock an escalation nobody will ever resume, so the run can finish *reporting* | Raises `EscalationAbandoned` out of `wait_for_resume()` | `error`, with a reported failure |
+| `interrupt()` | End the run outright | Raises `RunInterrupted` at the next step boundary | `interrupted` |
+
+`interrupt` is checked before `takeover` in both loops — an operator who asked for
+both wants the run gone, not paused. It also sets the cancel event, because an
+escalated run is parked in `wait_for_resume()` and would never reach a step boundary
+on its own; `wait_for_resume()` checks the interrupt first so it raises the more
+specific exception.
+
+`RunInterrupted` subclasses **`BaseException`, not `Exception`** — deliberately.
+Every layer between the step loop and `RunManager`'s worker catches broad
+`except Exception` and converts what it caught into a *reported failure*. An
+operator's stop is not a failure of the capability and must not be recorded as one,
+so it has to pass through those handlers untouched. Subclassing `BaseException` makes
+that true by construction rather than by remembering to re-raise it in a dozen
+places. The one place that must still see it is the CLI's `finish_run` wrapper, which
+carries an explicit `except RunInterrupted` — without it the run's Postgres row would
+stay `running` forever, the exact bug those wrappers exist to prevent.
+
+Stopping the run is also what stops the sandbox container: nothing tracks container
+handles, because the exception unwinds through `_browser_session`, a context manager
+whose `finally` already calls `sandbox.stop()`.
 
 **What changed during the handoff is captured, not just that it happened.** When a `Surface` is available, `escalate()` captures the accessibility tree and a screenshot immediately before and after `wait_for_resume()`, diffs the trees, and logs both alongside the operator's own one-line free-text note on a single `escalation_human_action` event. A full click-by-click co-browsing recorder is out of scope (§3.6's own carve-out); this is the "some record" the assignment does require.
 
@@ -102,14 +134,14 @@ Hosted OpenRouter still receives tokenized text on `discover` (not raw UI conten
 **Which §8 stretch goals, and why not more.** Two, both grown from existing primitives rather than new subsystems: **Assisted fallback** (drift-aware self-healing replay) and **Agent-facing capability interface** (the capability server, plus the narrow "gate unattended replay on an approval state" slice of Confidence & approval — taken on because exposing `discover` over HTTP without it would leave a real safety gap). Not attempted: code generation, cross-tenant canonicalization, multi-run stability — each would mean a third, unrelated subsystem.
 
 Not built:
-- `ServerStreamingTransport` (remote operator console) — designed only.
+- `ServerStreamingTransport` (remote operator console) — designed only. The *capability* it was meant to provide now exists by another route: the MERIDIAN adaptation runs each session in a Docker sandbox with noVNC, so an operator watches and drives the live browser from a tab (`comp_use/sandbox.py`). The designed transport itself was never built.
 - Production artifact/evidence storage (DB + object store) — files on disk only.
 - Desktop `Surface` and true multi-tenant execution.
 - On-prem LLM for discovery — documented, not built.
 - Auth on the capability server, and hard delete — designed (per-key admin/operator roles), deliberately not built until auth exists.
 - Screenshot as the *primary* perception channel — not planned; it's a targeted fallback only.
 
-**What we'd build next:** (1) capability-server auth — unblocks safely exposing `discover`/`approve` beyond one trusted operator; (2) `variant_overrides` + a real second tenant — proves the Heterogeneity design, not just describes it; (3) structured logging; (4) `ServerStreamingTransport` — now more relevant since the server already unblocks `resume` remotely, but not remote *viewing* of the browser.
+**What we'd build next:** (1) capability-server auth — unblocks safely exposing `discover`/`approve` beyond one trusted operator; (2) `variant_overrides` + a real second tenant — proves the Heterogeneity design, not just describes it; (3) structured logging; (4) a session model that lets replay re-authenticate mid-flow and resume — the one exceptional state the outcome taxonomy classifies correctly but cannot act on, since `OutcomePattern.recovery_action` is a single UI step and recovering from a session timeout means re-running a whole sign-on flow and then resuming the original capability.
 
 ## Evidence walkthrough
 

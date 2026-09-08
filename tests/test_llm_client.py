@@ -1,9 +1,12 @@
+import threading
 from unittest.mock import patch, MagicMock
 
+from comp_use import llm_client
 from comp_use.config import load_settings
 from comp_use.llm_client import (
-    _SYSTEM_PROMPT, _TOOL_SCHEMA, FakeLLMClient, FallbackLLMClient, NvidiaNimClient,
-    OpenRouterClient, parse_decision, LLMClient,
+    _SYSTEM_PROMPT, _TOOL_SCHEMA, NVIDIA_REQUESTS_PER_MINUTE, FakeLLMClient,
+    FallbackLLMClient, NvidiaNimClient, OpenRouterClient, RateLimiter,
+    parse_decision, LLMClient,
 )
 from comp_use.schemas import Locator, LocatorStrategy
 
@@ -469,3 +472,121 @@ def test_fallback_llm_client_chat_falls_back_on_primary_exception():
     result = client.chat(messages=[], tools=[])
 
     assert result == {"type": "text", "text": "from fallback"}
+
+
+def test_rate_limiter_allows_up_to_the_limit_without_waiting():
+    limiter = RateLimiter(max_requests=3, per_seconds=60.0)
+
+    assert [limiter.acquire() for _ in range(3)] == [0.0, 0.0, 0.0]
+
+
+def test_rate_limiter_makes_the_request_over_the_limit_wait_for_the_window(monkeypatch):
+    """The wait is asserted through a fake clock rather than by really sleeping -
+    a test that slept 60s to prove a 60s window would never be run."""
+    now = {"t": 1000.0}
+    slept: list[float] = []
+    monkeypatch.setattr(llm_client.time, "monotonic", lambda: now["t"])
+
+    def fake_sleep(seconds):
+        slept.append(seconds)
+        now["t"] += seconds
+
+    monkeypatch.setattr(llm_client.time, "sleep", fake_sleep)
+
+    limiter = RateLimiter(max_requests=2, per_seconds=60.0)
+    limiter.acquire()          # t=1000, slot 1
+    now["t"] = 1010.0
+    limiter.acquire()          # t=1010, slot 2 - window is now full
+
+    now["t"] = 1020.0
+    waited = limiter.acquire()
+
+    # The oldest start was at t=1000, so its slot frees at t=1060: 40s from t=1020.
+    assert slept == [40.0]
+    assert waited == 40.0
+
+
+def test_rate_limiter_frees_slots_once_they_age_out_of_the_window(monkeypatch):
+    now = {"t": 500.0}
+    monkeypatch.setattr(llm_client.time, "monotonic", lambda: now["t"])
+    monkeypatch.setattr(llm_client.time, "sleep", lambda seconds: None)
+
+    limiter = RateLimiter(max_requests=2, per_seconds=60.0)
+    limiter.acquire()
+    limiter.acquire()
+
+    # Both starts are now older than the window, so neither should count.
+    now["t"] = 561.0
+    assert limiter.acquire() == 0.0
+    assert limiter.acquire() == 0.0
+
+
+def test_rate_limiter_is_thread_safe_and_never_exceeds_the_limit():
+    """The limiter is shared process-wide across concurrent runs, so the invariant
+    that matters is the one under contention, not the one on a single thread."""
+    limiter = RateLimiter(max_requests=20, per_seconds=60.0)
+    granted: list[float] = []
+    lock = threading.Lock()
+
+    def worker():
+        # Never blocks: 4 threads x 5 acquisitions == the limit exactly. A limiter
+        # that lost an increment to a race would let a 21st through and hang here.
+        for _ in range(5):
+            waited = limiter.acquire()
+            with lock:
+                granted.append(waited)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert all(not t.is_alive() for t in threads)
+    assert len(granted) == 20
+    assert granted == [0.0] * 20
+
+
+def test_only_the_nvidia_client_paces_its_requests():
+    settings = load_settings()
+
+    assert NvidiaNimClient(settings)._rate_limiter() is not None
+    # The fallback provider is reached rarely and only when the primary is already
+    # in trouble - throttling it would add latency exactly when it hurts.
+    assert OpenRouterClient(settings)._rate_limiter() is None
+
+
+def test_the_nvidia_limiter_is_shared_across_client_instances():
+    """A per-instance limiter would let N concurrent runs each send N x the limit,
+    since every run builds its own client. The quota belongs to the API key."""
+    settings = load_settings()
+
+    assert NvidiaNimClient(settings)._rate_limiter() is NvidiaNimClient(settings)._rate_limiter()
+
+
+def test_the_nvidia_limiter_is_configured_for_forty_requests_a_minute():
+    assert NVIDIA_REQUESTS_PER_MINUTE == 40
+    assert llm_client._NVIDIA_RATE_LIMITER._max_requests == 40
+    assert llm_client._NVIDIA_RATE_LIMITER._per_seconds == 60.0
+
+
+def test_every_retry_attempt_consumes_a_rate_limit_slot(monkeypatch):
+    """Pacing only the first attempt would let a retry storm sail past the limit -
+    a 429 is answered by up to _MAX_RETRIES more real requests to the provider."""
+    calls = {"acquired": 0}
+
+    class CountingLimiter(RateLimiter):
+        def acquire(self):
+            calls["acquired"] += 1
+            return 0.0
+
+    client = NvidiaNimClient(load_settings())
+    monkeypatch.setattr(client, "_rate_limiter", lambda: CountingLimiter(40))
+    monkeypatch.setattr(llm_client.time, "sleep", lambda seconds: None)
+
+    responses = [MagicMock(status_code=429), MagicMock(status_code=429), MagicMock(status_code=200)]
+    monkeypatch.setattr(llm_client.requests, "post", lambda *a, **k: responses.pop(0))
+
+    client._post_with_retry({"model": "m", "messages": []})
+
+    assert calls["acquired"] == 3  # the initial attempt plus both retries

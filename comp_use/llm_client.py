@@ -1,4 +1,6 @@
+import collections
 import json
+import threading
 import time
 
 import requests
@@ -8,6 +10,59 @@ from comp_use.config import Settings
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 2
 _RETRY_BACKOFF_SECONDS = 1.0
+
+# NVIDIA NIM's published ceiling for this account. Paced client-side because a 429
+# costs more than the wait does: _post_with_retry burns its retry budget on it, and
+# once that is exhausted FallbackLLMClient fails the whole call over to OpenRouter,
+# whose free tier caps the ACCOUNT at 50 requests/day - so a burst here can exhaust
+# tomorrow's fallback too. Observed live as `skipped_decision` events with
+# "429 ... openrouter.ai", which count toward DiscoveryAgent's dead-end threshold
+# and can end a run that was otherwise going fine.
+NVIDIA_REQUESTS_PER_MINUTE = 40
+
+
+class RateLimiter:
+    """A thread-safe sliding-window limiter: never more than `max_requests`
+    acquisitions in any `per_seconds` window.
+
+    A sliding window rather than a token bucket because the provider's own limit is
+    stated that way ("requests per minute"), and a bucket's burst allowance is
+    exactly what trips it. Shared process-wide rather than per client instance
+    (see _NVIDIA_RATE_LIMITER): the quota belongs to the API key, and every
+    concurrent run builds its own client, so a per-instance limiter would let N
+    runs send N x the limit.
+
+    Never holds the lock while sleeping - waiters would otherwise serialize behind
+    each other and each sleep the full window in turn."""
+
+    def __init__(self, max_requests: int, per_seconds: float = 60.0):
+        self._max_requests = max_requests
+        self._per_seconds = per_seconds
+        self._lock = threading.Lock()
+        self._starts: collections.deque[float] = collections.deque()
+
+    def acquire(self) -> float:
+        """Blocks until a slot is free. Returns how long it waited, in seconds, so
+        the caller can say so rather than looking hung."""
+        waited = 0.0
+        while True:
+            with self._lock:
+                # monotonic, not time(): a clock adjustment mid-run must not hand out
+                # a burst of free slots or stall every caller for a wall-clock hour.
+                now = time.monotonic()
+                while self._starts and now - self._starts[0] >= self._per_seconds:
+                    self._starts.popleft()
+                if len(self._starts) < self._max_requests:
+                    self._starts.append(now)
+                    return waited
+                sleep_for = self._per_seconds - (now - self._starts[0])
+            # Re-checked on the next pass rather than assumed: another thread may
+            # have taken the slot this one just waited for.
+            time.sleep(sleep_for)
+            waited += sleep_for
+
+
+_NVIDIA_RATE_LIMITER = RateLimiter(NVIDIA_REQUESTS_PER_MINUTE)
 
 _TOOL_SCHEMA = {
     "type": "function",
@@ -408,6 +463,13 @@ class _OpenAICompatibleClient(LLMClient):
     def _provider_label(self) -> str:
         raise NotImplementedError
 
+    def _rate_limiter(self) -> "RateLimiter | None":
+        """The limiter to pace this provider's requests, or None for no pacing.
+        Only NVIDIA NIM declares one today - OpenRouter is the fallback and is
+        already reached rarely, so throttling it would just add latency to the
+        path taken when the primary is in trouble."""
+        return None
+
     def decide_next_action(self, goal: str, observed_tree: str, screenshot_b64: str | None, history: list[dict]) -> dict:
         text_block = (
             f"Goal: {goal}\n"
@@ -470,7 +532,19 @@ class _OpenAICompatibleClient(LLMClient):
         _RETRYABLE_STATUS_CODES get a retry; anything else (4xx auth/shape
         errors) fails immediately, same as before."""
         last_response = None
+        limiter = self._rate_limiter()
         for attempt in range(_MAX_RETRIES + 1):
+            if limiter is not None:
+                # Inside the loop, not outside it: a retry is a real request to the
+                # provider and has to consume a slot too. Pacing only the first
+                # attempt would let a retry storm sail straight past the limit.
+                waited = limiter.acquire()
+                if waited > 0:
+                    print(
+                        f"[{self._provider_label()}] rate limit: waited {waited:.1f}s "
+                        f"for a request slot",
+                        flush=True,
+                    )
             response = requests.post(
                 self._endpoint(), headers=self._headers(), json=payload, timeout=60,
             )
@@ -568,6 +642,9 @@ class NvidiaNimClient(_OpenAICompatibleClient):
 
     def _provider_label(self) -> str:
         return "nvidia-nim"
+
+    def _rate_limiter(self) -> "RateLimiter | None":
+        return _NVIDIA_RATE_LIMITER
 
 
 class FallbackLLMClient(LLMClient):

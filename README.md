@@ -420,17 +420,27 @@ whole **account** at 50 model requests per day across every free model, and a
 single discovery run spends 15–20 of them — two or three recordings exhaust it and
 everything afterwards fails with HTTP 429 regardless of which free model is named.
 
+**NVIDIA requests are paced client-side** to `NVIDIA_REQUESTS_PER_MINUTE = 40`
+(`comp_use/llm_client.py`) by a thread-safe sliding-window `RateLimiter`, shared
+across every client instance in the process because the quota belongs to the API
+key, not to one run. A slot is taken per HTTP attempt — retries included, since a
+retry is a real request — and a wait long enough to notice prints
+`[nvidia-nim] rate limit: waited Ns for a request slot` rather than looking hung.
+The pacing is deliberate: a 429 costs more than the wait, because it burns the
+retry budget and then fails the call over to OpenRouter, spending the free tier
+that exists to cover genuine outages.
+
 The `*_VISION_MODEL` settings have working defaults and rarely need changing —
 they are a fallback for when the accessibility tree alone isn't enough for the
 model to locate an element (see REPORT.md's Heterogeneity section).
 
-**Optional second provider.** Set `NVIDIA_API_KEY` ([build.nvidia.com](https://build.nvidia.com))
-to add NVIDIA NIM as an automatic fallback on any LLM-call failure (rate limit,
-timeout, malformed response). Leave it blank to disable — behavior is then identical
-to OpenRouter-only. `MODEL_PROVIDER` (`openrouter` default, or `nvidia`) picks which
-provider is tried first; if the chosen primary has no key, it falls back to whichever
-provider does rather than build a client guaranteed to fail. Live-verified both
-directions — see `FallbackLLMClient` in `comp_use/llm_client.py`.
+**Optional second provider.** Setting both keys makes the unchosen one an automatic
+fallback on any LLM-call failure (rate limit, timeout, malformed response). Leave the
+second blank to disable — behavior is then identical to a single provider.
+`MODEL_PROVIDER` (`nvidia` by default, per `config.py`; or `openrouter`) picks which
+is tried first; if the chosen primary has no key, it falls back to whichever provider
+does rather than build a client guaranteed to fail. Live-verified both directions —
+see `FallbackLLMClient` in `comp_use/llm_client.py`.
 
 Run tests:
 
@@ -579,6 +589,39 @@ curl -s -X POST http://localhost:8000/runs/<run_id>/resume \
 ...which unblocks the same background thread mid-replay (via `QueueTransport`,
 signaling instead of blocking on a terminal `input()`) and the run proceeds to
 `"done"` with its real outputs, exactly like the CLI's escalation path.
+
+**Taking control, and stopping a run.** Two more endpoints act on a live run. Both
+only set a flag the step loop polls once per step, so both return `202` and take
+effect at the run's *next step boundary* — a slow in-flight action (a page load, an
+LLM call) can delay that by a few seconds:
+
+```bash
+# Pause for a voluntary human takeover - not an error, the operator just wants the
+# browser for a moment. Reuses the escalation handshake, so the SAME .../resume above
+# hands control back and the run continues.
+curl -s -X POST http://localhost:8000/runs/<run_id>/takeover
+# -> 202 {"status": "takeover_requested"}   then GET /runs/<run_id> reports "escalated"
+
+# Stop a run for good, and with it the sandbox container underneath.
+curl -s -X POST http://localhost:8000/runs/<run_id>/interrupt
+# -> 202 {"status": "interrupt_requested"}  then GET /runs/<run_id> reports "interrupted"
+```
+
+Both `404` on an unknown `run_id` and `409` on a run that has already finished;
+`takeover` also `409`s on a run that is already `escalated` (it has stopped for a
+human already). `interrupt` is valid from either active status: a run parked on an
+escalation never reaches a step boundary, so `QueueTransport.interrupt()` unblocks
+its `wait_for_resume()` as well.
+
+`interrupted` is a terminal status of its own, deliberately not `error` — nothing
+failed, an operator stopped it — and, being terminal, the run can then be deleted
+like any finished one. Stopping the run is what stops the container: the interrupt
+raises inside the run's own thread and unwinds through `_browser_session`, whose
+`finally` already calls `sandbox.stop()`.
+
+The third way out is for a run stuck on an escalation nobody will ever resume:
+`DELETE /runs/{run_id}?force=true` cancels the wait so the worker can finish
+reporting, then a plain `DELETE` removes the record.
 
 **No auth exists yet** — anyone who can reach the server can invoke/discover/approve.
 Deliberate, stated (spec §7, REPORT.md Safety) — and there's **no hard-delete
@@ -833,9 +876,11 @@ python -m pytest -v
 /evidence/          logs + screenshots - fallback store, Postgres primary
 /docs/              design specs and implementation plans
 run_mock_app.py     start the mock bank app on :5000 (original take-home target)
+run_mock_app_host.py    same app bound to 0.0.0.0, so a sandbox container reaches it at host.docker.internal:5000
 demo_edge_cases.py  live demo: Locator.fallback + recoverable auto-retry (see "Exercising every outcome" step 8)
 REPORT.md           original take-home design write-up (architecture, schema, determinism, etc.)
 ADAPTATION_WRITEUP.md   MERIDIAN CORE adaptation write-up (what changed, why, what's cut)
+DEMO.md             runbook: bring the stack up, then drive discovery/replay and their edge cases
 CODEMAP.md / ENHANCEMENTS.md / IMPACTS.md   full engineering log for the adaptation
 ```
 
